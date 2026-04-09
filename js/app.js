@@ -3955,7 +3955,13 @@
 
       showOverlayLoader("Updating dashboard order.");
       try {
-        await store.reorderTests(swapped);
+        if (store.reorderTests) {
+          await store.reorderTests(swapped);
+        } else {
+          for (var index = 0; index < swapped.length; index += 1) {
+            await store.updateTest(swapped[index], { displayOrder: (index + 1) * 10 });
+          }
+        }
         rerenderAdminPreserveScroll(user, runtime.adminSelectedTestId || selectedTestId);
       } catch (error) {
         window.alert(error && error.message ? error.message : "Could not update dashboard order.");

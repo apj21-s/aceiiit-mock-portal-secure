@@ -70,9 +70,27 @@ async function getCatalogPayload({ paidOk, isAdmin }) {
     .sort({ displayOrder: 1, createdAt: 1 })
     .lean();
 
+  const mappedTests = tests.map((test) => mapPublicTest(test, paidOk, isAdmin));
+  const accessibleQuestionIds = Array.from(
+    new Set(
+      mappedTests.flatMap((test) => (Array.isArray(test.questionIds) ? test.questionIds : []))
+    )
+  );
+
+  const questions = accessibleQuestionIds.length
+    ? await Question.find({ _id: { $in: accessibleQuestionIds }, deletedAt: null })
+        .select(QUESTION_PUBLIC_FIELDS)
+        .lean()
+    : [];
+
+  const questionMap = questions.reduce((acc, question) => {
+    acc[String(question._id)] = mapPublicQuestion(question);
+    return acc;
+  }, {});
+
   const payload = {
-    tests: tests.map((test) => mapPublicTest(test, paidOk, isAdmin)),
-    questions: [],
+    tests: mappedTests,
+    questions: accessibleQuestionIds.map((id) => questionMap[id]).filter(Boolean),
   };
 
   return cache.set(cacheKey, payload, TEST_LIST_TTL_MS);

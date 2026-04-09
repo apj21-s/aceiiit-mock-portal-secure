@@ -900,7 +900,24 @@
 
   async function getAttemptQuestionReview(attemptId, page, limit) {
     var query = "?page=" + encodeURIComponent(String(page || 1)) + "&limit=" + encodeURIComponent(String(limit || 20));
-    return api("/api/analysis/" + encodeURIComponent(String(attemptId || "")) + "/questions" + query, { method: "GET" });
+    try {
+      var resultPayload = await api("/api/result/" + encodeURIComponent(String(attemptId || "")) + query + "&includeReview=1", { method: "GET" });
+      return {
+        questions: resultPayload && resultPayload.questions ? resultPayload.questions : [],
+        pagination: resultPayload && resultPayload.pagination ? resultPayload.pagination : {
+          page: Number(page || 1),
+          limit: Number(limit || 20),
+          total: 0,
+          pages: 1,
+          hasMore: false,
+        },
+      };
+    } catch (error) {
+      if (error && error.status !== 404) {
+        throw error;
+      }
+      return api("/api/analysis/" + encodeURIComponent(String(attemptId || "")) + "/questions" + query, { method: "GET" });
+    }
   }
 
   function exportData() {

@@ -62,12 +62,16 @@ async function getResult(req, res, next) {
       return res.status(400).json({ error: "Invalid result id" });
     }
 
+    const includeReview = String(req.query.includeReview || "").trim() === "1";
+    const { page, limit } = analysisQuestionsQuerySchema.parse(req.query || {});
     const query = req.auth.role === "admin"
       ? { _id: req.params.id }
       : { _id: req.params.id, userId: req.auth.userId };
 
     const attempt = await Attempt.findOne(query)
-      .select("testId attemptNumber score accuracy rank percentile correctCount wrongCount skippedCount unattemptedCount timeTakenSeconds totalTime submittedAt sectionScores analysis")
+      .select(includeReview
+        ? "testId attemptNumber score accuracy rank percentile correctCount wrongCount skippedCount unattemptedCount timeTakenSeconds totalTime submittedAt sectionScores analysis questionReview"
+        : "testId attemptNumber score accuracy rank percentile correctCount wrongCount skippedCount unattemptedCount timeTakenSeconds totalTime submittedAt sectionScores analysis")
       .lean();
 
     if (!attempt) return res.status(404).json({ error: "Result not found" });
@@ -86,7 +90,23 @@ async function getResult(req, res, next) {
         ))
         .catch(() => {});
     }
-    res.json({ attempt: toAttemptResponse(attempt) });
+    const payload = { attempt: toAttemptResponse(attempt) };
+
+    if (includeReview) {
+      const allQuestions = Array.isArray(attempt.questionReview) ? attempt.questionReview : [];
+      const start = (page - 1) * limit;
+      const items = allQuestions.slice(start, start + limit);
+      payload.questions = items;
+      payload.pagination = {
+        page,
+        limit,
+        total: allQuestions.length,
+        pages: allQuestions.length ? Math.ceil(allQuestions.length / limit) : 1,
+        hasMore: start + items.length < allQuestions.length,
+      };
+    }
+
+    res.json(payload);
   } catch (err) {
     next(err);
   }
