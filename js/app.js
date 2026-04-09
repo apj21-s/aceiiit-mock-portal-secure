@@ -912,7 +912,7 @@
   }
 
   function isExamLikeRoute(view) {
-    return view === "instructions" || view === "test";
+    return view === "instructions" || view === "test" || view === "results";
   }
 
   function clearKeepAliveTimer() {
@@ -1756,15 +1756,27 @@
     }, 15000);
   }
 
-  function renderInstructions(user, testId) {
+  function renderInstructions(user, testId, prefetchedQuestions) {
     var instructionTest = store.getTestById(testId);
-    var initialQuestions = store.getQuestionsForTest(testId);
+    var initialQuestions = Array.isArray(prefetchedQuestions) ? prefetchedQuestions.slice() : store.getQuestionsForTest(testId);
     var expectedQuestionCount = instructionTest ? Number(instructionTest.questionCount || 0) : 0;
+    if (!auth.isAdmin(user) && !Array.isArray(prefetchedQuestions) && store.getTestQuestionsFromRemote) {
+      renderLoadingScreen("Loading test paper.");
+      Promise.resolve(store.getTestQuestionsFromRemote(testId))
+        .then(function (freshQuestions) {
+          renderInstructions(user, testId, Array.isArray(freshQuestions) ? freshQuestions : []);
+        })
+        .catch(function (error) {
+          window.alert(error && error.message ? error.message : "Could not load this test.");
+          navigate("dashboard");
+        });
+      return;
+    }
     if (!auth.isAdmin(user) && store.ensureTestQuestionsLoaded && (!initialQuestions.length || (expectedQuestionCount && initialQuestions.length < expectedQuestionCount))) {
       renderLoadingScreen("Loading test paper.");
       Promise.resolve(store.ensureTestQuestionsLoaded(testId))
-        .then(function () {
-          renderInstructions(user, testId);
+        .then(function (freshQuestions) {
+          renderInstructions(user, testId, Array.isArray(freshQuestions) ? freshQuestions : store.getQuestionsForTest(testId));
         })
         .catch(function (error) {
           window.alert(error && error.message ? error.message : "Could not load this test.");
@@ -1890,12 +1902,18 @@
       navigate("dashboard");
     });
 
-    beginButton.addEventListener("click", function () {
+    beginButton.addEventListener("click", async function () {
       if (!canLaunchTest) {
         window.alert("This test has no questions yet. It cannot be launched right now.");
         return;
       }
       var attempt = store.getOrCreateAttempt(user.id, testId);
+      if (!attempt && !auth.isAdmin(user) && store.getTestQuestionsFromRemote) {
+        try {
+          await store.getTestQuestionsFromRemote(testId);
+          attempt = store.getOrCreateAttempt(user.id, testId);
+        } catch (_err) {}
+      }
       if (!attempt) {
         window.alert("This test cannot start because no valid questions are attached.");
         return;
@@ -2402,12 +2420,17 @@
     }, 1000);
   }
 
-  function renderResults(user, attemptId, skipRefresh, prefetchedAttempt) {
+  function renderResults(user, attemptId, skipRefresh, prefetchedAttempt, prefetchedSummary) {
     if (!skipRefresh && store.getAttemptResult) {
       renderLoadingScreen("Loading your latest evaluated result.");
-      Promise.resolve(store.getAttemptResult(attemptId))
-        .then(function (freshAttempt) {
-          renderResults(user, attemptId, true, freshAttempt || null);
+      Promise.all([
+        Promise.resolve(store.getAttemptResult(attemptId)),
+        store.getAttemptAnalysis ? Promise.resolve(store.getAttemptAnalysis(attemptId)).catch(function () { return null; }) : Promise.resolve(null),
+      ])
+        .then(function (payload) {
+          var freshAttempt = payload[0] || null;
+          var freshSummary = payload[1] || null;
+          renderResults(user, attemptId, true, freshAttempt || null, freshSummary || null);
         })
         .catch(function () {
           renderResults(user, attemptId, true);
@@ -2424,9 +2447,9 @@
     var questions = store.getQuestionsForTest(attempt.testId);
     var maxScore = questions.reduce(function (sum, q) { return sum + Number(q.marks || 0); }, 0);
     var result = attempt.result;
-    var analysis = result.analysis || null;
+    var analysis = (prefetchedSummary && prefetchedSummary.analysis) || result.analysis || null;
     var sectionScores = result.sectionScores || {};
-    var analysisHydrating = !analysis && !!store.getAttemptAnalysis;
+    var analysisHydrating = !analysis && !!store.getAttemptAnalysis && !prefetchedSummary;
 
     function buildSectionScoresFromSummary(summary) {
       var source = summary && summary.sectionWise ? summary.sectionWise : null;
@@ -2445,6 +2468,10 @@
           skipped: Number(source.REAP && source.REAP.skipped || 0),
         },
       };
+    }
+
+    if ((!sectionScores || !Object.keys(sectionScores).length) && prefetchedSummary && prefetchedSummary.sectionWise) {
+      sectionScores = buildSectionScoresFromSummary(prefetchedSummary);
     }
 
     function stageStyle(index) {
@@ -2871,7 +2898,7 @@
     activateAnalysisAnimations(app);
     mountQuestionReviewLoader();
 
-    if (store.getAttemptAnalysis) {
+    if (!prefetchedSummary && store.getAttemptAnalysis) {
       store.getAttemptAnalysis(attempt.id).then(function (summary) {
         if (!summary) return;
         if (summary.analysis) {
@@ -2982,7 +3009,7 @@
                   '<div class="field"><label for="test-subtitle">Subtitle</label><input id="test-subtitle" name="subtitle" value="' + escapeAttribute(editingTest ? editingTest.subtitle : "") + '" required></div>' +
                   '<div class="field"><label for="test-series">Series</label><input id="test-series" name="series" value="' + escapeAttribute(editingTest ? (editingTest.series || "UGEE 2026") : "UGEE 2026") + '" required></div>' +
                   '<div class="field"><label for="test-access">Access</label><select id="test-access" name="isFree"><option value="true"' + (editingTest && editingTest.isFree ? ' selected' : (!editingTest ? ' selected' : '')) + '>Free</option><option value="false"' + (editingTest && !editingTest.isFree ? ' selected' : '') + '>Paid</option></select></div>' +
-                  '<div class="field"><label for="test-display-order">Dashboard order</label><input id="test-display-order" name="displayOrder" type="number" min="0" value="' + (editingTest && editingTest.displayOrder !== undefined ? editingTest.displayOrder : 100) + '" required><div class="helper-text">Lower number appears higher on the dashboard.</div></div>' +
+                  '<div class="field"><label>Dashboard order</label><div class="helper-text">Use the Up / Down controls in the Existing tests list to decide dashboard order. New tests are added at the bottom by default.</div></div>' +
                   '<div class="field"><label for="test-benchmark">Benchmark scores</label><input id="test-benchmark" name="benchmarkScores" placeholder="18,22,26,31" value="' + escapeAttribute(editingTest && Array.isArray(editingTest.benchmarkScores) ? editingTest.benchmarkScores.join(",") : "") + '"></div>' +
                   '<div class="field"><label for="supr-duration">SUPR duration (minutes)</label><input id="supr-duration" name="suprDurationMinutes" type="number" value="' + (editingTest && editingTest.sectionDurations ? editingTest.sectionDurations.SUPR : 60) + '" required></div>' +
                   '<div class="field"><label for="reap-duration">REAP duration (minutes)</label><input id="reap-duration" name="reapDurationMinutes" type="number" value="' + (editingTest && editingTest.sectionDurations ? editingTest.sectionDurations.REAP : 120) + '" required></div>' +
@@ -3112,9 +3139,11 @@
               '</div>' +
               (tests.length ? (
                 '<div class="table-like tests-table">' +
-                  '<div class="table-row header"><span>Test</span><span>Order</span><span>Questions</span><span>SUPR / REAP</span><span>ID</span><span>Action</span></div>' +
-                  tests.map(function (test) {
-                    return '<div class="table-row"><span class="' + (test.status === "live" ? 'test-title-live' : '') + '">' + escapeHtml(test.title) + '<br><small>' + escapeHtml(test.status || "draft") + '</small></span><span>' + escapeHtml(String(test.displayOrder !== undefined ? test.displayOrder : 100)) + '</span><span>' + test.questionIds.length + '</span><span>' + test.sectionDurations.SUPR + ' / ' + test.sectionDurations.REAP + ' min</span><span>' + escapeHtml(test.id) + '</span><span><div class="button-row"><button class="button button-secondary js-pick-test" data-id="' + escapeHtml(test.id) + '">' + (test.id === selectedTestId ? 'Using' : 'Use') + '</button><button class="button button-secondary js-edit-test" data-id="' + escapeHtml(test.id) + '">Edit</button><button class="button button-secondary js-toggle-live" data-id="' + escapeHtml(test.id) + '">' + (test.status === "live" ? 'Unlive' : 'Make Live') + '</button><button class="button button-secondary js-export-pdf" data-id="' + escapeHtml(test.id) + '">PDF</button><button class="button button-danger js-delete-test" data-id="' + escapeHtml(test.id) + '">Delete</button></div></span></div>';
+                  '<div class="table-row header"><span>Test</span><span>Dashboard</span><span>Questions</span><span>SUPR / REAP</span><span>ID</span><span>Action</span></div>' +
+                  tests.map(function (test, index) {
+                    var moveUpDisabled = index === 0 ? ' disabled' : '';
+                    var moveDownDisabled = index === tests.length - 1 ? ' disabled' : '';
+                    return '<div class="table-row"><span class="' + (test.status === "live" ? 'test-title-live' : '') + '">' + escapeHtml(test.title) + '<br><small>' + escapeHtml(test.status || "draft") + '</small></span><span><div class="button-row"><button class="button button-secondary button-compact js-move-test-up" data-id="' + escapeHtml(test.id) + '"' + moveUpDisabled + '>Up</button><button class="button button-secondary button-compact js-move-test-down" data-id="' + escapeHtml(test.id) + '"' + moveDownDisabled + '>Down</button></div></span><span>' + test.questionIds.length + '</span><span>' + test.sectionDurations.SUPR + ' / ' + test.sectionDurations.REAP + ' min</span><span>' + escapeHtml(test.id) + '</span><span><div class="button-row"><button class="button button-secondary js-pick-test" data-id="' + escapeHtml(test.id) + '">' + (test.id === selectedTestId ? 'Using' : 'Use') + '</button><button class="button button-secondary js-edit-test" data-id="' + escapeHtml(test.id) + '">Edit</button><button class="button button-secondary js-toggle-live" data-id="' + escapeHtml(test.id) + '">' + (test.status === "live" ? 'Unlive' : 'Make Live') + '</button><button class="button button-secondary js-export-pdf" data-id="' + escapeHtml(test.id) + '">PDF</button><button class="button button-danger js-delete-test" data-id="' + escapeHtml(test.id) + '">Delete</button></div></span></div>';
                   }).join("") +
                 '</div>'
               ) : '<div class="empty-state">No tests created yet.</div>') +
@@ -3695,12 +3724,16 @@
     document.getElementById("test-form").addEventListener("submit", async function (event) {
       event.preventDefault();
       var form = new FormData(event.currentTarget);
+      var nextDefaultDisplayOrder = tests.length
+        ? tests.reduce(function (max, test) {
+            return Math.max(max, Number(test.displayOrder || 0));
+          }, 0) + 10
+        : 10;
       var payload = {
         title: form.get("title"),
         subtitle: form.get("subtitle"),
         series: form.get("series"),
         isFree: form.get("isFree"),
-        displayOrder: form.get("displayOrder"),
         suprDurationMinutes: form.get("suprDurationMinutes"),
         reapDurationMinutes: form.get("reapDurationMinutes"),
         instructions: String(form.get("instructions"))
@@ -3712,6 +3745,9 @@
           .map(function (item) { return Number(item.trim()); })
           .filter(function (item) { return Number.isFinite(item); })
       };
+      if (!runtime.adminEditingTestId) {
+        payload.displayOrder = nextDefaultDisplayOrder;
+      }
       showOverlayLoader("Saving test.");
       try {
         var savedTest = runtime.adminEditingTestId
@@ -3902,6 +3938,41 @@
       button.addEventListener("click", function () {
         runtime.adminSelectedTestId = button.dataset.id;
         rerenderAdminPreserveScroll(user, button.dataset.id);
+      });
+    });
+
+    async function moveTestOrder(testId, direction) {
+      var orderedIds = tests.map(function (test) { return test.id; });
+      var currentIndex = orderedIds.indexOf(String(testId || ""));
+      if (currentIndex === -1) return;
+      var targetIndex = direction === "up" ? currentIndex - 1 : currentIndex + 1;
+      if (targetIndex < 0 || targetIndex >= orderedIds.length) return;
+
+      var swapped = orderedIds.slice();
+      var currentId = swapped[currentIndex];
+      swapped[currentIndex] = swapped[targetIndex];
+      swapped[targetIndex] = currentId;
+
+      showOverlayLoader("Updating dashboard order.");
+      try {
+        await store.reorderTests(swapped);
+        rerenderAdminPreserveScroll(user, runtime.adminSelectedTestId || selectedTestId);
+      } catch (error) {
+        window.alert(error && error.message ? error.message : "Could not update dashboard order.");
+      } finally {
+        hideOverlayLoader();
+      }
+    }
+
+    app.querySelectorAll(".js-move-test-up").forEach(function (button) {
+      button.addEventListener("click", function () {
+        moveTestOrder(button.dataset.id, "up");
+      });
+    });
+
+    app.querySelectorAll(".js-move-test-down").forEach(function (button) {
+      button.addEventListener("click", function () {
+        moveTestOrder(button.dataset.id, "down");
       });
     });
 

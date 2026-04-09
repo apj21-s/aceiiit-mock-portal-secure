@@ -729,6 +729,22 @@
     return data.test || null;
   }
 
+  async function reorderTests(testIdsInOrder) {
+    var orderedIds = (testIdsInOrder || [])
+      .map(function (id) { return String(id || "").trim(); })
+      .filter(Boolean);
+
+    for (var index = 0; index < orderedIds.length; index += 1) {
+      await api("/api/tests/" + encodeURIComponent(orderedIds[index]), {
+        method: "PUT",
+        body: JSON.stringify({ displayOrder: (index + 1) * 10 }),
+      });
+    }
+
+    await refreshFromRemote();
+    return getTests();
+  }
+
   async function deleteTest(testId) {
     await api("/api/tests/" + encodeURIComponent(testId), { method: "DELETE" });
     await refreshFromRemote();
@@ -922,6 +938,7 @@
     getQuestions: getQuestions,
     getTestById: getTestById,
     getQuestionsForTest: getQuestionsForTest,
+    getTestQuestionsFromRemote: getTestQuestionsFromRemote,
     ensureTestQuestionsLoaded: ensureTestQuestionsLoaded,
     listUserAttempts: listUserAttempts,
     getAttemptById: getAttemptById,
@@ -941,6 +958,7 @@
     deleteQuestion: deleteQuestion,
     createTest: createTest,
     updateTest: updateTest,
+    reorderTests: reorderTests,
     deleteTest: deleteTest,
     attachQuestionToTest: attachQuestionToTest,
     detachQuestionFromTest: detachQuestionFromTest,
