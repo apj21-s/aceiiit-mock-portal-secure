@@ -2371,7 +2371,18 @@
     }, 1000);
   }
 
-  function renderResults(user, attemptId) {
+  function renderResults(user, attemptId, skipRefresh) {
+    if (!skipRefresh && store.getAttemptResult) {
+      renderLoadingScreen("Loading your latest evaluated result.");
+      Promise.resolve(store.getAttemptResult(attemptId))
+        .then(function () {
+          renderResults(user, attemptId, true);
+        })
+        .catch(function () {
+          renderResults(user, attemptId, true);
+        });
+      return;
+    }
     var attempt = store.getAttemptById(attemptId);
     if (!attempt || attempt.status !== "submitted" || !attempt.result) {
       navigate("dashboard");

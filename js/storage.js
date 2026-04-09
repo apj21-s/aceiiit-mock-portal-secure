@@ -357,6 +357,35 @@
     return attempt ? clone(attempt) : null;
   }
 
+  async function getAttemptResult(attemptId) {
+    var payload = await api("/api/result/" + encodeURIComponent(String(attemptId || "")), { method: "GET" });
+    var remote = payload && payload.attempt ? payload.attempt : null;
+    if (!remote) return null;
+
+    var userId = state.session.user && state.session.user.id ? state.session.user.id : "";
+    var mapped = mapRemoteAttempt(remote, userId);
+    var attempts = state.db.attempts || [];
+    var existingIndex = attempts.findIndex(function (item) {
+      return item.id === remote.id || (item.status === "submitted" && item.testId === remote.testId && item.attemptNumber === remote.attemptNumber);
+    });
+
+    if (existingIndex >= 0) {
+      var existing = attempts[existingIndex] || {};
+      mapped.startedAt = existing.startedAt || mapped.startedAt;
+      mapped.answers = existing.answers || {};
+      mapped.visited = existing.visited || {};
+      mapped.marked = existing.marked || {};
+      mapped.timeSpent = existing.timeSpent || {};
+      attempts.splice(existingIndex, 1, mapped);
+    } else {
+      attempts = attempts.concat([mapped]);
+    }
+
+    state.db.attempts = attempts;
+    saveState();
+    return clone(mapped);
+  }
+
   function getInProgressAttempt(userId, testId) {
     var attempt = (state.db.attempts || []).find(function (a) {
       return a.userId === userId && a.testId === testId && a.status === "in_progress";
@@ -710,6 +739,7 @@
     getQuestionsForTest: getQuestionsForTest,
     listUserAttempts: listUserAttempts,
     getAttemptById: getAttemptById,
+    getAttemptResult: getAttemptResult,
     getInProgressAttempt: getInProgressAttempt,
     createAttempt: createAttempt,
     getOrCreateAttempt: getOrCreateAttempt,
