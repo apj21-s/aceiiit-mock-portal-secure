@@ -1757,8 +1757,10 @@
   }
 
   function renderInstructions(user, testId) {
+    var instructionTest = store.getTestById(testId);
     var initialQuestions = store.getQuestionsForTest(testId);
-    if (!auth.isAdmin(user) && store.ensureTestQuestionsLoaded && !initialQuestions.length) {
+    var expectedQuestionCount = instructionTest ? Number(instructionTest.questionCount || 0) : 0;
+    if (!auth.isAdmin(user) && store.ensureTestQuestionsLoaded && (!initialQuestions.length || (expectedQuestionCount && initialQuestions.length < expectedQuestionCount))) {
       renderLoadingScreen("Loading test paper.");
       Promise.resolve(store.ensureTestQuestionsLoaded(testId))
         .then(function () {
@@ -1910,7 +1912,9 @@
     }
 
     var initialQuestions = store.getQuestionsForTest(attempt.testId);
-    if (!auth.isAdmin(user) && store.ensureTestQuestionsLoaded && !initialQuestions.length) {
+    var attemptTest = store.getTestById(attempt.testId);
+    var expectedQuestionCount = attemptTest ? Number(attemptTest.questionCount || 0) : 0;
+    if (!auth.isAdmin(user) && store.ensureTestQuestionsLoaded && (!initialQuestions.length || (expectedQuestionCount && initialQuestions.length < expectedQuestionCount))) {
       renderLoadingScreen("Loading your question paper.");
       Promise.resolve(store.ensureTestQuestionsLoaded(attempt.testId))
         .then(function () {

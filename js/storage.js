@@ -464,16 +464,18 @@
       return item.id === remote.id || (item.status === "submitted" && item.testId === remote.testId && item.attemptNumber === remote.attemptNumber);
     });
 
+    var mergedAttempt = mapped;
     if (existingIndex >= 0) {
       var existing = attempts[existingIndex] || {};
-      attempts.splice(existingIndex, 1, mergeAttemptData(existing, mapped));
+      mergedAttempt = mergeAttemptData(existing, mapped);
+      attempts.splice(existingIndex, 1, mergedAttempt);
     } else {
       attempts = attempts.concat([mapped]);
     }
 
     state.db.attempts = attempts;
     saveState();
-    return clone(mapped);
+    return clone(mergedAttempt);
   }
 
   async function getTestQuestionsFromRemote(testId) {
@@ -495,8 +497,10 @@
   }
 
   async function ensureTestQuestionsLoaded(testId) {
+    var test = getTestById(testId);
+    var expectedCount = test ? Number(test.questionCount || 0) : 0;
     var existing = getQuestionsForTest(testId);
-    if (existing.length) {
+    if (existing.length && (!expectedCount || existing.length >= expectedCount)) {
       return existing;
     }
     return getTestQuestionsFromRemote(testId);
