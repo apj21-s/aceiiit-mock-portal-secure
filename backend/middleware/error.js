@@ -6,7 +6,7 @@ function notFound(_req, res, _next) {
 function errorHandler(err, _req, res, _next) {
   if (err && err.name === "MulterError") {
     const message = err.code === "LIMIT_FILE_SIZE"
-      ? "Image is too large. Max allowed size is 2MB."
+      ? "Image is too large. Max allowed size is 4MB."
       : "Invalid image upload.";
     return res.status(400).json({ error: message });
   }

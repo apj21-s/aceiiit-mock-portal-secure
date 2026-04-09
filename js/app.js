@@ -760,6 +760,43 @@
     return result;
   }
 
+  function dataUrlToFile(dataUrl, originalFile) {
+    var parts = String(dataUrl || "").split(",");
+    if (parts.length < 2) {
+      throw new Error("Compressed image data is invalid.");
+    }
+    var meta = parts[0];
+    var mimeMatch = meta.match(/data:([^;]+);base64/i);
+    var mime = mimeMatch ? mimeMatch[1] : String(originalFile && originalFile.type || "image/jpeg");
+    var binary = atob(parts[1]);
+    var length = binary.length;
+    var bytes = new Uint8Array(length);
+    for (var i = 0; i < length; i += 1) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    var baseName = String(originalFile && originalFile.name || "question-image").replace(/\.[^.]+$/, "");
+    var extension = mime === "image/png" ? ".png" : mime === "image/webp" ? ".webp" : mime === "image/gif" ? ".gif" : ".jpg";
+    return new File([bytes], baseName + extension, { type: mime });
+  }
+
+  async function prepareQuestionUploadFiles(fileList) {
+    var files = Array.prototype.slice.call(fileList || []);
+    if (!files.length) {
+      return [];
+    }
+    var prepared = [];
+    for (var i = 0; i < files.length; i += 1) {
+      var file = files[i];
+      try {
+        var dataUrl = await compressFileToDataUrl(file);
+        prepared.push(dataUrlToFile(dataUrl, file));
+      } catch (_err) {
+        prepared.push(file);
+      }
+    }
+    return prepared;
+  }
+
   function readFilesAsUrls(fileList, testId, questionId) {
     var list = Array.prototype.slice.call(fileList || []);
     if (!list.length) {
@@ -2498,10 +2535,10 @@
               '<h3>Load detailed review only when you need it</h3>' +
             '</div>' +
             '<div class="button-row">' +
-              '<button class="button button-secondary" id="load-question-review">Load question review</button>' +
+              '<button class="button button-secondary" id="load-question-review"' + (analysis ? '' : ' disabled') + '>Load question review</button>' +
             '</div>' +
           '</div>' +
-          '<div id="question-review-status" class="helper-text">Summary loads first. Detailed review stays lazy to keep this page fast.</div>' +
+          '<div id="question-review-status" class="helper-text">' + (analysis ? 'Summary loads first. Detailed review stays lazy to keep this page fast.' : 'Question review is available for attempts submitted after the analysis upgrade.') + '</div>' +
           '<div id="question-review-list" class="analysis-review-list"></div>' +
           '<div class="button-row" id="question-review-more-row" style="display:none; margin-top: 14px;">' +
             '<button class="button button-secondary" id="load-more-review">Load more questions</button>' +
@@ -2517,6 +2554,13 @@
         html += buildSectionPanel(summary);
         html += buildTopicPanel(summary);
         html += buildTimePanel(summary);
+      } else {
+        html += (
+          '<section class="report-card analysis-stage"' + stageStyle(2) + '>' +
+            '<p class="section-label">Attempt analysis</p>' +
+            '<div class="empty-state">This attempt was submitted before the upgraded analysis system was enabled. Submit a new attempt to see section, topic, time, and question-level insights here.</div>' +
+          '</section>'
+        );
       }
       html += (
         '<section class="report-card analysis-stage"' + stageStyle(2) + '>' +
@@ -2530,7 +2574,7 @@
             ? '<div class="analysis-chip-row">' + chips.map(function (chip) {
                 return '<span class="analysis-chip">' + escapeHtml(String(chip)) + '</span>';
               }).join("") + '</div>'
-            : '<div class="empty-state">Detailed insights will appear here after the latest analysis data syncs in.</div>') +
+            : '<div class="empty-state">' + (summary ? 'No smart insights were generated for this attempt.' : 'Detailed insights are available for newly submitted attempts after the analysis upgrade.') + '</div>') +
         '</section>'
       );
       html += buildQuestionReviewShell();
@@ -2693,6 +2737,11 @@
       var statusEl = document.getElementById("question-review-status");
       var moreRow = document.getElementById("question-review-more-row");
       if (!loadButton || !listEl || !statusEl || !moreRow) return;
+      if (!analysis) {
+        listEl.innerHTML = '<div class="empty-state">Full question review is available for attempts submitted after the upgraded analysis system was enabled.</div>';
+        moreRow.style.display = "none";
+        return;
+      }
 
       var page = 1;
       var limit = 12;
@@ -3677,9 +3726,10 @@
         try {
           var form = new FormData(event.currentTarget);
           var activeTestId = String(form.get("testId") || "");
-          var selectedFiles = runtime.pendingQuestionFiles.length
+          var rawSelectedFiles = runtime.pendingQuestionFiles.length
             ? runtime.pendingQuestionFiles
             : Array.prototype.slice.call(event.currentTarget.querySelector("#question-files").files || []);
+          var selectedFiles = await prepareQuestionUploadFiles(rawSelectedFiles);
           var driveImages = parseQuestionImageLinksText(form.get("driveImageLinks"));
           var existingNonDriveImages = editingQuestion ? getQuestionImageUrls(editingQuestion).filter(function (url) {
             return !isGoogleDriveImageLink(url);
@@ -3729,7 +3779,7 @@
               : rawMessage.indexOf("Cloudinary is not configured") !== -1
                 ? "Cloudinary is not configured on the backend. Set CLOUDINARY_URL (or the 3 Cloudinary vars) in backend/.env and restart."
                 : rawMessage.indexOf("LIMIT_FILE_SIZE") !== -1
-                  ? "Image is too large. Max allowed size is 2MB."
+                  ? "Image is too large. Max allowed size is 4MB."
                   : "Question could not be saved with this image.";
           window.alert(friendly + (rawMessage ? " " + rawMessage : ""));
         } finally {
