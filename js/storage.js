@@ -238,6 +238,49 @@
     };
   }
 
+  function mergeAttemptData(existing, incoming) {
+    if (!existing) return incoming;
+    var merged = Object.assign({}, incoming);
+    var existingResult = existing.result || null;
+    var incomingResult = incoming.result || null;
+
+    if (existing.status === "in_progress" && incoming.status !== "submitted") {
+      return Object.assign({}, existing, incoming);
+    }
+
+    merged.startedAt = existing.startedAt || incoming.startedAt;
+    merged.answers = existing.answers || incoming.answers || {};
+    merged.visited = existing.visited || incoming.visited || {};
+    merged.marked = existing.marked || incoming.marked || {};
+    merged.timeSpent = existing.timeSpent || incoming.timeSpent || {};
+    merged.sectionTimers = existing.sectionTimers || incoming.sectionTimers || null;
+
+    if (existingResult || incomingResult) {
+      merged.result = Object.assign({}, existingResult || {}, incomingResult || {});
+      if (existingResult && existingResult.analysis && (!incomingResult || !incomingResult.analysis)) {
+        merged.result.analysis = existingResult.analysis;
+      }
+      if (existingResult && existingResult.sectionScores && (!incomingResult || !incomingResult.sectionScores)) {
+        merged.result.sectionScores = existingResult.sectionScores;
+      }
+      if (existingResult && existingResult.totalTime !== undefined && (!incomingResult || incomingResult.totalTime === undefined)) {
+        merged.result.totalTime = existingResult.totalTime;
+      }
+      if (existingResult && existingResult.unattemptedCount !== undefined && (!incomingResult || incomingResult.unattemptedCount === undefined)) {
+        merged.result.unattemptedCount = existingResult.unattemptedCount;
+      }
+    }
+
+    if (existing.resultSnapshot || incoming.resultSnapshot) {
+      merged.resultSnapshot = Object.assign({}, existing.resultSnapshot || {}, incoming.resultSnapshot || {});
+      if (merged.result) {
+        merged.resultSnapshot.result = merged.result;
+      }
+    }
+
+    return merged;
+  }
+
   function getCurrentUser() {
     return state.session.user ? clone(state.session.user) : null;
   }
@@ -254,8 +297,16 @@
     state.db.tests = testsPayload.tests || [];
     state.db.questions = [];
     state.db.questionCache = state.db.questionCache || {};
+    var existingSubmittedById = (state.db.attempts || []).reduce(function (acc, attempt) {
+      if (attempt && attempt.id) {
+        acc[attempt.id] = attempt;
+      }
+      return acc;
+    }, {});
+
     state.db.attempts = inProgress.concat((attemptsPayload.attempts || []).map(function (remote) {
-      return mapRemoteAttempt(remote, userId);
+      var mapped = mapRemoteAttempt(remote, userId);
+      return mergeAttemptData(existingSubmittedById[mapped.id], mapped);
     }));
 
     saveState();
@@ -383,12 +434,7 @@
 
     if (existingIndex >= 0) {
       var existing = attempts[existingIndex] || {};
-      mapped.startedAt = existing.startedAt || mapped.startedAt;
-      mapped.answers = existing.answers || {};
-      mapped.visited = existing.visited || {};
-      mapped.marked = existing.marked || {};
-      mapped.timeSpent = existing.timeSpent || {};
-      attempts.splice(existingIndex, 1, mapped);
+      attempts.splice(existingIndex, 1, mergeAttemptData(existing, mapped));
     } else {
       attempts = attempts.concat([mapped]);
     }
