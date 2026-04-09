@@ -2422,6 +2422,26 @@
     var result = attempt.result;
     var analysis = result.analysis || null;
     var sectionScores = result.sectionScores || {};
+    var analysisHydrating = !analysis && !!store.getAttemptAnalysis;
+
+    function buildSectionScoresFromSummary(summary) {
+      var source = summary && summary.sectionWise ? summary.sectionWise : null;
+      if (!source) return null;
+      return {
+        SUPR: {
+          score: Number(source.SUPR && source.SUPR.score || 0),
+          correct: Number(source.SUPR && source.SUPR.correct || 0),
+          wrong: Number(source.SUPR && source.SUPR.wrong || 0),
+          skipped: Number(source.SUPR && source.SUPR.skipped || 0),
+        },
+        REAP: {
+          score: Number(source.REAP && source.REAP.score || 0),
+          correct: Number(source.REAP && source.REAP.correct || 0),
+          wrong: Number(source.REAP && source.REAP.wrong || 0),
+          skipped: Number(source.REAP && source.REAP.skipped || 0),
+        },
+      };
+    }
 
     function stageStyle(index) {
       return ' style="animation-delay:' + String(index * 100) + 'ms"';
@@ -2590,8 +2610,13 @@
       var html = "";
       if (summary) {
         html += buildSectionPanel(summary);
-        html += buildTopicPanel(summary);
-        html += buildTimePanel(summary);
+      } else if (analysisHydrating) {
+        html += (
+          '<section class="report-card analysis-stage"' + stageStyle(2) + '>' +
+            '<p class="section-label">Attempt analysis</p>' +
+            '<div class="empty-state">Loading the latest stored analysis for this attempt.</div>' +
+          '</section>'
+        );
       } else {
         html += (
           '<section class="report-card analysis-stage"' + stageStyle(2) + '>' +
@@ -2599,6 +2624,10 @@
             '<div class="empty-state">This attempt was submitted before the upgraded analysis system was enabled. Submit a new attempt to see section, topic, time, and question-level insights here.</div>' +
           '</section>'
         );
+      }
+      if (summary) {
+        html += buildTopicPanel(summary);
+        html += buildTimePanel(summary);
       }
       html += (
         '<section class="report-card analysis-stage"' + stageStyle(2) + '>' +
@@ -2612,7 +2641,7 @@
             ? '<div class="analysis-chip-row">' + chips.map(function (chip) {
                 return '<span class="analysis-chip">' + escapeHtml(String(chip)) + '</span>';
               }).join("") + '</div>'
-            : '<div class="empty-state">' + (summary ? 'No smart insights were generated for this attempt.' : 'Detailed insights are available for newly submitted attempts after the analysis upgrade.') + '</div>') +
+            : '<div class="empty-state">' + (summary ? 'No smart insights were generated for this attempt.' : (analysisHydrating ? 'Loading the latest stored insights for this attempt.' : 'Detailed insights are available for newly submitted attempts after the analysis upgrade.')) + '</div>') +
         '</section>'
       );
       html += buildQuestionReviewShell();
@@ -2720,7 +2749,7 @@
               '</div>' +
               '<div class="divider"></div>' +
               '<p class="section-label">Section performance</p>' +
-              '<div class="bar-list">' + sectionBar("SUPR") + sectionBar("REAP") + '</div>' +
+              '<div class="bar-list" id="section-performance-root">' + sectionBar("SUPR") + sectionBar("REAP") + '</div>' +
               '<div id="analysis-summary-root">' + buildSummaryPanels(analysis) + '</div>' +
             '</div>' +
             '<aside class="report-card">' +
@@ -2840,9 +2869,25 @@
 
     if (store.getAttemptAnalysis) {
       store.getAttemptAnalysis(attempt.id).then(function (summary) {
-        if (!summary || !summary.analysis) return;
-        analysis = summary.analysis;
+        if (!summary) return;
+        if (summary.analysis) {
+          analysis = summary.analysis;
+        }
+        var derivedSectionScores = buildSectionScoresFromSummary(summary);
+        if (derivedSectionScores) {
+          sectionScores = derivedSectionScores;
+        }
+        analysisHydrating = false;
+        result.analysis = analysis || result.analysis || null;
+        if (derivedSectionScores) {
+          result.sectionScores = derivedSectionScores;
+        }
+        var sectionRoot = document.getElementById("section-performance-root");
         var summaryRoot = document.getElementById("analysis-summary-root");
+        if (sectionRoot) {
+          sectionRoot.innerHTML = sectionBar("SUPR") + sectionBar("REAP");
+          activateAnalysisAnimations(sectionRoot);
+        }
         if (!summaryRoot) return;
         summaryRoot.innerHTML = buildSummaryPanels(analysis);
         activateAnalysisAnimations(summaryRoot);

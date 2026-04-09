@@ -238,6 +238,26 @@
     };
   }
 
+  function mergeTestData(existing, incoming) {
+    if (!existing) return incoming;
+
+    var merged = Object.assign({}, existing, incoming);
+    var incomingQuestionIds = Array.isArray(incoming.questionIds) ? incoming.questionIds.slice() : [];
+    var existingQuestionIds = Array.isArray(existing.questionIds) ? existing.questionIds.slice() : [];
+
+    if (!incomingQuestionIds.length && existingQuestionIds.length) {
+      merged.questionIds = existingQuestionIds;
+    } else {
+      merged.questionIds = incomingQuestionIds;
+    }
+
+    if ((!incoming.questionCount || incoming.questionCount < merged.questionIds.length) && merged.questionIds.length) {
+      merged.questionCount = merged.questionIds.length;
+    }
+
+    return merged;
+  }
+
   function mergeAttemptData(existing, incoming) {
     if (!existing) return incoming;
     var merged = Object.assign({}, incoming);
@@ -294,7 +314,16 @@
       return a && a.status === "in_progress" && a.userId === userId;
     });
 
-    state.db.tests = testsPayload.tests || [];
+    var existingTestsById = (state.db.tests || []).reduce(function (acc, test) {
+      if (test && test.id) {
+        acc[test.id] = test;
+      }
+      return acc;
+    }, {});
+
+    state.db.tests = (testsPayload.tests || []).map(function (test) {
+      return mergeTestData(existingTestsById[test.id], test);
+    });
     state.db.questions = [];
     state.db.questionCache = state.db.questionCache || {};
     var existingSubmittedById = (state.db.attempts || []).reduce(function (acc, attempt) {
@@ -402,6 +431,9 @@
     var questionIds = Array.isArray(test.questionIds) ? test.questionIds : [];
     var cachedQuestions = state.db.questionCache && state.db.questionCache[testId];
     if (Array.isArray(cachedQuestions) && cachedQuestions.length) {
+      if (!questionIds.length) {
+        return cachedQuestions.map(clone);
+      }
       var cachedMap = cachedQuestions.reduce(function (acc, q) {
         acc[q.id] = q;
         return acc;
@@ -449,6 +481,15 @@
     var questions = payload && payload.questions ? payload.questions : [];
     state.db.questionCache = state.db.questionCache || {};
     state.db.questionCache[String(testId)] = clone(questions);
+    state.db.tests = (state.db.tests || []).map(function (test) {
+      if (!test || test.id !== String(testId)) {
+        return test;
+      }
+      return mergeTestData(test, {
+        questionIds: questions.map(function (question) { return question.id; }),
+        questionCount: questions.length,
+      });
+    });
     saveState();
     return clone(questions);
   }
