@@ -347,8 +347,33 @@
     state.db.tests = (testsPayload.tests || []).map(function (test) {
       return mergeTestData(existingTestsById[test.id], test);
     });
-    state.db.questions = [];
+    state.db.questions = Array.isArray(testsPayload.questions) ? clone(testsPayload.questions) : [];
     state.db.questionCache = state.db.questionCache || {};
+    var questionMap = (state.db.questions || []).reduce(function (acc, question) {
+      if (question && question.id) {
+        acc[question.id] = question;
+      }
+      return acc;
+    }, {});
+
+    (state.db.tests || []).forEach(function (test) {
+      if (!test || !test.id) return;
+      var questionIds = Array.isArray(test.questionIds) ? test.questionIds : [];
+      if (!questionIds.length) return;
+      var resolvedQuestions = questionIds.map(function (id) { return questionMap[id]; }).filter(Boolean);
+      if (!resolvedQuestions.length) return;
+
+      var existingCacheEntry = getQuestionCacheEntry(test.id);
+      var shouldRefreshCache =
+        !existingCacheEntry ||
+        !Array.isArray(existingCacheEntry.questions) ||
+        existingCacheEntry.questions.length !== resolvedQuestions.length ||
+        String(existingCacheEntry.updatedAt || "") !== String(test.updatedAt || "");
+
+      if (shouldRefreshCache) {
+        setQuestionCacheEntry(test.id, resolvedQuestions, test.updatedAt || null);
+      }
+    });
     var nextTestsById = (state.db.tests || []).reduce(function (acc, test) {
       if (test && test.id) {
         acc[test.id] = test;

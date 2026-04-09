@@ -2423,14 +2423,9 @@
   function renderResults(user, attemptId, skipRefresh, prefetchedAttempt, prefetchedSummary) {
     if (!skipRefresh && store.getAttemptResult) {
       renderLoadingScreen("Loading your latest evaluated result.");
-      Promise.all([
-        Promise.resolve(store.getAttemptResult(attemptId)),
-        store.getAttemptAnalysis ? Promise.resolve(store.getAttemptAnalysis(attemptId)).catch(function () { return null; }) : Promise.resolve(null),
-      ])
-        .then(function (payload) {
-          var freshAttempt = payload[0] || null;
-          var freshSummary = payload[1] || null;
-          renderResults(user, attemptId, true, freshAttempt || null, freshSummary || null);
+      Promise.resolve(store.getAttemptResult(attemptId))
+        .then(function (freshAttempt) {
+          renderResults(user, attemptId, true, freshAttempt || null, null);
         })
         .catch(function () {
           renderResults(user, attemptId, true);
@@ -2472,6 +2467,16 @@
 
     if ((!sectionScores || !Object.keys(sectionScores).length) && prefetchedSummary && prefetchedSummary.sectionWise) {
       sectionScores = buildSectionScoresFromSummary(prefetchedSummary);
+    } else if ((!sectionScores || !Object.keys(sectionScores).length) && analysis && Array.isArray(analysis.sectionInsights)) {
+      sectionScores = analysis.sectionInsights.reduce(function (acc, section) {
+        acc[section.key] = {
+          score: Number(section.score || 0),
+          correct: Number(section.correct || 0),
+          wrong: Number(section.wrong || 0),
+          skipped: Number(section.skipped || 0),
+        };
+        return acc;
+      }, {});
     }
 
     function stageStyle(index) {
@@ -2898,7 +2903,7 @@
     activateAnalysisAnimations(app);
     mountQuestionReviewLoader();
 
-    if (!prefetchedSummary && store.getAttemptAnalysis) {
+    if (!analysis && !prefetchedSummary && store.getAttemptAnalysis) {
       store.getAttemptAnalysis(attempt.id).then(function (summary) {
         if (!summary) return;
         if (summary.analysis) {
