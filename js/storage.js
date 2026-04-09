@@ -238,6 +238,29 @@
     };
   }
 
+  function getQuestionCacheEntry(testId) {
+    var raw = state.db.questionCache && state.db.questionCache[String(testId)];
+    if (!raw) return null;
+    if (Array.isArray(raw)) {
+      return {
+        questions: raw.slice(),
+        updatedAt: null,
+      };
+    }
+    return {
+      questions: Array.isArray(raw.questions) ? raw.questions.slice() : [],
+      updatedAt: raw.updatedAt || null,
+    };
+  }
+
+  function setQuestionCacheEntry(testId, questions, updatedAt) {
+    state.db.questionCache = state.db.questionCache || {};
+    state.db.questionCache[String(testId)] = {
+      questions: clone(questions || []),
+      updatedAt: updatedAt || null,
+    };
+  }
+
   function mergeTestData(existing, incoming) {
     if (!existing) return incoming;
 
@@ -326,6 +349,28 @@
     });
     state.db.questions = [];
     state.db.questionCache = state.db.questionCache || {};
+    var nextTestsById = (state.db.tests || []).reduce(function (acc, test) {
+      if (test && test.id) {
+        acc[test.id] = test;
+      }
+      return acc;
+    }, {});
+
+    Object.keys(state.db.questionCache).forEach(function (testId) {
+      var test = nextTestsById[testId];
+      var cacheEntry = getQuestionCacheEntry(testId);
+      if (!test || !cacheEntry) {
+        delete state.db.questionCache[testId];
+        return;
+      }
+      if (test.updatedAt && cacheEntry.updatedAt && String(test.updatedAt) !== String(cacheEntry.updatedAt)) {
+        delete state.db.questionCache[testId];
+        return;
+      }
+      if (Number(test.questionCount || 0) && cacheEntry.questions.length !== Number(test.questionCount || 0)) {
+        delete state.db.questionCache[testId];
+      }
+    });
     var existingSubmittedById = (state.db.attempts || []).reduce(function (acc, attempt) {
       if (attempt && attempt.id) {
         acc[attempt.id] = attempt;
@@ -429,7 +474,8 @@
     var test = (state.db.tests || []).find(function (t) { return t.id === testId; }) || null;
     if (!test) return [];
     var questionIds = Array.isArray(test.questionIds) ? test.questionIds : [];
-    var cachedQuestions = state.db.questionCache && state.db.questionCache[testId];
+    var cacheEntry = getQuestionCacheEntry(testId);
+    var cachedQuestions = cacheEntry && Array.isArray(cacheEntry.questions) ? cacheEntry.questions : [];
     if (Array.isArray(cachedQuestions) && cachedQuestions.length) {
       if (!questionIds.length) {
         return cachedQuestions.map(clone);
@@ -481,8 +527,8 @@
   async function getTestQuestionsFromRemote(testId) {
     var payload = await api("/api/tests/" + encodeURIComponent(String(testId || "")) + "/questions", { method: "GET" });
     var questions = payload && payload.questions ? payload.questions : [];
-    state.db.questionCache = state.db.questionCache || {};
-    state.db.questionCache[String(testId)] = clone(questions);
+    var currentTest = getTestById(testId);
+    setQuestionCacheEntry(testId, questions, currentTest && currentTest.updatedAt ? currentTest.updatedAt : null);
     state.db.tests = (state.db.tests || []).map(function (test) {
       if (!test || test.id !== String(testId)) {
         return test;
@@ -812,6 +858,25 @@
       attempt.result.analysis = summary.analysis || attempt.result.analysis || null;
       attempt.result.totalTime = summary.totalTime;
       attempt.result.unattemptedCount = summary.unattemptedCount;
+      if (summary.sectionWise) {
+        attempt.result.sectionScores = {
+          SUPR: {
+            score: Number(summary.sectionWise.SUPR && summary.sectionWise.SUPR.score || 0),
+            correct: Number(summary.sectionWise.SUPR && summary.sectionWise.SUPR.correct || 0),
+            wrong: Number(summary.sectionWise.SUPR && summary.sectionWise.SUPR.wrong || 0),
+            skipped: Number(summary.sectionWise.SUPR && summary.sectionWise.SUPR.skipped || 0),
+          },
+          REAP: {
+            score: Number(summary.sectionWise.REAP && summary.sectionWise.REAP.score || 0),
+            correct: Number(summary.sectionWise.REAP && summary.sectionWise.REAP.correct || 0),
+            wrong: Number(summary.sectionWise.REAP && summary.sectionWise.REAP.wrong || 0),
+            skipped: Number(summary.sectionWise.REAP && summary.sectionWise.REAP.skipped || 0),
+          },
+        };
+      }
+      if (attempt.resultSnapshot) {
+        attempt.resultSnapshot.result = clone(attempt.result);
+      }
       saveState();
     }
     return summary;

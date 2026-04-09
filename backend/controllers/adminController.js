@@ -118,6 +118,43 @@ function normalizeQuestionPayload(body) {
   return mapped;
 }
 
+async function recalculateTestsMetadata(testIds) {
+  const uniqueIds = Array.from(new Set((testIds || []).map((id) => String(id || "")).filter(Boolean)));
+  if (!uniqueIds.length) return;
+
+  const tests = await Test.find({ _id: { $in: uniqueIds }, deletedAt: null })
+    .select("_id questionIds")
+    .lean();
+  if (!tests.length) return;
+
+  const allQuestionIds = Array.from(
+    new Set(
+      tests.flatMap((test) => (Array.isArray(test.questionIds) ? test.questionIds.map((id) => String(id)) : []))
+    )
+  );
+
+  const questions = allQuestionIds.length
+    ? await Question.find({ _id: { $in: allQuestionIds }, deletedAt: null })
+        .select("marks")
+        .lean()
+    : [];
+
+  const marksById = questions.reduce((acc, question) => {
+    acc[String(question._id)] = Number.isFinite(Number(question.marks)) ? Number(question.marks) : 0;
+    return acc;
+  }, {});
+
+  await Promise.all(
+    tests.map((test) => {
+      const totalMarks = (test.questionIds || []).reduce((sum, id) => sum + Number(marksById[String(id)] || 0), 0);
+      return Test.updateOne(
+        { _id: test._id, deletedAt: null },
+        { $set: { totalMarks, updatedAt: new Date() } }
+      );
+    })
+  );
+}
+
 async function snapshot(req, res, next) {
   try {
     const [tests, questions, attempts, users] = await Promise.all([
@@ -287,6 +324,7 @@ async function updateQuestion(req, res, next) {
     const input = questionInputSchema.partial().parse(normalizeQuestionPayload(req.body || {}));
     const question = await Question.findById(req.params.id);
     if (!question) return res.status(404).json({ error: "Question not found" });
+    const attachedTests = await Test.find({ questionIds: question._id, deletedAt: null }).select("_id").lean();
 
     let imageUrl = null;
     if (req.file && req.file.buffer) {
@@ -308,6 +346,7 @@ async function updateQuestion(req, res, next) {
       question.imageUrls.push(imageUrl);
     }
     await question.save();
+    await recalculateTestsMetadata(attachedTests.map((test) => test._id));
     invalidateAllTestCaches();
     res.json({ question: question.toJSON() });
   } catch (err) {
@@ -319,9 +358,11 @@ async function deleteQuestion(req, res, next) {
   try {
     const question = await Question.findById(req.params.id);
     if (!question) return res.status(404).json({ error: "Question not found" });
+    const attachedTests = await Test.find({ questionIds: question._id, deletedAt: null }).select("_id").lean();
     question.deletedAt = new Date();
     await question.save();
     await Test.updateMany({ questionIds: question._id }, { $pull: { questionIds: question._id } });
+    await recalculateTestsMetadata(attachedTests.map((test) => test._id));
     invalidateAllTestCaches();
     res.json({ ok: true });
   } catch (err) {
@@ -353,7 +394,12 @@ async function restoreTrashItem(req, res, next) {
     if (!doc) return res.status(404).json({ error: "Not found" });
     doc.deletedAt = null;
     await doc.save();
-    if (kind === "tests" || kind === "questions") invalidateAllTestCaches();
+    if (kind === "tests" || kind === "questions") {
+      if (kind === "tests") {
+        await recalculateTestsMetadata([doc._id]);
+      }
+      invalidateAllTestCaches();
+    }
     res.json({ ok: true });
   } catch (err) {
     next(err);
@@ -366,12 +412,19 @@ async function purgeTrashItem(req, res, next) {
     if (!["tests", "questions", "users"].includes(kind)) {
       return res.status(400).json({ error: "Invalid kind" });
     }
+    let affectedTests = [];
     if (kind === "questions") {
+      affectedTests = await Test.find({ questionIds: id, deletedAt: null }).select("_id").lean();
       await Test.updateMany({ questionIds: id }, { $pull: { questionIds: id } });
     }
     const model = kind === "tests" ? Test : kind === "questions" ? Question : User;
     await model.deleteOne({ _id: id });
-    if (kind === "tests" || kind === "questions") invalidateAllTestCaches();
+    if (kind === "tests" || kind === "questions") {
+      if (kind === "questions" && affectedTests.length) {
+        await recalculateTestsMetadata(affectedTests.map((test) => test._id));
+      }
+      invalidateAllTestCaches();
+    }
     res.json({ ok: true });
   } catch (err) {
     next(err);
@@ -388,6 +441,7 @@ async function attachQuestion(req, res, next) {
     if (test.deletedAt) return res.status(400).json({ error: "Test is in recycle bin" });
     if (question.deletedAt) return res.status(400).json({ error: "Question is in recycle bin" });
     await Test.updateOne({ _id: testId, deletedAt: null }, { $addToSet: { questionIds: question._id } });
+    await recalculateTestsMetadata([testId]);
     invalidateCatalogCache();
     invalidateTestRuntimeCache(testId);
     res.json({ ok: true });
@@ -404,6 +458,7 @@ async function detachQuestion(req, res, next) {
     if (!test) return res.status(404).json({ error: "Test not found" });
     if (test.deletedAt) return res.status(400).json({ error: "Test is in recycle bin" });
     await Test.updateOne({ _id: testId, deletedAt: null }, { $pull: { questionIds: questionId } });
+    await recalculateTestsMetadata([testId]);
     invalidateCatalogCache();
     invalidateTestRuntimeCache(testId);
     res.json({ ok: true });
