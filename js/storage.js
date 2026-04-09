@@ -12,6 +12,7 @@
       },
       tests: [],
       questions: [],
+      questionCache: {},
       attempts: [],
       adminSnapshot: null,
     },
@@ -58,6 +59,7 @@
       },
       state.db.settings || {}
     );
+    state.db.questionCache = state.db.questionCache || {};
     state.session = Object.assign(state.session, loadJson(SESSION_KEY, {}));
     state.session.token = String(state.session.token || "");
     state.session.user = state.session.user || null;
@@ -250,7 +252,8 @@
     });
 
     state.db.tests = testsPayload.tests || [];
-    state.db.questions = testsPayload.questions || [];
+    state.db.questions = [];
+    state.db.questionCache = state.db.questionCache || {};
     state.db.attempts = inProgress.concat((attemptsPayload.attempts || []).map(function (remote) {
       return mapRemoteAttempt(remote, userId);
     }));
@@ -264,6 +267,7 @@
     state.db.adminSnapshot = snapshot;
     state.db.tests = snapshot.tests || [];
     state.db.questions = snapshot.questions || [];
+    state.db.questionCache = {};
 
     // Keep local in-progress attempts for admin too (rare but ok).
     var userId = state.session.user && state.session.user.id;
@@ -345,6 +349,14 @@
     var test = (state.db.tests || []).find(function (t) { return t.id === testId; }) || null;
     if (!test) return [];
     var questionIds = Array.isArray(test.questionIds) ? test.questionIds : [];
+    var cachedQuestions = state.db.questionCache && state.db.questionCache[testId];
+    if (Array.isArray(cachedQuestions) && cachedQuestions.length) {
+      var cachedMap = cachedQuestions.reduce(function (acc, q) {
+        acc[q.id] = q;
+        return acc;
+      }, {});
+      return questionIds.map(function (id) { return cachedMap[id]; }).filter(Boolean).map(clone);
+    }
     var questionMap = (state.db.questions || []).reduce(function (acc, q) {
       acc[q.id] = q;
       return acc;
@@ -384,6 +396,23 @@
     state.db.attempts = attempts;
     saveState();
     return clone(mapped);
+  }
+
+  async function getTestQuestionsFromRemote(testId) {
+    var payload = await api("/api/tests/" + encodeURIComponent(String(testId || "")) + "/questions", { method: "GET" });
+    var questions = payload && payload.questions ? payload.questions : [];
+    state.db.questionCache = state.db.questionCache || {};
+    state.db.questionCache[String(testId)] = clone(questions);
+    saveState();
+    return clone(questions);
+  }
+
+  async function ensureTestQuestionsLoaded(testId) {
+    var existing = getQuestionsForTest(testId);
+    if (existing.length) {
+      return existing;
+    }
+    return getTestQuestionsFromRemote(testId);
   }
 
   function getInProgressAttempt(userId, testId) {
@@ -737,6 +766,7 @@
     getQuestions: getQuestions,
     getTestById: getTestById,
     getQuestionsForTest: getQuestionsForTest,
+    ensureTestQuestionsLoaded: ensureTestQuestionsLoaded,
     listUserAttempts: listUserAttempts,
     getAttemptById: getAttemptById,
     getAttemptResult: getAttemptResult,

@@ -4,6 +4,7 @@ const Test = require("../models/Test");
 const { paidSheetService } = require("../services/paidSheetService");
 const {
   getCatalogPayload,
+  getPublicQuestionsForTest,
   invalidateCatalogCache,
   invalidateTestRuntimeCache,
 } = require("../services/testDataService");
@@ -58,6 +59,27 @@ async function getTestById(req, res, next) {
         createdAt: test.createdAt,
       },
     });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function getTestQuestions(req, res, next) {
+  try {
+    const test = await Test.findOne({ _id: req.params.id, deletedAt: null })
+      .select("isFree status")
+      .lean();
+    if (!test || test.status !== "live") return res.status(404).json({ error: "Test not found" });
+    if (!test.isFree && req.auth.role !== "admin" && !canAccessPaid(req)) {
+      return res.status(402).json({ error: "Buy Test Series" });
+    }
+
+    const questions = await getPublicQuestionsForTest(req.params.id);
+    if (!questions) {
+      return res.status(404).json({ error: "Test not found" });
+    }
+
+    res.json({ questions });
   } catch (err) {
     next(err);
   }
@@ -149,4 +171,4 @@ async function deleteTest(req, res, next) {
   }
 }
 
-module.exports = { listTests, getTestById, createTest, updateTest, deleteTest };
+module.exports = { listTests, getTestById, getTestQuestions, createTest, updateTest, deleteTest };

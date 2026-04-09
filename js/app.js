@@ -1757,8 +1757,21 @@
   }
 
   function renderInstructions(user, testId) {
+    var initialQuestions = store.getQuestionsForTest(testId);
+    if (!auth.isAdmin(user) && store.ensureTestQuestionsLoaded && !initialQuestions.length) {
+      renderLoadingScreen("Loading test paper.");
+      Promise.resolve(store.ensureTestQuestionsLoaded(testId))
+        .then(function () {
+          renderInstructions(user, testId);
+        })
+        .catch(function (error) {
+          window.alert(error && error.message ? error.message : "Could not load this test.");
+          navigate("dashboard");
+        });
+      return;
+    }
     var test = store.getTestById(testId);
-    var questions = store.getQuestionsForTest(testId);
+    var questions = initialQuestions.length ? initialQuestions : store.getQuestionsForTest(testId);
     var canLaunchTest = questions.length > 0;
     var grouped = questions.reduce(function (accumulator, question) {
       accumulator[question.section] = accumulator[question.section] || [];
@@ -1896,8 +1909,22 @@
       return;
     }
 
+    var initialQuestions = store.getQuestionsForTest(attempt.testId);
+    if (!auth.isAdmin(user) && store.ensureTestQuestionsLoaded && !initialQuestions.length) {
+      renderLoadingScreen("Loading your question paper.");
+      Promise.resolve(store.ensureTestQuestionsLoaded(attempt.testId))
+        .then(function () {
+          renderTest(user, attemptId);
+        })
+        .catch(function (error) {
+          window.alert(error && error.message ? error.message : "Could not load this test.");
+          navigate("dashboard");
+        });
+      return;
+    }
+
     var test = store.getTestById(attempt.testId);
-    var questions = store.getQuestionsForTest(attempt.testId);
+    var questions = initialQuestions.length ? initialQuestions : store.getQuestionsForTest(attempt.testId);
     var suprQuestions = getSectionQuestions(questions, "SUPR");
     var reapQuestions = getSectionQuestions(questions, "REAP");
 
@@ -2371,19 +2398,19 @@
     }, 1000);
   }
 
-  function renderResults(user, attemptId, skipRefresh) {
+  function renderResults(user, attemptId, skipRefresh, prefetchedAttempt) {
     if (!skipRefresh && store.getAttemptResult) {
       renderLoadingScreen("Loading your latest evaluated result.");
       Promise.resolve(store.getAttemptResult(attemptId))
-        .then(function () {
-          renderResults(user, attemptId, true);
+        .then(function (freshAttempt) {
+          renderResults(user, attemptId, true, freshAttempt || null);
         })
         .catch(function () {
           renderResults(user, attemptId, true);
         });
       return;
     }
-    var attempt = store.getAttemptById(attemptId);
+    var attempt = prefetchedAttempt || store.getAttemptById(attemptId);
     if (!attempt || attempt.status !== "submitted" || !attempt.result) {
       navigate("dashboard");
       return;

@@ -70,26 +70,39 @@ async function getCatalogPayload({ paidOk, isAdmin }) {
     .sort({ displayOrder: 1, createdAt: 1 })
     .lean();
 
-  const allowedQuestionIds = Array.from(
-    new Set(
-      tests
-        .filter((test) => Boolean(test.isFree) || paidOk || isAdmin)
-        .flatMap((test) => (test.questionIds || []).map((id) => String(id)))
-    )
-  );
+  const payload = {
+    tests: tests.map((test) => mapPublicTest(test, paidOk, isAdmin)),
+    questions: [],
+  };
 
-  const questions = allowedQuestionIds.length
-    ? await Question.find({ _id: { $in: allowedQuestionIds }, deletedAt: null })
+  return cache.set(cacheKey, payload, TEST_LIST_TTL_MS);
+}
+
+async function getPublicQuestionsForTest(testId) {
+  const cacheKey = `public-questions:${String(testId)}`;
+  const cached = cache.get(cacheKey);
+  if (cached) return cached;
+
+  const test = await Test.findOne({ _id: testId, deletedAt: null })
+    .select("questionIds")
+    .lean();
+
+  if (!test) return null;
+
+  const questionIds = Array.isArray(test.questionIds) ? test.questionIds.map((id) => String(id)) : [];
+  const questions = questionIds.length
+    ? await Question.find({ _id: { $in: questionIds }, deletedAt: null })
         .select(QUESTION_PUBLIC_FIELDS)
         .lean()
     : [];
 
-  const payload = {
-    tests: tests.map((test) => mapPublicTest(test, paidOk, isAdmin)),
-    questions: questions.map(mapPublicQuestion),
-  };
+  const questionMap = questions.reduce((acc, question) => {
+    acc[String(question._id)] = mapPublicQuestion(question);
+    return acc;
+  }, {});
 
-  return cache.set(cacheKey, payload, TEST_LIST_TTL_MS);
+  const ordered = questionIds.map((id) => questionMap[id]).filter(Boolean);
+  return cache.set(cacheKey, ordered, TEST_RUNTIME_TTL_MS);
 }
 
 async function getTestRuntimeSnapshot(testId) {
@@ -138,15 +151,18 @@ function invalidateCatalogCache() {
 
 function invalidateTestRuntimeCache(testId) {
   cache.delete(`runtime:${String(testId)}`);
+  cache.delete(`public-questions:${String(testId)}`);
 }
 
 function invalidateAllTestCaches() {
   cache.deleteByPrefix("catalog:");
   cache.deleteByPrefix("runtime:");
+  cache.deleteByPrefix("public-questions:");
 }
 
 module.exports = {
   getCatalogPayload,
+  getPublicQuestionsForTest,
   getTestRuntimeSnapshot,
   invalidateCatalogCache,
   invalidateTestRuntimeCache,
