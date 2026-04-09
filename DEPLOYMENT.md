@@ -1,53 +1,87 @@
-# GitHub Deployment
+# Render Deployment (Backend + Frontend Served Together)
 
-## 1. Push to GitHub
+This project serves the existing static frontend from the Express backend, so you deploy only one service.
 
-1. Create a new GitHub repository.
-2. Upload the full `aceiiit-mock-portal` folder contents.
-3. Keep `index.html` in the repo root.
+## 1) Create MongoDB
 
-## 2. Enable GitHub Pages
+- Use MongoDB Atlas (recommended) or a managed MongoDB provider.
+- Copy the connection string to `MONGODB_URI`.
 
-1. Open the repository on GitHub.
-2. Go to `Settings > Pages`.
-3. Under `Build and deployment`, choose:
-   - `Source`: `Deploy from a branch`
-   - `Branch`: `main` and `/ (root)`
-4. Save.
+## 2) Create Render Web Service
 
-GitHub will publish the site at:
+- **Environment**: Node
+- **Root Directory**: `ugee-mock-platform/backend`
+- **Build Command**: `npm ci` (or `npm install`)
+- **Start Command**: `node server.js`
 
-- `https://<your-username>.github.io/<repo-name>/`
+## 3) Set environment variables (Render dashboard)
 
-## 3. Firebase
+Required:
 
-In the portal admin, save:
+- `MONGODB_URI`
+- `JWT_SECRET`
+- `JWT_EXPIRES_IN` (example: `7d`)
+- `ADMIN_EMAILS` (comma-separated)
+- `REQUEST_TIMEOUT_MS` (recommended: `15000`)
+- `SERVER_REQUEST_TIMEOUT_MS` (recommended: `15000`)
+- `KEEP_ALIVE_TIMEOUT_MS` (recommended: `65000`)
+- `HEADERS_TIMEOUT_MS` (recommended: `66000`)
+- `MONGO_MAX_POOL_SIZE` (recommended: `25`)
+- `MONGO_MIN_POOL_SIZE` (recommended: `3`)
+- `MONGO_SERVER_SELECTION_TIMEOUT_MS` (recommended: `5000`)
+- `MONGO_SOCKET_TIMEOUT_MS` (recommended: `15000`)
+- `MONGO_CONNECT_TIMEOUT_MS` (recommended: `5000`)
+- `DB_RETRY_DELAY_MS` (recommended: `5000`)
+- `ATTEMPT_QUEUE_CONCURRENCY` (recommended: `8`)
+- `ATTEMPT_QUEUE_MAX_SIZE` (recommended: `180`)
+- `ATTEMPT_QUEUE_MAX_WAIT_MS` (recommended: `20000`)
+- `UPLOAD_REQUEST_TIMEOUT_MS` (recommended: `45000`)
 
-- API key
-- App ID
-- Project ID
-- Storage bucket
+Email OTP (Resend recommended):
 
-Then the app will sync Firestore-backed data across devices.
+- `RESEND_API_KEY`
+Note: the sender address is configured in the backend code and must be a verified sender/domain in Resend.
 
-## 4. Firestore Rules
+Google Sheets paid verification:
 
-For this current client-only setup, use the rules in `firestore.rules`.
+- `PAID_SHEETS_API_KEY`
+- `PAID_SHEETS_SHEET_ID`
+- `PAID_SHEETS_RANGE` (example: `Verified!A:A`)
+- `PAID_SHEETS_SYNC_INTERVAL_SECONDS` (example: `300`)
+- `PAID_SHEETS_STARTUP_DELAY_MS` (recommended: `10000`)
 
-Important:
+Optional (only if you split frontend and backend origins):
 
-- these rules are open and not production-secure
-- they are okay only for an early private launch
-- before a larger public launch, the backend should move to a real auth-checked design
+- `CORS_ORIGIN`
 
-## 5. What works after deployment
+Cloudinary (question images):
 
-- student login and signup
-- admin builder mode
-- tests, questions, attempts, leaderboard, analytics
-- Firestore sync across devices
-- image fallback through Firestore-safe compressed images
+- `CLOUDINARY_URL` (recommended)
+  - `cloudinary://<api_key>:<api_secret>@<cloud_name>`
+  - Or set `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET`
 
-## 6. Important limitation
+## 4) Seed (optional)
 
-This Firebase project is not using Cloud Storage on the free plan, so image handling currently uses the app fallback path instead of Firebase Storage.
+Locally:
+
+- `cd backend`
+- `npm run seed`
+
+Or create a one-off job on your machine against the production `MONGODB_URI`.
+
+## 5) Verify
+
+- Open your Render URL.
+- Login via OTP.
+- Confirm `UGEE 2026` mocks appear on the dashboard.
+- Submit a test and open the result screen.
+- Open `/health` and confirm it returns a small JSON payload quickly.
+- Open `/api/health` and confirm it returns immediately even while the service is still waking up.
+- If you use UptimeRobot or another external pinger, point it to `/health` with a `10` minute interval.
+
+## 6) Scaling notes (300+ concurrent users)
+
+- Prefer a paid Render instance with more CPU/RAM for stable concurrency.
+- Use a MongoDB cluster tier appropriate for write bursts during submissions.
+- Keep the Google Sheet public-read (API key mode) or switch to service-account auth if you need private sheets.
+- The submission route is smoothed by an in-memory FIFO queue. Start with `ATTEMPT_QUEUE_CONCURRENCY=8` and `ATTEMPT_QUEUE_MAX_SIZE=180` on a single instance, then tune upward only after load testing.

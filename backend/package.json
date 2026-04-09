@@ -1,0 +1,31 @@
+{
+  "name": "ugee-mock-platform-backend",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
+  "main": "server.js",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "dev": "node server.js",
+    "start": "node server.js",
+    "seed": "node scripts/seed-ugee-2026.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cloudinary": "^2.7.0",
+    "compression": "^1.8.1",
+    "cors": "^2.8.5",
+    "dotenv": "^16.6.1",
+    "express": "^4.21.2",
+    "express-rate-limit": "^7.5.0",
+    "helmet": "^7.2.0",
+    "jsonwebtoken": "^9.0.2",
+    "multer": "^2.0.2",
+    "mongoose": "^8.18.0",
+    "morgan": "^1.10.0",
+    "resend": "^4.8.0",
+    "zod": "^3.25.76"
+  }
+}

@@ -1,120 +1,84 @@
-# AceIIIT Mock Portal
+# UGEE Mock Test Series Platform (No Firebase)
 
-AceIIIT Mock Portal is a polished browser-based UGEE-style mock test system.
+This is a production-oriented UGEE mock test series platform built on the existing AceIIIT exam UI (theme/layout preserved) with a new backend.
 
-It includes:
+## Highlights
 
-- student sign up and login with password-based access
-- admin login and builder mode
-- UGEE-style instructions page and sectional exam interface
-- locked SUPR to REAP flow with automatic section switching and auto submit
-- on-screen calculator, analytics, reports, and solutions
-- question authoring with custom marks, penalties, local image upload, and reference images
-- live or draft test control for student visibility
-- user, login, and attempt tracking in the admin view
-- Firestore sync for users, tests, questions, attempts, settings, deleted items, and login events
-- JSON export and import for full backup or transfer
+- Frontend: existing HTML/CSS/JS theme + exam UX preserved (palette, navigation, timer, answer states)
+- Backend: Node.js + Express + MongoDB (Mongoose)
+- Auth: email OTP login (Resend) + JWT sessions
+- Access model: free + paid tests (paid is verified via Google Sheets)
+- Evaluation: server-side only (correct answers are never sent to students)
+- Analytics: score, accuracy, rank, percentile, section breakdown
 
-## Run
+## Local setup
 
-1. Open `aceiiit-mock-portal/index.html` in a browser.
-2. Sign up as a student using the access code issued by AceIIIT.
-3. Log in as admin with:
-   - email: `aceiiit.official@gmail.com`
-   - password: `umnamotherboard`
+### 1) Backend
 
-## What is stored locally
+From the project root:
 
-The portal keeps a local browser copy for speed and offline-safe backup:
+1. `cd backend`
+2. `npm install`
+3. Copy `backend/.env.example` to `backend/.env` and fill values.
+4. (Optional) Seed UGEE 2026 series: `npm run seed`
+5. Start server: `npm start`
 
-- users
-- question bank
-- tests
-- attempts
-- reports
-- deleted questions
-- deleted tests
+Open: `http://localhost:4000`
 
-## What is stored in backend
+### 2) OTP email (Resend)
 
-When Firebase config is saved in admin, Firestore also stores:
+Configure these in `backend/.env`:
 
-- `users`
-- `tests`
-- `questions`
-- `attempts`
-- `loginEvents`
-- `deletedQuestions`
-- `deletedTests`
-- `portal_meta/settings`
-- `portal_meta/backupMeta`
+- `RESEND_API_KEY`
 
-## Builder workflow
+Note: the sender address is configured in the backend code and must be a verified sender/domain in Resend.
 
-1. Log in with the admin account.
-2. Open Builder Mode from the dashboard.
-3. Create a test first with its title, durations, instructions, and benchmark scores.
-4. Mark the test live when you want students to see it on their dashboard.
-5. Add questions directly into the selected test, or attach existing bank questions.
-6. Use local image upload in the question form. In the current setup, images are compressed into a Firestore-safe fallback path so they remain available across devices even without Firebase Storage.
-7. Export the full dataset JSON whenever you want a backup.
-8. Use the PDF button on a test to print or save the question-answer set.
+### 3) Admin access
 
-## Firebase
+Set admin emails (comma-separated) in `backend/.env`:
 
-1. Create a Firebase project.
-2. Enable Firestore Database.
-3. In Firestore, keep these collections available:
-   - `portal_meta`
-   - `users`
-   - `tests`
-   - `questions`
-   - `attempts`
-   - `loginEvents`
-   - `deletedQuestions`
-   - `deletedTests`
-5. In the admin panel, paste:
-   - API key
-   - App ID
-   - Project ID
-   - Storage bucket
-6. Save the config.
-7. After that:
-   - users, tests, questions, attempts, settings, deleted items, and login logs sync to Firestore
-   - question images use the current compressed fallback path
-   - students on different devices can see the same live tests and attempt data
+- `ADMIN_EMAILS=admin1@example.com,admin2@example.com`
 
-## GitHub Pages deployment
+Admins get the builder UI at `#/admin` after OTP login.
 
-This project is ready for GitHub Pages:
+### 4) Paid verification (Google Sheets)
 
-1. push all files to a GitHub repository
-2. keep `index.html` in the repo root
-3. go to `Settings > Pages`
-4. choose `Deploy from a branch`
-5. select `main` and `/ (root)`
-6. wait for the GitHub Pages URL
+The backend periodically syncs a public Google Sheet column of verified emails (lowercased).
 
-The included `.nojekyll` file helps GitHub Pages serve the project as a plain static site.
+Configure in `backend/.env`:
 
-See `DEPLOYMENT.md` for the exact checklist.
+- `PAID_SHEETS_API_KEY`
+- `PAID_SHEETS_SHEET_ID`
+- `PAID_SHEETS_RANGE` (example: `Verified!A:A`)
 
-## Recommended first-launch backend for 50-70 students
+After an email becomes verified, the user should log out and log in again to refresh `isPaid` in their JWT.
 
-This portal currently works around this free-first setup:
+## API (high level)
 
-- Cloud Firestore for shared app data
-- compressed Firestore-safe image fallback for question images
-- local browser cache as a fallback and performance layer
+- `POST /api/auth/send-otp`
+- `POST /api/auth/verify-otp`
+- `GET /api/tests`
+- `GET /api/tests/:id`
+- `POST /api/attempt`
+- `GET /api/result/:id`
+- `GET /api/attempts`
+- Admin:
+  - `GET /api/admin/snapshot`
+  - `GET /api/admin/results`
+  - `GET /api/admin/leaderboard?testId=...`
+  - `GET /api/admin/test/:id/analytics`
+  - `POST /api/admin/questions`
+  - `PUT /api/admin/questions/:id`
+  - `DELETE /api/admin/questions/:id`
+  - `POST /api/admin/attach`
+  - `POST /api/admin/detach`
 
-That is workable for your first batch size, but the current open Firestore rules are not secure for a large public launch.
+## Deployment
 
-## Rules
+See `DEPLOYMENT.md` for Render deployment steps.
 
-The repo includes `firestore.rules` with the same open starter rules you used in Firebase Console.
+Notes:
 
-Important:
-
-- these rules are only for early private usage
-- they are not safe for a broad public deployment
-- a stronger backend/auth design should be added before scaling publicly
+- Authenticated access only
+- Role-based writes for admin-only APIs
+- Attempts/results are user-scoped (plus admin access)
