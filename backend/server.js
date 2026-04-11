@@ -68,6 +68,7 @@ function healthHandler(_req, res) {
 
 app.get("/health", healthHandler);
 app.get("/api/health", healthHandler);
+app.use("/api/upload-image", require("./routes/uploadRoutes"));
 
 app.use("/api", requireDbReady);
 app.use("/api/auth", require("./routes/authRoutes"));

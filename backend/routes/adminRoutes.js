@@ -15,8 +15,11 @@ function extendUploadTimeout(timeoutMs) {
   };
 }
 
-function maybeUploadSingle(field) {
-  const handler = upload.single(field);
+function maybeUploadQuestionImages() {
+  const handler = upload.fields([
+    { name: "image", maxCount: 1 },
+    { name: "images", maxCount: 8 },
+  ]);
   return function (req, res, next) {
     if (req.is("multipart/form-data")) {
       return handler(req, res, next);
@@ -34,8 +37,8 @@ router.get("/test/:id/analytics", requireAuth, requireAdmin, admin.testAnalytics
 
 router.delete("/users/:id", requireAuth, requireAdmin, admin.deleteUser);
 
-router.post("/questions", requireAuth, requireAdmin, extendUploadTimeout(process.env.UPLOAD_REQUEST_TIMEOUT_MS || 45000), maybeUploadSingle("image"), admin.createQuestion);
-router.put("/questions/:id", requireAuth, requireAdmin, extendUploadTimeout(process.env.UPLOAD_REQUEST_TIMEOUT_MS || 45000), maybeUploadSingle("image"), admin.updateQuestion);
+router.post("/questions", requireAuth, requireAdmin, extendUploadTimeout(process.env.UPLOAD_REQUEST_TIMEOUT_MS || 45000), maybeUploadQuestionImages(), admin.createQuestion);
+router.put("/questions/:id", requireAuth, requireAdmin, extendUploadTimeout(process.env.UPLOAD_REQUEST_TIMEOUT_MS || 45000), maybeUploadQuestionImages(), admin.updateQuestion);
 router.delete("/questions/:id", requireAuth, requireAdmin, admin.deleteQuestion);
 
 router.post("/trash/:kind/:id/restore", requireAuth, requireAdmin, admin.restoreTrashItem);

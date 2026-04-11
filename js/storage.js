@@ -746,6 +746,38 @@
     return data.test || null;
   }
 
+  function normalizeQuestionUploadFiles(value) {
+    if (!value) return [];
+    if (Array.isArray(value)) {
+      return value.filter(Boolean);
+    }
+    return [value].filter(Boolean);
+  }
+
+  function appendQuestionUploadFiles(form, value) {
+    var files = normalizeQuestionUploadFiles(value);
+    files.forEach(function (file) {
+      form.append(files.length === 1 ? "image" : "images", file);
+    });
+  }
+
+  async function uploadQuestionImages(value) {
+    var files = normalizeQuestionUploadFiles(value);
+    if (!files.length) {
+      return [];
+    }
+    var form = new FormData();
+    appendQuestionUploadFiles(form, files);
+    var data = await apiForm("/api/upload-image", "POST", form);
+    if (Array.isArray(data && data.urls)) {
+      return data.urls.slice();
+    }
+    if (data && data.url) {
+      return [String(data.url)];
+    }
+    return [];
+  }
+
   async function updateTest(testId, input) {
     var existing = getTestById(testId);
     var mapped = mapAdminTestPayload(input, existing);
@@ -778,7 +810,7 @@
 
   async function createQuestion(input) {
     var testId = input && input.testId ? String(input.testId) : "";
-    var file = arguments.length > 1 ? arguments[1] : null;
+    var files = arguments.length > 1 ? arguments[1] : null;
     var mapped = mapAdminQuestionPayload(input);
     var form = new FormData();
     Object.keys(mapped).forEach(function (key) {
@@ -789,9 +821,7 @@
         form.append(key, String(mapped[key]));
       }
     });
-    if (file) {
-      form.append("image", file);
-    }
+    appendQuestionUploadFiles(form, files);
     var data = await apiForm("/api/admin/questions", "POST", form);
     if (testId && data && data.question && data.question.id) {
       await api("/api/admin/attach", { method: "POST", body: JSON.stringify({ testId: testId, questionId: data.question.id }) });
@@ -802,7 +832,7 @@
 
   async function updateQuestion(questionId, input) {
     var testId = input && input.testId ? String(input.testId) : "";
-    var file = arguments.length > 2 ? arguments[2] : null;
+    var files = arguments.length > 2 ? arguments[2] : null;
     var hasFields = false;
     if (input && typeof input === "object") {
       ["section", "topic", "difficulty", "prompt", "passage", "imageUrls", "options", "correctOption", "explanation", "marks", "negativeMarks"].forEach(function (key) {
@@ -821,9 +851,7 @@
         form.append(key, String(mapped[key]));
       }
     });
-    if (file) {
-      form.append("image", file);
-    }
+    appendQuestionUploadFiles(form, files);
     var data = await apiForm("/api/admin/questions/" + encodeURIComponent(questionId), "PUT", form);
     if (testId) {
       await api("/api/admin/attach", { method: "POST", body: JSON.stringify({ testId: testId, questionId: questionId }) });
@@ -1011,6 +1039,7 @@
     deleteUser: deleteUser,
     getAdminLeaderboard: getAdminLeaderboard,
     getAdminTestAnalytics: getAdminTestAnalytics,
+    uploadQuestionImages: uploadQuestionImages,
     getAttemptAnalysis: getAttemptAnalysis,
     getAttemptQuestionReview: getAttemptQuestionReview,
     exportData: exportData,

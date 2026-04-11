@@ -118,6 +118,47 @@ function normalizeQuestionPayload(body) {
   return mapped;
 }
 
+function extractUploadedQuestionFiles(req) {
+  const files = [];
+  if (req && req.file && req.file.buffer) {
+    files.push(req.file);
+  }
+  if (req && req.files) {
+    if (Array.isArray(req.files)) {
+      req.files.forEach((file) => {
+        if (file && file.buffer) files.push(file);
+      });
+    } else {
+      ["image", "images"].forEach((fieldName) => {
+        const fieldFiles = req.files[fieldName];
+        if (Array.isArray(fieldFiles)) {
+          fieldFiles.forEach((file) => {
+            if (file && file.buffer) files.push(file);
+          });
+        }
+      });
+    }
+  }
+  return files;
+}
+
+async function uploadQuestionImages(req) {
+  const files = extractUploadedQuestionFiles(req);
+  if (!files.length) return [];
+
+  const uploadedUrls = [];
+  for (const file of files) {
+    const uploaded = await uploadBufferToCloudinary(file.buffer, {
+      folder: "ugee-questions",
+      resource_type: "image",
+    });
+    if (uploaded && uploaded.secure_url) {
+      uploadedUrls.push(uploaded.secure_url);
+    }
+  }
+  return uploadedUrls;
+}
+
 async function recalculateTestsMetadata(testIds) {
   const uniqueIds = Array.from(new Set((testIds || []).map((id) => String(id || "")).filter(Boolean)));
   if (!uniqueIds.length) return;
@@ -286,18 +327,8 @@ async function trash(req, res, next) {
 async function createQuestion(req, res, next) {
   try {
     const input = questionInputSchema.parse(normalizeQuestionPayload(req.body || {}));
-
-    let imageUrl = null;
-    if (req.file && req.file.buffer) {
-      const uploaded = await uploadBufferToCloudinary(req.file.buffer, {
-        folder: "ugee-questions",
-        resource_type: "image",
-      });
-      imageUrl = uploaded && uploaded.secure_url ? uploaded.secure_url : null;
-    }
-
-    const imageUrls = (input.imageUrls || []).slice();
-    if (imageUrl) imageUrls.push(imageUrl);
+    const uploadedImageUrls = await uploadQuestionImages(req);
+    const imageUrls = (input.imageUrls || []).slice().concat(uploadedImageUrls);
 
     const question = await Question.create({
       section: input.section,
@@ -325,15 +356,7 @@ async function updateQuestion(req, res, next) {
     const question = await Question.findById(req.params.id);
     if (!question) return res.status(404).json({ error: "Question not found" });
     const attachedTests = await Test.find({ questionIds: question._id, deletedAt: null }).select("_id").lean();
-
-    let imageUrl = null;
-    if (req.file && req.file.buffer) {
-      const uploaded = await uploadBufferToCloudinary(req.file.buffer, {
-        folder: "ugee-questions",
-        resource_type: "image",
-      });
-      imageUrl = uploaded && uploaded.secure_url ? uploaded.secure_url : null;
-    }
+    const uploadedImageUrls = await uploadQuestionImages(req);
 
     for (const key of Object.keys(input)) {
       question[key] = input[key];
@@ -341,9 +364,9 @@ async function updateQuestion(req, res, next) {
     if (input.imageUrls) {
       question.imageUrls = input.imageUrls;
     }
-    if (imageUrl) {
+    if (uploadedImageUrls.length) {
       question.imageUrls = Array.isArray(question.imageUrls) ? question.imageUrls : [];
-      question.imageUrls.push(imageUrl);
+      question.imageUrls = question.imageUrls.concat(uploadedImageUrls);
     }
     await question.save();
     await recalculateTestsMetadata(attachedTests.map((test) => test._id));

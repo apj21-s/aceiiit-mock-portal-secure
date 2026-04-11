@@ -23,6 +23,8 @@
     pendingQuestionFileNames: [],
     pendingQuestionFilePreviews: [],
     pendingQuestionFiles: [],
+    pendingUploadedQuestionImageUrls: [],
+    questionUploadContext: "",
     submittingAttemptId: null,
     adminLatexPreviewVisible: false,
     keepAliveTimerId: null,
@@ -648,7 +650,30 @@
           }).join("")
         : "";
     }
+    var uploadButton = document.getElementById("upload-question-images");
+    if (uploadButton) {
+      uploadButton.disabled = !runtime.pendingQuestionFiles.length;
+    }
 
+  }
+
+  function resetPendingQuestionUploads() {
+    runtime.pendingQuestionFileNames = [];
+    runtime.pendingQuestionFiles = [];
+    runtime.pendingUploadedQuestionImageUrls = [];
+    runtime.questionUploadContext = "";
+    runtime.pendingQuestionFilePreviews.forEach(function (url) {
+      try { URL.revokeObjectURL(url); } catch (_err) {}
+    });
+    runtime.pendingQuestionFilePreviews = [];
+  }
+
+  function dedupeUrls(values) {
+    return (values || []).map(function (value) {
+      return String(value || "").trim();
+    }).filter(Boolean).filter(function (value, index, items) {
+      return items.indexOf(value) === index;
+    });
   }
 
   function isGoogleDriveImageLink(value) {
@@ -2948,6 +2973,7 @@
     var editingQuestion = runtime.adminEditingQuestionId
       ? questions.find(function (question) { return question.id === runtime.adminEditingQuestionId; }) || null
       : null;
+    var pendingUploadedImageUrls = dedupeUrls(runtime.pendingUploadedQuestionImageUrls || []);
     runtime.adminSelectedTestId = preferredTestId || runtime.adminSelectedTestId;
     var selectedTestId = tests.some(function (test) {
       return test.id === runtime.adminSelectedTestId;
@@ -3078,9 +3104,18 @@
                     '<label for="question-files">Upload local images</label>' +
                     '<input id="question-files" name="questionFiles" type="file" multiple accept="image/*">' +
                     '<div class="helper-text" id="question-files-status">' + escapeHtml(runtime.pendingQuestionFileNames.length ? runtime.pendingQuestionFileNames.join(", ") : "No image selected") + '</div>' +
+                    '<div class="button-row" style="margin-top: 12px;">' +
+                      '<button class="button button-secondary" type="button" id="upload-question-images" ' + (runtime.pendingQuestionFiles.length ? "" : "disabled") + '>Upload selected images</button>' +
+                    '</div>' +
+                    '<div class="helper-text" id="question-uploaded-status" style="margin-top: 10px;">' + escapeHtml(pendingUploadedImageUrls.length ? (pendingUploadedImageUrls.length + " image(s) uploaded to Cloudinary and ready to save") : "Uploaded images will appear here after Cloudinary upload") + '</div>' +
                     '<div id="question-files-preview" class="question-figure-stack" style="margin-top: 12px;">' +
                       (runtime.pendingQuestionFilePreviews.length ? runtime.pendingQuestionFilePreviews.map(function (url, index) {
                         return '<img class="question-figure" src="' + escapeAttribute(url) + '" alt="Selected image ' + (index + 1) + '">';
+                      }).join("") : "") +
+                    '</div>' +
+                    '<div id="question-uploaded-preview" class="question-figure-stack" style="margin-top: 12px;">' +
+                      (pendingUploadedImageUrls.length ? pendingUploadedImageUrls.map(function (url, index) {
+                        return '<button type="button" class="question-figure-button" data-open-image="' + escapeAttribute(url) + '"><img class="question-figure" src="' + escapeAttribute(url) + '" alt="Uploaded image ' + (index + 1) + '"></button>';
                       }).join("") : "") +
                     '</div>' +
                     '<div class="helper-text">Images upload to Cloudinary and are stored as URLs. Keep them under ~2MB each.</div>' +
@@ -3184,6 +3219,13 @@
     var questionForm = document.getElementById("question-form");
     var testDraftContext = runtime.adminEditingTestId ? ("edit:" + runtime.adminEditingTestId) : "create";
     var questionDraftContext = (runtime.adminEditingQuestionId ? ("edit:" + runtime.adminEditingQuestionId) : "create") + "|test:" + (selectedTestId || "");
+
+    if (runtime.questionUploadContext && runtime.questionUploadContext !== questionDraftContext) {
+      resetPendingQuestionUploads();
+    }
+    if (!runtime.questionUploadContext) {
+      runtime.questionUploadContext = questionDraftContext;
+    }
 
     restoreDraft(testForm, ADMIN_TEST_DRAFT_KEY, testDraftContext);
     restoreDraft(questionForm, ADMIN_QUESTION_DRAFT_KEY, questionDraftContext);
@@ -3843,6 +3885,36 @@
         });
         updateQuestionFileStatus(questionFilesInput.files);
       }
+      var uploadQuestionImagesButton = document.getElementById("upload-question-images");
+      if (uploadQuestionImagesButton) {
+        uploadQuestionImagesButton.addEventListener("click", async function () {
+          if (!runtime.pendingQuestionFiles.length) {
+            window.alert("Choose at least one image first.");
+            return;
+          }
+          var originalLabel = uploadQuestionImagesButton.textContent;
+          uploadQuestionImagesButton.disabled = true;
+          uploadQuestionImagesButton.textContent = "Uploading...";
+          try {
+            var preparedFiles = await prepareQuestionUploadFiles(runtime.pendingQuestionFiles);
+            showOverlayLoader("Uploading image to Cloudinary.");
+            var uploadedUrls = await store.uploadQuestionImages(preparedFiles);
+            runtime.pendingUploadedQuestionImageUrls = dedupeUrls((runtime.pendingUploadedQuestionImageUrls || []).concat(uploadedUrls || []));
+            if (questionFilesInput) {
+              questionFilesInput.value = "";
+            }
+            updateQuestionFileStatus([]);
+            hideOverlayLoader();
+            rerenderAdminPreserveScroll(user, selectedTestId);
+          } catch (error) {
+            hideOverlayLoader();
+            window.alert(error && error.message ? error.message : "Image upload failed.");
+          } finally {
+            uploadQuestionImagesButton.disabled = !runtime.pendingQuestionFiles.length;
+            uploadQuestionImagesButton.textContent = originalLabel || "Upload selected images";
+          }
+        });
+      }
       questionForm.addEventListener("submit", async function (event) {
         event.preventDefault();
         var submitButton = event.currentTarget.querySelector('button[type="submit"]');
@@ -3862,6 +3934,7 @@
           var existingNonDriveImages = editingQuestion ? getQuestionImageUrls(editingQuestion).filter(function (url) {
             return !isGoogleDriveImageLink(url);
           }) : [];
+          var uploadedCloudinaryImages = dedupeUrls(runtime.pendingUploadedQuestionImageUrls || []);
           runtime.adminSelectedTestId = activeTestId;
           var payload = {
             testId: activeTestId,
@@ -3870,7 +3943,7 @@
             difficulty: form.get("difficulty"),
             prompt: form.get("prompt"),
             passage: form.get("passage"),
-            imageUrls: existingNonDriveImages.concat(driveImages),
+            imageUrls: dedupeUrls(existingNonDriveImages.concat(uploadedCloudinaryImages, driveImages)),
             options: [form.get("option0"), form.get("option1"), form.get("option2"), form.get("option3")],
             correctOption: form.get("correctOption"),
             explanation: form.get("explanation"),
@@ -3879,23 +3952,11 @@
           };
 
           showOverlayLoader(runtime.adminEditingQuestionId ? "Updating question." : "Creating question.");
-          var firstFile = selectedFiles[0] || null;
           var savedQuestion = runtime.adminEditingQuestionId
-            ? await store.updateQuestion(runtime.adminEditingQuestionId, payload, firstFile)
-            : await store.createQuestion(payload, firstFile);
-
-          var questionId = runtime.adminEditingQuestionId || (savedQuestion && savedQuestion.id);
-          var remaining = selectedFiles.slice(1);
-          for (var i = 0; i < remaining.length; i += 1) {
-            await store.updateQuestion(questionId, {}, remaining[i]);
-          }
-          if (activeTestId && questionId) {
-            await store.attachQuestionToTest(activeTestId, questionId);
-          }
+            ? await store.updateQuestion(runtime.adminEditingQuestionId, payload, selectedFiles)
+            : await store.createQuestion(payload, selectedFiles);
           runtime.adminEditingQuestionId = null;
-          runtime.pendingQuestionFileNames = [];
-          runtime.pendingQuestionFilePreviews = [];
-          runtime.pendingQuestionFiles = [];
+          resetPendingQuestionUploads();
           clearLocalDraft(ADMIN_QUESTION_DRAFT_KEY);
           hideOverlayLoader();
           rerenderAdminPreserveScroll(user, activeTestId);
@@ -3924,6 +3985,7 @@
     if (cancelQuestionEdit) {
       cancelQuestionEdit.addEventListener("click", function () {
         runtime.adminEditingQuestionId = null;
+        resetPendingQuestionUploads();
         clearLocalDraft(ADMIN_QUESTION_DRAFT_KEY);
         rerenderAdminPreserveScroll(user, selectedTestId);
       });
