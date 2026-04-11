@@ -107,8 +107,27 @@ async function computeRankAndPercentile({ testId, attemptNumber, attemptId, scor
   });
 }
 
+function isNonAdminAttempt(attempt) {
+  return String(attempt && attempt.userRole || "student").trim().toLowerCase() !== "admin";
+}
+
+async function computeRankAndPercentileForAttempt(attempt) {
+  if (!attempt || !isNonAdminAttempt(attempt)) {
+    return { rank: 0, percentile: 0 };
+  }
+
+  return computeRankAndPercentile({
+    testId: attempt.testId,
+    attemptNumber: attempt.attemptNumber,
+    attemptId: attempt._id || attempt.id,
+    score: attempt.score,
+    timeTakenSeconds: attempt.timeTakenSeconds,
+    submittedAt: attempt.submittedAt,
+  });
+}
+
 function invalidateRankCache(testId, attemptNumber) {
   rankCache.delete(buildCacheKey(testId, attemptNumber));
 }
 
-module.exports = { computeRankAndPercentile, invalidateRankCache };
+module.exports = { computeRankAndPercentile, computeRankAndPercentileForAttempt, invalidateRankCache };

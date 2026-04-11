@@ -3,7 +3,7 @@ const { z } = require("zod");
 
 const Attempt = require("../models/Attempt");
 const { evaluateAttempt } = require("../services/evaluationService");
-const { computeRankAndPercentile } = require("../services/rankService");
+const { computeRankAndPercentileForAttempt } = require("../services/rankService");
 const { paidSheetService } = require("../services/paidSheetService");
 const { getTestRuntimeSnapshot } = require("../services/testDataService");
 const { buildAttemptAnalysis } = require("../services/attemptAnalysisService");
@@ -76,14 +76,7 @@ async function getResult(req, res, next) {
 
     if (!attempt) return res.status(404).json({ error: "Result not found" });
     if (Number(attempt.rank || 0) === 0 && Number(attempt.percentile || 0) === 0) {
-      computeRankAndPercentile({
-        testId: attempt.testId,
-        attemptNumber: attempt.attemptNumber,
-        attemptId: attempt._id,
-        score: attempt.score,
-        timeTakenSeconds: attempt.timeTakenSeconds,
-        submittedAt: attempt.submittedAt,
-      })
+      computeRankAndPercentileForAttempt(attempt)
         .then((repair) => Attempt.updateOne(
           { _id: attempt._id },
           { $set: { rank: repair.rank, percentile: repair.percentile } }
@@ -194,14 +187,7 @@ async function submitAttempt(req, res, next) {
       return res.status(409).json({ error: "Could not save attempt. Please retry once." });
     }
 
-    const rankPayload = await computeRankAndPercentile({
-      testId,
-      attemptNumber,
-      attemptId: attempt._id,
-      score: attempt.score,
-      timeTakenSeconds: attempt.timeTakenSeconds,
-      submittedAt: attempt.submittedAt,
-    });
+    const rankPayload = await computeRankAndPercentileForAttempt(attempt);
 
     attempt.rank = rankPayload.rank;
     attempt.percentile = rankPayload.percentile;

@@ -638,9 +638,15 @@
         return "";
       }
     }).filter(Boolean);
+    renderQuestionUploadUi();
+  }
+
+  function renderQuestionUploadUi() {
     var status = document.getElementById("question-files-status");
     if (status) {
-      status.textContent = summarizeSelectedFiles(fileList);
+      status.textContent = runtime.pendingQuestionFiles.length
+        ? summarizeSelectedFiles(runtime.pendingQuestionFiles)
+        : "No image selected";
     }
     var preview = document.getElementById("question-files-preview");
     if (preview) {
@@ -650,11 +656,24 @@
           }).join("")
         : "";
     }
+    var uploadedStatus = document.getElementById("question-uploaded-status");
+    if (uploadedStatus) {
+      uploadedStatus.textContent = runtime.pendingUploadedQuestionImageUrls.length
+        ? (runtime.pendingUploadedQuestionImageUrls.length + " image(s) uploaded to Cloudinary and ready to save")
+        : "Uploaded images will appear here after Cloudinary upload";
+    }
+    var uploadedPreview = document.getElementById("question-uploaded-preview");
+    if (uploadedPreview) {
+      uploadedPreview.innerHTML = runtime.pendingUploadedQuestionImageUrls.length
+        ? runtime.pendingUploadedQuestionImageUrls.map(function (url, index) {
+            return '<button type="button" class="question-figure-button" data-open-image="' + escapeAttribute(url) + '"><img class="question-figure" src="' + escapeAttribute(url) + '" alt="Uploaded image ' + (index + 1) + '"></button>';
+          }).join("")
+        : "";
+    }
     var uploadButton = document.getElementById("upload-question-images");
     if (uploadButton) {
       uploadButton.disabled = !runtime.pendingQuestionFiles.length;
     }
-
   }
 
   function resetPendingQuestionUploads() {
@@ -674,6 +693,13 @@
     }).filter(Boolean).filter(function (value, index, items) {
       return items.indexOf(value) === index;
     });
+  }
+
+  function hasPendingQuestionUploadState() {
+    return !!(
+      (runtime.pendingQuestionFiles && runtime.pendingQuestionFiles.length) ||
+      (runtime.pendingUploadedQuestionImageUrls && runtime.pendingUploadedQuestionImageUrls.length)
+    );
   }
 
   function isGoogleDriveImageLink(value) {
@@ -1768,7 +1794,7 @@
       if (document.hidden) {
         return;
       }
-      if (view === "admin" && runtime.pendingQuestionFileNames.length) {
+      if (view === "admin" && hasPendingQuestionUploadState()) {
         return;
       }
       if (view === "dashboard" || view === "admin" || view === "admin-activity" || view === "results" || view === "") {
@@ -3883,8 +3909,8 @@
         questionFilesInput.addEventListener("change", function () {
           updateQuestionFileStatus(questionFilesInput.files);
         });
-        updateQuestionFileStatus(questionFilesInput.files);
       }
+      renderQuestionUploadUi();
       var uploadQuestionImagesButton = document.getElementById("upload-question-images");
       if (uploadQuestionImagesButton) {
         uploadQuestionImagesButton.addEventListener("click", async function () {
@@ -4695,7 +4721,7 @@
     updateKeepAliveState();
     var parts = routeParts();
     var view = parts[0] || "";
-    if (view === "admin" && runtime.pendingQuestionFileNames.length) {
+    if (view === "admin" && hasPendingQuestionUploadState()) {
       return;
     }
     if (view === "dashboard" || view === "admin" || view === "admin-activity" || view === "results" || view === "") {
@@ -4718,7 +4744,7 @@
       if (isExamLikeRoute(view)) {
         return;
       }
-      if (view === "admin" && runtime.pendingQuestionFileNames.length) {
+      if (view === "admin" && hasPendingQuestionUploadState()) {
         return;
       }
       if (view === "dashboard" || view === "admin" || view === "admin-activity" || view === "results" || view === "") {

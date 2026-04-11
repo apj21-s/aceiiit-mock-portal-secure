@@ -207,7 +207,7 @@ async function snapshot(req, res, next) {
         .select("section topic difficulty prompt passage imageUrls options marks negativeMarks correctOption explanation createdAt updatedAt")
         .sort({ createdAt: 1 })
         .lean(),
-      Attempt.find({})
+      Attempt.find(NON_ADMIN_ATTEMPT_FILTER)
         .select("userId testId attemptNumber score accuracy rank percentile submittedAt timeTakenSeconds correctCount wrongCount skippedCount")
         .sort({ submittedAt: -1 })
         .limit(500)
@@ -492,7 +492,7 @@ async function detachQuestion(req, res, next) {
 
 async function results(req, res, next) {
   try {
-    const attempts = await Attempt.find({})
+    const attempts = await Attempt.find(NON_ADMIN_ATTEMPT_FILTER)
       .select("submittedAt score accuracy rank percentile attemptNumber timeTakenSeconds userId testId")
       .sort({ submittedAt: -1 })
       .limit(500)
