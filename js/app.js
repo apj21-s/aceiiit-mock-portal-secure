@@ -1,6 +1,6 @@
 (function () {
   var app = document.getElementById("app");
-  var store = window.AceIIIT.db || window.AceIIIT.__store || window.AceIIIT.store;
+  var store = window.AceIIIT.__store || window.AceIIIT.db || window.AceIIIT.store;
   var auth = window.AceIIIT.auth || window.AceIIIT.__store || window.AceIIIT.store;
   var ui = window.AceIIIT.ui || {};
   var runtime = {
