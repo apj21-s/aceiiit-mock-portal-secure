@@ -63,8 +63,7 @@ async function sendOtp(req, res, next) {
       { upsert: true, new: true }
     );
 
-    // Non-blocking send (fast API response). Any email errors are logged server-side.
-    sendOtpEmail(normalizedEmail, otp).catch(console.error);
+    await sendOtpEmail(normalizedEmail, otp);
     return res.json({ ok: true });
   } catch (err) {
     return next(err);

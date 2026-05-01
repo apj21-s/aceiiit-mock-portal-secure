@@ -3086,7 +3086,7 @@
                 '<div class="metric-card"><strong>' + tests.length + '</strong><span>Tests</span></div>' +
                 '<div class="metric-card"><strong>' + questions.length + '</strong><span>Questions</span></div>' +
                 '<div class="metric-card"><strong>' + tests.reduce(function (sum, test) { return sum + test.questionIds.length; }, 0) + '</strong><span>Attached questions</span></div>' +
-                '<div class="metric-card"><strong>' + (adminSnapshot && adminSnapshot.users ? adminSnapshot.users.length : 0) + '</strong><span>Users</span></div>' +
+                '<div class="metric-card"><strong>' + (adminSnapshot ? Number(adminSnapshot.userCount || (adminSnapshot.users ? adminSnapshot.users.length : 0)) : 0) + '</strong><span>Users</span></div>' +
               '</div>' +
               (selectedTest ? (
                 '<div class="divider"></div>' +
@@ -4258,7 +4258,7 @@
             '<h1>Users, results, leaderboard, analytics</h1>' +
           '</div>' +
           '<div class="metric-grid" style="margin-bottom: 18px;">' +
-            '<div class="metric-card"><strong>' + escapeHtml(String(users.length)) + '</strong><span>Users</span></div>' +
+            '<div class="metric-card"><strong>' + escapeHtml(String(snapshot && snapshot.userCount !== undefined ? snapshot.userCount : users.length)) + '</strong><span>Users</span></div>' +
             '<div class="metric-card"><strong>' + escapeHtml(String(paidCount)) + '</strong><span>Paid</span></div>' +
             '<div class="metric-card"><strong>' + escapeHtml(String(liveCount)) + '</strong><span>Live tests</span></div>' +
             '<div class="metric-card"><strong>' + escapeHtml(String(attemptsCount)) + '</strong><span>Recent attempts</span></div>' +

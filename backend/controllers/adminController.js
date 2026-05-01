@@ -198,7 +198,7 @@ async function recalculateTestsMetadata(testIds) {
 
 async function snapshot(req, res, next) {
   try {
-    const [tests, questions, attempts, users] = await Promise.all([
+    const [tests, questions, attempts, users, userCount] = await Promise.all([
       Test.find({ deletedAt: null })
         .select("title subtitle series type isFree status displayOrder durationMinutes sectionDurations instructions benchmarkScores questionIds createdAt updatedAt")
         .sort({ displayOrder: 1, createdAt: 1 })
@@ -217,6 +217,7 @@ async function snapshot(req, res, next) {
         .sort({ createdAt: -1 })
         .limit(500)
         .lean(),
+      User.countDocuments({ deletedAt: null }),
     ]);
 
     res.json({
@@ -277,6 +278,7 @@ async function snapshot(req, res, next) {
         isPaid: u.isPaid,
         createdAt: u.createdAt,
       })),
+      userCount,
     });
   } catch (err) {
     next(err);
