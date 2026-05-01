@@ -1,6 +1,23 @@
 const { Resend } = require("resend");
 
-const OTP_FROM = process.env.OTP_FROM_EMAIL || "ACE IIIT <otp@aceiiit.in>";
+function resolveFromEmail() {
+  if (process.env.OTP_FROM_EMAIL) {
+    return process.env.OTP_FROM_EMAIL;
+  }
+  if (process.env.RESEND_FROM) {
+    return process.env.RESEND_FROM;
+  }
+
+  const fromEmail = String(process.env.MAIL_FROM_EMAIL || "").trim();
+  const fromName = String(process.env.MAIL_FROM_NAME || "").trim();
+  if (fromEmail) {
+    return fromName ? `${fromName} <${fromEmail}>` : fromEmail;
+  }
+
+  return "ACE IIIT <otp@aceiiit.in>";
+}
+
+const OTP_FROM = resolveFromEmail();
 const OTP_SUBJECT = process.env.OTP_SUBJECT || "ACE IIIT OTP Verification";
 
 let cachedResend = null;
@@ -118,7 +135,11 @@ async function sendOtpEmail(email, otp) {
     console.error("OTP send via Brevo failed.", error);
   }
 
-  throw new Error(`Failed to send OTP email. ${failures.join(" | ")}`);
+  const error = new Error("OTP delivery is temporarily unavailable. Please try again shortly.");
+  error.status = 503;
+  error.expose = true;
+  error.details = failures;
+  throw error;
 }
 
 module.exports = { sendOtpEmail, buildOtpEmailHtml };
