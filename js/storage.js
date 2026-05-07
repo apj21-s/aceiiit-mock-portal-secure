@@ -444,11 +444,13 @@
 
   async function refreshAdminData() {
     var snapshot = await api("/api/admin/snapshot", { method: "GET" });
+    var remindersPayload = await api("/api/reminders", { method: "GET" });
     state.db.adminSnapshot = snapshot;
     state.db.tests = snapshot.tests || [];
     state.db.questions = snapshot.questions || [];
     state.db.questionCache = {};
     state.db.appConfig = Object.assign({}, state.db.appConfig || {}, snapshot.appConfig || {});
+    state.db.reminders = (remindersPayload.reminders || []).map(mapReminderData);
 
     // Keep local in-progress attempts for admin too (rare but ok).
     var userId = state.session.user && state.session.user.id;

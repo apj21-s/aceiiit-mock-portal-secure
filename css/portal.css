@@ -56,6 +56,10 @@ body {
   transition: background 0.25s ease, color 0.25s ease;
 }
 
+#app {
+  min-height: 100vh;
+}
+
 body[data-theme="dark"] {
   background:
     radial-gradient(circle at top left, rgba(215, 179, 74, 0.14), transparent 28%),
@@ -383,6 +387,9 @@ textarea:focus-visible {
 }
 
 .page-shell {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
   padding: 28px 0 40px;
 }
 
@@ -604,8 +611,10 @@ textarea:focus-visible {
 }
 
 .admin-grid {
-  align-items: start;
-  grid-auto-rows: min-content;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 20px;
 }
 
 .grid-two {
@@ -768,7 +777,9 @@ textarea:focus-visible {
 
 .admin-grid > .admin-card,
 .admin-grid > .panel {
-  align-self: start;
+  flex: 1 1 360px;
+  min-width: min(100%, 360px);
+  align-self: flex-start;
   height: auto;
 }
 
@@ -2021,7 +2032,8 @@ textarea:focus-visible {
 }
 
 .app-footer {
-  margin-top: 22px;
+  margin-top: auto;
+  padding-top: 22px;
   color: var(--ink-soft);
   font-size: 0.88rem;
   text-align: center;
@@ -2156,7 +2168,7 @@ body[data-theme="dark"] .theme-nav-button:hover {
 
 .app-footer {
   width: min(1200px, calc(100% - 28px));
-  margin: 22px auto 0;
+  margin: auto auto 0;
 }
 
 .utility-layout {

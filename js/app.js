@@ -1712,8 +1712,20 @@
   function renderDashboard(user) {
     var snapshot = store.getDashboardSnapshot(user.id);
     var appConfig = store.getAppConfig ? store.getAppConfig() : { ugeeExamDate: null };
+    var reminderEligibleTests = snapshot.tests.filter(function (test) {
+      if (!test || test.status !== "live") {
+        return false;
+      }
+      if (!test.isFree && !user.isPaid && !auth.isAdmin(user)) {
+        return false;
+      }
+      return true;
+    });
     var reminders = store.listReminders ? store.listReminders().filter(function (item) {
-      return !item.sentAt;
+      var plannedAt = item && item.plannedAt ? new Date(item.plannedAt).getTime() : 0;
+      return !item.sentAt && Number.isFinite(plannedAt) && plannedAt > Date.now();
+    }).sort(function (left, right) {
+      return new Date(left.plannedAt || left.remindAt || 0).getTime() - new Date(right.plannedAt || right.remindAt || 0).getTime();
     }) : [];
     var editingReminder = runtime.dashboardEditingReminderId
       ? reminders.find(function (item) { return item.id === runtime.dashboardEditingReminderId; }) || null
@@ -1844,19 +1856,20 @@
         '<form id="reminder-form" class="grid-two">' +
           '<div class="field" style="grid-column: 1 / -1;"><label for="reminder-title">Plan title</label><input id="reminder-title" name="title" value="' + escapeAttribute(editingReminder ? editingReminder.title : "Attempt mock test") + '" required></div>' +
           '<div class="field"><label for="reminder-test">Live mock</label><select id="reminder-test" name="testId" required>' +
-            snapshot.tests.map(function (test) { return '<option value="' + escapeAttribute(test.id) + '"' + (editingReminder && editingReminder.testId === test.id ? ' selected' : (!editingReminder && snapshot.tests[0] && snapshot.tests[0].id === test.id ? ' selected' : '')) + '>' + escapeHtml(test.title) + '</option>'; }).join("") +
+            reminderEligibleTests.map(function (test) { return '<option value="' + escapeAttribute(test.id) + '"' + (editingReminder && editingReminder.testId === test.id ? ' selected' : (!editingReminder && reminderEligibleTests[0] && reminderEligibleTests[0].id === test.id ? ' selected' : '')) + '>' + escapeHtml(test.title) + '</option>'; }).join("") +
           '</select></div>' +
           '<div class="field"><label for="reminder-date">Date</label><input id="reminder-date" name="date" type="date" value="' + escapeAttribute(runtime.dashboardReminderDate) + '" required></div>' +
           '<div class="field"><label for="reminder-time">Time</label><input id="reminder-time" name="time" type="time" value="' + escapeAttribute(editingReminder && editingReminder.plannedAt ? (function () { var d = new Date(editingReminder.plannedAt); return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0"); })() : "19:00") + '" required></div>' +
+          (reminderEligibleTests.length ? '' : '<div class="field" style="grid-column: 1 / -1;"><div class="helper-text">No live mocks are available for planning yet.</div></div>') +
           '<div class="field" style="grid-column: 1 / -1;"><div class="helper-text">You will receive exactly one reminder email 5 hours before this planned mock attempt on ' + escapeHtml(user.email || "") + '.</div></div>' +
-          '<div class="button-row" style="grid-column: 1 / -1;"><button class="button button-primary" type="submit">' + (editingReminder ? 'Update plan' : 'Save plan') + '</button>' + (editingReminder ? '<button class="button button-secondary" type="button" id="cancel-reminder-edit">Cancel</button>' : '') + '</div>' +
+          '<div class="button-row" style="grid-column: 1 / -1;"><button class="button button-primary" type="submit"' + (reminderEligibleTests.length ? '' : ' disabled') + '>' + (editingReminder ? 'Update plan' : 'Save plan') + '</button>' + (editingReminder ? '<button class="button button-secondary" type="button" id="cancel-reminder-edit">Cancel</button>' : '') + '</div>' +
         '</form>' +
         '<div class="divider"></div>' +
         '<p class="section-label">Upcoming reminders</p>' +
         (reminders.length
           ? '<div class="attempt-list">' + reminders.slice(0, 8).map(function (item) {
               var reminderTest = snapshot.tests.find(function (test) { return test.id === item.testId; });
-              return '<div class="attempt-item"><strong>' + escapeHtml(reminderTest ? reminderTest.title : item.title) + '</strong><div class="meta-row"><span class="meta-chip">Planned ' + escapeHtml(formatDateTime(item.plannedAt || item.remindAt)) + '</span><span class="meta-chip">Reminder 5h before</span></div><div class="button-row"><button class="button button-secondary button-compact js-edit-reminder" data-id="' + escapeAttribute(item.id) + '">Edit</button><button class="button button-secondary button-compact js-delete-reminder" data-id="' + escapeAttribute(item.id) + '">Delete</button></div></div>';
+              return '<div class="attempt-item"><strong>' + escapeHtml(item.title || (reminderTest ? reminderTest.title : "Planned mock")) + '</strong><div class="helper-text">' + escapeHtml(reminderTest ? reminderTest.title : "Selected live mock") + '</div><div class="meta-row"><span class="meta-chip">Planned ' + escapeHtml(formatDateTime(item.plannedAt || item.remindAt)) + '</span><span class="meta-chip">Reminder 5h before</span></div><div class="button-row"><button class="button button-secondary button-compact js-edit-reminder" data-id="' + escapeAttribute(item.id) + '">Edit</button><button class="button button-secondary button-compact js-delete-reminder" data-id="' + escapeAttribute(item.id) + '">Delete</button></div></div>';
             }).join("") + '</div>'
           : '<div class="empty-state">No reminders yet. Pick a day and schedule one.</div>') +
       '</div>';
