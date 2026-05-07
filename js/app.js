@@ -349,6 +349,9 @@
       '<section class="report-layout">' +
         '<div class="report-bar">' +
           '<div class="brand-mark"><span class="brand-dot"></span> AceIIIT</div>' +
+          '<div class="button-row">' +
+            getThemeToggleMarkup() +
+          '</div>' +
         '</div>' +
         '<div class="report-body">' +
           '<div class="report-card">' +
@@ -1223,24 +1226,25 @@
   function buildShell(content, options) {
     options = options || {};
     var shellClass = "page-shell";
-    var effectiveTheme = getEffectiveTheme();
-    var themeToggleHtml = "";
     if (options.fluid) {
       shellClass += " is-fluid";
     }
-    if (!options.hideThemeToggle) {
-      themeToggleHtml =
-        '<button class="theme-toggle" type="button" data-theme-toggle="true" aria-label="Switch theme">' +
-          '<span class="theme-toggle-label">' + escapeHtml(effectiveTheme === "dark" ? "Light mode" : "Dark mode") + '</span>' +
-          '<span class="theme-toggle-track"><span class="theme-toggle-thumb"></span></span>' +
-        '</button>';
-    }
     return (
       '<main class="' + shellClass + '">' +
-        themeToggleHtml +
         content +
         '<div class="app-footer">AceIIIT MockTest Portal</div>' +
       "</main>"
+    );
+  }
+
+  function getThemeToggleMarkup() {
+    var effectiveTheme = getEffectiveTheme();
+    var nextThemeLabel = effectiveTheme === "dark" ? "Switch to light mode" : "Switch to dark mode";
+    var icon = effectiveTheme === "dark" ? "☀" : "☾";
+    return (
+      '<button class="theme-nav-button" type="button" data-theme-toggle="true" aria-label="' + escapeAttribute(nextThemeLabel) + '" title="' + escapeAttribute(nextThemeLabel) + '">' +
+        '<span class="theme-nav-icon" aria-hidden="true">' + icon + '</span>' +
+      '</button>'
     );
   }
 
@@ -1506,7 +1510,10 @@
         '<div class="hero-panel">' +
           '<div class="brand-row">' +
             '<div class="brand-mark"><span class="brand-dot"></span> AceIIIT</div>' +
-            '<div class="status-note">UGEE Pattern Portal</div>' +
+            '<div class="button-row">' +
+              '<div class="status-note">UGEE Pattern Portal</div>' +
+              getThemeToggleMarkup() +
+            '</div>' +
           '</div>' +
           '<div class="headline-block">' +
             '<p class="section-label">AceIIIT Test System</p>' +
@@ -1859,6 +1866,7 @@
         '<div class="dashboard-bar">' +
           '<div class="brand-mark"><span class="brand-dot"></span> AceIIIT</div>' +
           '<div class="button-row">' +
+            getThemeToggleMarkup() +
             (auth.isAdmin(user) ? '<span class="meta-chip" style="align-self:center; margin-right: 10px;">Admin</span>' : "") +
             (auth.isAdmin(user) ? '<button class="button button-secondary" id="admin-link">Builder Mode</button>' : "") +
             '<button class="button button-secondary" id="logout-button">Logout</button>' +
@@ -2119,6 +2127,7 @@
           '<div class="report-bar">' +
             '<div class="brand-mark"><span class="brand-dot"></span> AceIIIT</div>' +
             '<div class="button-row">' +
+              getThemeToggleMarkup() +
               '<button class="button button-secondary" id="back-dashboard">Dashboard</button>' +
             '</div>' +
           '</div>' +
@@ -2159,6 +2168,9 @@
       '<section class="instructions-layout utility-layout">' +
         '<div class="instructions-bar">' +
           '<div class="brand-mark"><span class="brand-dot"></span> AceIIIT</div>' +
+          '<div class="button-row">' +
+            getThemeToggleMarkup() +
+          '</div>' +
           '<div class="instructions-tabs">' +
             '<button class="tab-button is-active" type="button">Instructions</button>' +
             '<button class="tab-button" type="button" disabled>Question Paper</button>' +
@@ -3172,6 +3184,7 @@
         '<div class="report-bar">' +
           '<div class="brand-mark"><span class="brand-dot"></span> AceIIIT</div>' +
           '<div class="button-row">' +
+            getThemeToggleMarkup() +
             '<button class="button button-secondary" id="back-dashboard">Dashboard</button>' +
             '<button class="button button-primary" id="retake-test">Retake</button>' +
           '</div>' +
@@ -3405,6 +3418,7 @@
         '<div class="admin-bar">' +
           '<div class="brand-mark"><span class="brand-dot"></span> AceIIIT</div>' +
           '<div class="button-row">' +
+            getThemeToggleMarkup() +
             '<button class="button button-secondary" id="back-dashboard">Dashboard</button>' +
             '<button class="button button-secondary" id="open-users">Users</button>' +
             '<button class="button button-secondary" id="open-results">Results</button>' +
@@ -4647,6 +4661,7 @@
         '<div class="report-bar">' +
           '<div class="brand-mark"><span class="brand-dot"></span> AceIIIT</div>' +
           '<div class="button-row">' +
+            getThemeToggleMarkup() +
             '<button class="button button-secondary" id="back-admin">Builder Mode</button>' +
             '<button class="button button-secondary" id="back-dashboard">Dashboard</button>' +
           '</div>' +
@@ -4970,7 +4985,10 @@
       '<section class="report-layout">' +
         '<div class="report-bar">' +
           '<div class="brand-mark"><span class="brand-dot"></span> AceIIIT</div>' +
-          '<div class="button-row"><button class="button button-secondary" id="back-admin">Builder Mode</button></div>' +
+          '<div class="button-row">' +
+            getThemeToggleMarkup() +
+            '<button class="button button-secondary" id="back-admin">Builder Mode</button>' +
+          '</div>' +
         '</div>' +
         '<div class="report-body">' +
           '<div class="report-heading"><p class="section-label">Student Activity</p><h1>Users, attempts, logins and leaderboard</h1></div>' +
