@@ -12,6 +12,7 @@ const { requireDbReady } = require("./middleware/dbReady");
 const { errorHandler, notFound } = require("./middleware/error");
 const { requestTimeout } = require("./middleware/timeout");
 const { paidSheetService } = require("./services/paidSheetService");
+const { reminderService } = require("./services/reminderService");
 
 dotenv.config({ path: path.join(__dirname, ".env") });
 
@@ -74,6 +75,7 @@ app.use("/api", requireDbReady);
 app.use("/api/auth", require("./routes/authRoutes"));
 app.use("/api/tests", require("./routes/testRoutes"));
 app.use("/api", require("./routes/attemptRoutes"));
+app.use("/api/reminders", require("./routes/reminderRoutes"));
 app.use("/api/admin", require("./routes/adminRoutes"));
 
 // Serve the existing static frontend from the repo root (keeps theme/layout intact).
@@ -110,6 +112,7 @@ async function main() {
       .then(() => {
         // eslint-disable-next-line no-console
         console.log("MongoDB connected");
+        reminderService.start();
       })
       .catch((err) => {
         // eslint-disable-next-line no-console

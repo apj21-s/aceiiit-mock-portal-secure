@@ -15,6 +15,10 @@
       questionCache: {},
       attempts: [],
       adminSnapshot: null,
+      reminders: [],
+      appConfig: {
+        ugeeExamDate: null,
+      },
     },
     session: {
       token: "",
@@ -60,6 +64,8 @@
       state.db.settings || {}
     );
     state.db.questionCache = state.db.questionCache || {};
+    state.db.reminders = Array.isArray(state.db.reminders) ? state.db.reminders : [];
+    state.db.appConfig = Object.assign({ ugeeExamDate: null }, state.db.appConfig || {});
     state.session = Object.assign(state.session, loadJson(SESSION_KEY, {}));
     state.session.token = String(state.session.token || "");
     state.session.user = state.session.user || null;
@@ -99,6 +105,13 @@
     return -Math.abs(parsed);
   }
 
+  function getSectionDefaultMarking(section) {
+    var normalized = String(section || "SUPR").toUpperCase() === "REAP" ? "REAP" : "SUPR";
+    return normalized === "REAP"
+      ? { marks: 2, negativeMarks: -0.5 }
+      : { marks: 1, negativeMarks: -0.25 };
+  }
+
   function mapAdminTestPayload(input, existing) {
     var source = input || {};
     var supr = source.sectionDurations && source.sectionDurations.SUPR !== undefined
@@ -127,8 +140,10 @@
 
   function mapAdminQuestionPayload(input) {
     var source = input || {};
+    var section = String(source.section || "SUPR").toUpperCase() === "REAP" ? "REAP" : "SUPR";
+    var defaults = getSectionDefaultMarking(section);
     return {
-      section: String(source.section || "SUPR").toUpperCase() === "REAP" ? "REAP" : "SUPR",
+      section: section,
       topic: String(source.topic || "").trim(),
       difficulty: String(source.difficulty || "medium"),
       prompt: String(source.prompt || "").trim(),
@@ -137,8 +152,8 @@
       options: Array.isArray(source.options) ? source.options.map(function (o) { return String(o || ""); }) : [],
       correctOption: toNumber(source.correctOption, 0),
       explanation: String(source.explanation || ""),
-      marks: toNumber(source.marks, 4),
-      negativeMarks: normalizeNegativeMarks(source.negativeMarks, -1),
+      marks: toNumber(source.marks, defaults.marks),
+      negativeMarks: normalizeNegativeMarks(source.negativeMarks, defaults.negativeMarks),
     };
   }
 
@@ -328,9 +343,22 @@
     return state.session.user ? clone(state.session.user) : null;
   }
 
+  function mapReminderData(reminder) {
+    return {
+      id: String(reminder && reminder.id || ""),
+      title: String(reminder && reminder.title || ""),
+      testId: String(reminder && reminder.testId || ""),
+      plannedAt: reminder && reminder.plannedAt ? reminder.plannedAt : null,
+      remindAt: reminder && reminder.remindAt ? reminder.remindAt : null,
+      sentAt: reminder && reminder.sentAt ? reminder.sentAt : null,
+      failureReason: String(reminder && reminder.failureReason || ""),
+    };
+  }
+
   async function refreshStudentData() {
     var testsPayload = await api("/api/tests", { method: "GET" });
     var attemptsPayload = await api("/api/attempts", { method: "GET" });
+    var remindersPayload = await api("/api/reminders", { method: "GET" });
     var userId = state.session.user && state.session.user.id;
 
     var inProgress = (state.db.attempts || []).filter(function (a) {
@@ -407,6 +435,8 @@
       var mapped = mapRemoteAttempt(remote, userId);
       return mergeAttemptData(existingSubmittedById[mapped.id], mapped);
     }));
+    state.db.reminders = (remindersPayload.reminders || []).map(mapReminderData);
+    state.db.appConfig = Object.assign({}, state.db.appConfig || {}, testsPayload.appConfig || {});
 
     saveState();
     return { changed: true };
@@ -418,6 +448,7 @@
     state.db.tests = snapshot.tests || [];
     state.db.questions = snapshot.questions || [];
     state.db.questionCache = {};
+    state.db.appConfig = Object.assign({}, state.db.appConfig || {}, snapshot.appConfig || {});
 
     // Keep local in-progress attempts for admin too (rare but ok).
     var userId = state.session.user && state.session.user.id;
@@ -739,6 +770,14 @@
     return clone(state.db.adminSnapshot || { users: [], tests: [], questions: [], attempts: [] });
   }
 
+  function getAppConfig() {
+    return clone(state.db.appConfig || { ugeeExamDate: null });
+  }
+
+  function listReminders() {
+    return clone(state.db.reminders || []);
+  }
+
   async function createTest(input) {
     var mapped = mapAdminTestPayload(input, null);
     var data = await api("/api/tests", { method: "POST", body: JSON.stringify(mapped) });
@@ -918,6 +957,47 @@
     return api("/api/admin/test/" + encodeURIComponent(String(testId || "")) + "/analytics", { method: "GET" });
   }
 
+  async function updateAppConfig(input) {
+    var payload = await api("/api/admin/config", { method: "PUT", body: JSON.stringify(input || {}) });
+    state.db.appConfig = Object.assign({}, state.db.appConfig || {}, payload && payload.appConfig ? payload.appConfig : {});
+    if (state.db.adminSnapshot) {
+      state.db.adminSnapshot.appConfig = clone(state.db.appConfig);
+    }
+    saveState();
+    return clone(state.db.appConfig);
+  }
+
+  async function createReminder(input) {
+    var payload = await api("/api/reminders", { method: "POST", body: JSON.stringify(input || {}) });
+    if (payload && payload.reminder) {
+      state.db.reminders = (state.db.reminders || []).concat([mapReminderData(payload.reminder)]);
+      saveState();
+      return mapReminderData(payload.reminder);
+    }
+    return null;
+  }
+
+  async function updateReminder(reminderId, input) {
+    var payload = await api("/api/reminders/" + encodeURIComponent(String(reminderId || "")), { method: "PUT", body: JSON.stringify(input || {}) });
+    if (payload && payload.reminder) {
+      state.db.reminders = (state.db.reminders || []).map(function (item) {
+        return item.id === String(reminderId || "") ? mapReminderData(payload.reminder) : item;
+      });
+      saveState();
+      return mapReminderData(payload.reminder);
+    }
+    return null;
+  }
+
+  async function deleteReminder(reminderId) {
+    await api("/api/reminders/" + encodeURIComponent(String(reminderId || "")), { method: "DELETE" });
+    state.db.reminders = (state.db.reminders || []).filter(function (item) {
+      return item.id !== String(reminderId || "");
+    });
+    saveState();
+    return { ok: true };
+  }
+
   async function getAttemptAnalysis(attemptId) {
     var payload = await api("/api/analysis/" + encodeURIComponent(String(attemptId || "")), { method: "GET" });
     var summary = payload && payload.summary ? payload.summary : null;
@@ -1023,6 +1103,8 @@
     },
     getDashboardSnapshot: getDashboardSnapshot,
     getAdminSnapshot: getAdminSnapshot,
+    getAppConfig: getAppConfig,
+    listReminders: listReminders,
     createQuestion: createQuestion,
     updateQuestion: updateQuestion,
     deleteQuestion: deleteQuestion,
@@ -1039,6 +1121,10 @@
     deleteUser: deleteUser,
     getAdminLeaderboard: getAdminLeaderboard,
     getAdminTestAnalytics: getAdminTestAnalytics,
+    updateAppConfig: updateAppConfig,
+    createReminder: createReminder,
+    updateReminder: updateReminder,
+    deleteReminder: deleteReminder,
     uploadQuestionImages: uploadQuestionImages,
     getAttemptAnalysis: getAttemptAnalysis,
     getAttemptQuestionReview: getAttemptQuestionReview,

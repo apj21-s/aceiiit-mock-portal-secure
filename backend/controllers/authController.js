@@ -108,6 +108,7 @@ async function verifyOtp(req, res, next) {
         email: normalizedEmail,
         role: isAdminEmail(normalizedEmail) ? "admin" : "student",
         isPaid: false,
+        lastSeenAt: new Date(),
       });
     } else if (user.deletedAt) {
       return res.status(403).json({ error: "Account is disabled. Contact the admin." });
@@ -124,6 +125,7 @@ async function verifyOtp(req, res, next) {
     if (isPaid !== Boolean(user.isPaid)) {
       user.isPaid = isPaid;
     }
+    user.lastSeenAt = new Date();
 
     if (user.isModified()) {
       await user.save();

@@ -2,6 +2,7 @@ const mongoose = require("mongoose");
 const { z } = require("zod");
 
 const Attempt = require("../models/Attempt");
+const AppConfig = require("../models/AppConfig");
 const Question = require("../models/Question");
 const Test = require("../models/Test");
 const User = require("../models/User");
@@ -118,6 +119,13 @@ function normalizeQuestionPayload(body) {
   return mapped;
 }
 
+function getSectionDefaultMarking(section) {
+  const normalized = String(section || "SUPR").trim().toUpperCase() === "REAP" ? "REAP" : "SUPR";
+  return normalized === "REAP"
+    ? { marks: 2, negativeMarks: -0.5 }
+    : { marks: 1, negativeMarks: -0.25 };
+}
+
 function extractUploadedQuestionFiles(req) {
   const files = [];
   if (req && req.file && req.file.buffer) {
@@ -198,7 +206,7 @@ async function recalculateTestsMetadata(testIds) {
 
 async function snapshot(req, res, next) {
   try {
-    const [tests, questions, attempts, users, userCount] = await Promise.all([
+    const [tests, questions, attempts, users, userCount, appConfig] = await Promise.all([
       Test.find({ deletedAt: null })
         .select("title subtitle series type isFree status displayOrder durationMinutes sectionDurations instructions benchmarkScores questionIds createdAt updatedAt")
         .sort({ displayOrder: 1, createdAt: 1 })
@@ -213,11 +221,12 @@ async function snapshot(req, res, next) {
         .limit(500)
         .lean(),
       User.find({ deletedAt: null })
-        .select("name email role isPaid createdAt")
+        .select("name email role isPaid createdAt lastSeenAt")
         .sort({ createdAt: -1 })
         .limit(500)
         .lean(),
       User.countDocuments({ deletedAt: null }),
+      AppConfig.findOne({ key: "global" }).lean(),
     ]);
 
     res.json({
@@ -277,8 +286,40 @@ async function snapshot(req, res, next) {
         role: u.role,
         isPaid: u.isPaid,
         createdAt: u.createdAt,
+        lastSeenAt: u.lastSeenAt || null,
       })),
       userCount,
+      appConfig: {
+        ugeeExamDate: appConfig && appConfig.ugeeExamDate ? appConfig.ugeeExamDate : null,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function updateAppConfig(req, res, next) {
+  try {
+    const schema = z.object({
+      ugeeExamDate: z.string().datetime().nullable().optional(),
+    });
+    const input = schema.parse(req.body || {});
+    const payload = {};
+    if (Object.prototype.hasOwnProperty.call(input, "ugeeExamDate")) {
+      payload.ugeeExamDate = input.ugeeExamDate ? new Date(input.ugeeExamDate) : null;
+    }
+    payload.updatedBy = req.auth.userId;
+
+    const config = await AppConfig.findOneAndUpdate(
+      { key: "global" },
+      { $set: payload, $setOnInsert: { key: "global" } },
+      { upsert: true, new: true }
+    );
+
+    res.json({
+      appConfig: {
+        ugeeExamDate: config && config.ugeeExamDate ? config.ugeeExamDate : null,
+      },
     });
   } catch (err) {
     next(err);
@@ -331,6 +372,7 @@ async function createQuestion(req, res, next) {
     const input = questionInputSchema.parse(normalizeQuestionPayload(req.body || {}));
     const uploadedImageUrls = await uploadQuestionImages(req);
     const imageUrls = (input.imageUrls || []).slice().concat(uploadedImageUrls);
+    const sectionDefaults = getSectionDefaultMarking(input.section);
 
     const question = await Question.create({
       section: input.section,
@@ -342,8 +384,8 @@ async function createQuestion(req, res, next) {
       options: input.options,
       correctOption: input.correctOption,
       explanation: input.explanation || "",
-      marks: Number.isFinite(Number(input.marks)) ? Number(input.marks) : 4,
-      negativeMarks: Number.isFinite(Number(input.negativeMarks)) ? Number(input.negativeMarks) : -1,
+      marks: Number.isFinite(Number(input.marks)) ? Number(input.marks) : sectionDefaults.marks,
+      negativeMarks: Number.isFinite(Number(input.negativeMarks)) ? Number(input.negativeMarks) : sectionDefaults.negativeMarks,
     });
     invalidateAllTestCaches();
     res.status(201).json({ question: question.toJSON() });
@@ -584,4 +626,5 @@ module.exports = {
   results,
   leaderboard,
   testAnalytics,
+  updateAppConfig,
 };

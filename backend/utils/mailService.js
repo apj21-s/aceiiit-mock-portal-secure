@@ -1,4 +1,5 @@
 const { Resend } = require("resend");
+const nodemailer = require("nodemailer");
 
 function resolveFromEmail() {
   if (process.env.OTP_FROM_EMAIL) {
@@ -22,6 +23,8 @@ const OTP_SUBJECT = process.env.OTP_SUBJECT || "ACE IIIT OTP Verification";
 
 let cachedResend = null;
 let cachedResendKey = null;
+let cachedReminderTransport = null;
+let cachedReminderTransportKey = null;
 
 function buildOtpEmailHtml(otp) {
   return `
@@ -32,6 +35,16 @@ function buildOtpEmailHtml(otp) {
         <p>This OTP is valid for 5 minutes.</p>
       </div>
     `;
+}
+
+function buildEmailPayload(input) {
+  const source = input || {};
+  return {
+    from: String(source.from || OTP_FROM),
+    to: Array.isArray(source.to) ? source.to.map((item) => String(item || "").trim().toLowerCase()).filter(Boolean) : [],
+    subject: String(source.subject || "").trim(),
+    html: String(source.html || ""),
+  };
 }
 
 function buildOtpPayload(email, otp) {
@@ -117,6 +130,57 @@ function parseFromAddress(from) {
 
 async function sendOtpEmail(email, otp) {
   const payload = buildOtpPayload(email, otp);
+  return sendEmailThroughProviders(payload);
+}
+
+function getReminderTransport() {
+  const host = String(process.env.REMINDER_SMTP_HOST || "").trim();
+  const port = Number(process.env.REMINDER_SMTP_PORT || 587);
+  const user = String(process.env.REMINDER_SMTP_USER || "").trim();
+  const pass = String(process.env.REMINDER_SMTP_PASS || "").trim();
+  const secure = String(process.env.REMINDER_SMTP_SECURE || "").trim().toLowerCase() === "true";
+  if (!host || !user || !pass) {
+    throw new Error("Reminder SMTP is not configured.");
+  }
+  const cacheKey = [host, port, user, secure].join("|");
+  if (cachedReminderTransport && cachedReminderTransportKey === cacheKey) {
+    return cachedReminderTransport;
+  }
+  cachedReminderTransportKey = cacheKey;
+  cachedReminderTransport = nodemailer.createTransport({
+    host,
+    port,
+    secure,
+    auth: { user, pass },
+  });
+  return cachedReminderTransport;
+}
+
+function getReminderFromEmail() {
+  const explicit = String(process.env.REMINDER_FROM_EMAIL || "").trim();
+  if (explicit) return explicit;
+  const email = String(process.env.MAIL_FROM_EMAIL || "").trim();
+  const name = String(process.env.MAIL_FROM_NAME || "ACE IIIT Reminders").trim();
+  if (email) {
+    return `${name} <${email}>`;
+  }
+  throw new Error("Reminder sender email is not configured.");
+}
+
+async function sendReminderEmail(input) {
+  const payload = buildEmailPayload(Object.assign({}, input || {}, { from: (input && input.from) || getReminderFromEmail() }));
+  const transport = getReminderTransport();
+  await transport.sendMail({
+    from: payload.from,
+    to: payload.to.join(", "),
+    subject: payload.subject,
+    html: payload.html,
+  });
+  return { provider: "reminder-smtp" };
+}
+
+async function sendEmailThroughProviders(input) {
+  const payload = buildEmailPayload(input);
   const failures = [];
 
   try {
@@ -135,11 +199,11 @@ async function sendOtpEmail(email, otp) {
     console.error("OTP send via Brevo failed.", error);
   }
 
-  const error = new Error("OTP delivery is temporarily unavailable. Please try again shortly.");
+  const error = new Error("Email delivery is temporarily unavailable. Please try again shortly.");
   error.status = 503;
   error.expose = true;
   error.details = failures;
   throw error;
 }
 
-module.exports = { sendOtpEmail, buildOtpEmailHtml };
+module.exports = { sendOtpEmail, buildOtpEmailHtml, sendEmailThroughProviders, sendReminderEmail };

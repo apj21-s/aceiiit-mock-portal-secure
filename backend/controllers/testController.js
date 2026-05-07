@@ -1,5 +1,6 @@
 const { z } = require("zod");
 
+const AppConfig = require("../models/AppConfig");
 const Test = require("../models/Test");
 const { paidSheetService } = require("../services/paidSheetService");
 const {
@@ -18,10 +19,16 @@ function canAccessPaid(req) {
 
 async function listTests(req, res, next) {
   try {
-    const payload = await getCatalogPayload({
-      paidOk: canAccessPaid(req),
-      isAdmin: req.auth.role === "admin",
-    });
+    const [payload, appConfig] = await Promise.all([
+      getCatalogPayload({
+        paidOk: canAccessPaid(req),
+        isAdmin: req.auth.role === "admin",
+      }),
+      AppConfig.findOne({ key: "global" }).lean(),
+    ]);
+    payload.appConfig = {
+      ugeeExamDate: appConfig && appConfig.ugeeExamDate ? appConfig.ugeeExamDate : null,
+    };
     res.json(payload);
   } catch (err) {
     next(err);

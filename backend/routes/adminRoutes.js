@@ -30,6 +30,7 @@ function maybeUploadQuestionImages() {
 
 router.get("/snapshot", requireAuth, requireAdmin, admin.snapshot);
 router.get("/trash", requireAuth, requireAdmin, admin.trash);
+router.put("/config", requireAuth, requireAdmin, admin.updateAppConfig);
 
 router.get("/results", requireAuth, requireAdmin, admin.results);
 router.get("/leaderboard", requireAuth, requireAdmin, admin.leaderboard);

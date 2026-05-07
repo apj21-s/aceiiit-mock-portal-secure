@@ -18,6 +18,8 @@
     adminBankQuery: "",
     adminBankSectionFilter: "all",
     adminActivityTestId: null,
+    dashboardCalendarMonth: "",
+    dashboardReminderDate: "",
     imageLightboxUrl: "",
     lastPresencePingAt: 0,
     pendingQuestionFileNames: [],
@@ -46,6 +48,8 @@
   var syncQueued = false;
   var KEEP_ALIVE_INTERVAL_MS = 5 * 60 * 1000;
   var KEEP_ALIVE_TIMEOUT_MS = 8000;
+  var USER_ONLINE_WINDOW_MS = 2 * 60 * 1000;
+  var THEME_SETTING_KEY = "theme";
 
   function initials(name) {
     return String(name || "A")
@@ -68,6 +72,129 @@
     if (hour < 12) return "Good morning";
     if (hour < 17) return "Good afternoon";
     return "Good evening";
+  }
+
+  function getSectionDefaultMarking(section) {
+    var normalized = String(section || "SUPR").toUpperCase() === "REAP" ? "REAP" : "SUPR";
+    return normalized === "REAP"
+      ? { marks: 2, negativeMarks: 0.5 }
+      : { marks: 1, negativeMarks: 0.25 };
+  }
+
+  function sortQuestionsForSelectedTest(test, questions) {
+    if (!test || !Array.isArray(test.questionIds)) {
+      return (questions || []).slice();
+    }
+    var order = {};
+    test.questionIds.forEach(function (questionId, index) {
+      order[String(questionId)] = index;
+    });
+    return (questions || []).slice().sort(function (a, b) {
+      var aWeight = String(a && a.section || "SUPR") === "REAP" ? 1 : 0;
+      var bWeight = String(b && b.section || "SUPR") === "REAP" ? 1 : 0;
+      if (aWeight !== bWeight) {
+        return aWeight - bWeight;
+      }
+      return Number(order[String(a && a.id || "")] || 0) - Number(order[String(b && b.id || "")] || 0);
+    });
+  }
+
+  function isUserOnline(user) {
+    if (!user || !user.lastSeenAt) return false;
+    var seenAt = new Date(user.lastSeenAt).getTime();
+    if (!seenAt) return false;
+    return Date.now() - seenAt <= USER_ONLINE_WINDOW_MS;
+  }
+
+  function toDateInputValue(value) {
+    if (!value) return "";
+    var date = new Date(value);
+    if (!Number.isFinite(date.getTime())) return "";
+    var year = date.getFullYear();
+    var month = String(date.getMonth() + 1).padStart(2, "0");
+    var day = String(date.getDate()).padStart(2, "0");
+    return year + "-" + month + "-" + day;
+  }
+
+  function toMonthKey(value) {
+    if (!value) return "";
+    var date = new Date(value);
+    if (!Number.isFinite(date.getTime())) return "";
+    return date.getFullYear() + "-" + String(date.getMonth() + 1).padStart(2, "0");
+  }
+
+  function formatMonthLabel(monthKey) {
+    var parts = String(monthKey || "").split("-");
+    if (parts.length !== 2) return "";
+    var date = new Date(Number(parts[0]), Number(parts[1]) - 1, 1);
+    return date.toLocaleString("en-IN", { month: "long", year: "numeric" });
+  }
+
+  function shiftMonthKey(monthKey, delta) {
+    var parts = String(monthKey || "").split("-");
+    var date = parts.length === 2
+      ? new Date(Number(parts[0]), Number(parts[1]) - 1, 1)
+      : new Date();
+    date.setMonth(date.getMonth() + Number(delta || 0));
+    return date.getFullYear() + "-" + String(date.getMonth() + 1).padStart(2, "0");
+  }
+
+  function buildCalendarCells(monthKey) {
+    var parts = String(monthKey || "").split("-");
+    var date = parts.length === 2
+      ? new Date(Number(parts[0]), Number(parts[1]) - 1, 1)
+      : new Date();
+    var year = date.getFullYear();
+    var month = date.getMonth();
+    var firstDay = new Date(year, month, 1);
+    var startOffset = (firstDay.getDay() + 6) % 7;
+    var totalDays = new Date(year, month + 1, 0).getDate();
+    var cells = [];
+    for (var index = 0; index < 42; index += 1) {
+      var dayNumber = index - startOffset + 1;
+      var cellDate = new Date(year, month, dayNumber);
+      cells.push({
+        iso: toDateInputValue(cellDate),
+        label: cellDate.getDate(),
+        inMonth: dayNumber >= 1 && dayNumber <= totalDays,
+      });
+    }
+    return cells;
+  }
+
+  function getStoredThemePreference() {
+    var settings = store.getSettings ? store.getSettings() : {};
+    var theme = settings && settings[THEME_SETTING_KEY] ? String(settings[THEME_SETTING_KEY]) : "light";
+    return theme === "dark" ? "dark" : "light";
+  }
+
+  function isThemeForcedLight() {
+    var parts = routeParts();
+    return (parts[0] || "") === "test";
+  }
+
+  function getEffectiveTheme() {
+    return isThemeForcedLight() ? "light" : getStoredThemePreference();
+  }
+
+  function applyTheme() {
+    if (!document.body) return;
+    var effectiveTheme = getEffectiveTheme();
+    document.body.setAttribute("data-theme", effectiveTheme);
+    document.body.classList.toggle("theme-dark", effectiveTheme === "dark");
+    document.body.classList.toggle("theme-light", effectiveTheme !== "dark");
+  }
+
+  function toggleThemePreference() {
+    if (isThemeForcedLight()) return;
+    var nextTheme = getStoredThemePreference() === "dark" ? "light" : "dark";
+    store.updateSettings((function () {
+      var patch = {};
+      patch[THEME_SETTING_KEY] = nextTheme;
+      return patch;
+    })());
+    applyTheme();
+    renderRoute();
   }
 
   function escapeHtml(value) {
@@ -1096,11 +1223,21 @@
   function buildShell(content, options) {
     options = options || {};
     var shellClass = "page-shell";
+    var effectiveTheme = getEffectiveTheme();
+    var themeToggleHtml = "";
     if (options.fluid) {
       shellClass += " is-fluid";
     }
+    if (!options.hideThemeToggle) {
+      themeToggleHtml =
+        '<button class="theme-toggle" type="button" data-theme-toggle="true" aria-label="Switch theme">' +
+          '<span class="theme-toggle-label">' + escapeHtml(effectiveTheme === "dark" ? "Light mode" : "Dark mode") + '</span>' +
+          '<span class="theme-toggle-track"><span class="theme-toggle-thumb"></span></span>' +
+        '</button>';
+    }
     return (
       '<main class="' + shellClass + '">' +
+        themeToggleHtml +
         content +
         '<div class="app-footer">AceIIIT MockTest Portal</div>' +
       "</main>"
@@ -1567,6 +1704,20 @@
 
   function renderDashboard(user) {
     var snapshot = store.getDashboardSnapshot(user.id);
+    var appConfig = store.getAppConfig ? store.getAppConfig() : { ugeeExamDate: null };
+    var reminders = store.listReminders ? store.listReminders().filter(function (item) {
+      return !item.sentAt;
+    }) : [];
+    var editingReminder = runtime.dashboardEditingReminderId
+      ? reminders.find(function (item) { return item.id === runtime.dashboardEditingReminderId; }) || null
+      : null;
+    var examDateValue = toDateInputValue(appConfig && appConfig.ugeeExamDate);
+    runtime.dashboardReminderDate = editingReminder && editingReminder.plannedAt
+      ? toDateInputValue(editingReminder.plannedAt)
+      : (runtime.dashboardReminderDate || toDateInputValue(new Date(Date.now() + (24 * 60 * 60 * 1000))));
+    runtime.dashboardCalendarMonth = editingReminder && editingReminder.plannedAt
+      ? toMonthKey(editingReminder.plannedAt)
+      : (runtime.dashboardCalendarMonth || toMonthKey(runtime.dashboardReminderDate || examDateValue || new Date()));
     var attemptsByTest = {};
 
     snapshot.attempts.forEach(function (attempt) {
@@ -1660,6 +1811,48 @@
           );
         }).join("") + '</div>'
       : '<div class="empty-state">Submitted reports will stay here for later review.</div>';
+    var reminderMonthCells = buildCalendarCells(runtime.dashboardCalendarMonth);
+    var calendarHtml =
+      '<div class="dashboard-calendar-card">' +
+        '<div class="calendar-head">' +
+          '<div><p class="section-label" style="margin:0;">Mock planner</p><h3>' + escapeHtml(formatMonthLabel(runtime.dashboardCalendarMonth)) + '</h3></div>' +
+          '<div class="button-row">' +
+            '<button class="button button-secondary button-compact" type="button" id="calendar-prev-month">Prev</button>' +
+            '<button class="button button-secondary button-compact" type="button" id="calendar-next-month">Next</button>' +
+          '</div>' +
+        '</div>' +
+        '<div class="calendar-weekdays">' + ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map(function (label) {
+          return '<span>' + label + '</span>';
+        }).join("") + '</div>' +
+        '<div class="calendar-grid">' + reminderMonthCells.map(function (cell) {
+          var classes = ["calendar-cell"];
+          if (!cell.inMonth) classes.push("is-muted");
+          if (cell.iso === runtime.dashboardReminderDate) classes.push("is-selected");
+          if (examDateValue && cell.iso === examDateValue) classes.push("is-exam-day");
+          if (cell.iso === toDateInputValue(new Date())) classes.push("is-today");
+          return '<button type="button" class="' + classes.join(" ") + '" data-calendar-date="' + escapeAttribute(cell.iso) + '"><span>' + escapeHtml(String(cell.label)) + '</span></button>';
+        }).join("") + '</div>' +
+        '<div class="calendar-helper">' + (examDateValue ? ('UGEE exam day: ' + escapeHtml(formatDateTime(appConfig.ugeeExamDate))) : 'Admin has not set the UGEE exam date yet.') + '</div>' +
+        '<div class="divider"></div>' +
+        '<form id="reminder-form" class="grid-two">' +
+          '<div class="field" style="grid-column: 1 / -1;"><label for="reminder-title">Plan title</label><input id="reminder-title" name="title" value="' + escapeAttribute(editingReminder ? editingReminder.title : "Attempt mock test") + '" required></div>' +
+          '<div class="field"><label for="reminder-test">Live mock</label><select id="reminder-test" name="testId" required>' +
+            snapshot.tests.map(function (test) { return '<option value="' + escapeAttribute(test.id) + '"' + (editingReminder && editingReminder.testId === test.id ? ' selected' : (!editingReminder && snapshot.tests[0] && snapshot.tests[0].id === test.id ? ' selected' : '')) + '>' + escapeHtml(test.title) + '</option>'; }).join("") +
+          '</select></div>' +
+          '<div class="field"><label for="reminder-date">Date</label><input id="reminder-date" name="date" type="date" value="' + escapeAttribute(runtime.dashboardReminderDate) + '" required></div>' +
+          '<div class="field"><label for="reminder-time">Time</label><input id="reminder-time" name="time" type="time" value="' + escapeAttribute(editingReminder && editingReminder.plannedAt ? (function () { var d = new Date(editingReminder.plannedAt); return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0"); })() : "19:00") + '" required></div>' +
+          '<div class="field" style="grid-column: 1 / -1;"><div class="helper-text">You will receive exactly one reminder email 5 hours before this planned mock attempt on ' + escapeHtml(user.email || "") + '.</div></div>' +
+          '<div class="button-row" style="grid-column: 1 / -1;"><button class="button button-primary" type="submit">' + (editingReminder ? 'Update plan' : 'Save plan') + '</button>' + (editingReminder ? '<button class="button button-secondary" type="button" id="cancel-reminder-edit">Cancel</button>' : '') + '</div>' +
+        '</form>' +
+        '<div class="divider"></div>' +
+        '<p class="section-label">Upcoming reminders</p>' +
+        (reminders.length
+          ? '<div class="attempt-list">' + reminders.slice(0, 8).map(function (item) {
+              var reminderTest = snapshot.tests.find(function (test) { return test.id === item.testId; });
+              return '<div class="attempt-item"><strong>' + escapeHtml(reminderTest ? reminderTest.title : item.title) + '</strong><div class="meta-row"><span class="meta-chip">Planned ' + escapeHtml(formatDateTime(item.plannedAt || item.remindAt)) + '</span><span class="meta-chip">Reminder 5h before</span></div><div class="button-row"><button class="button button-secondary button-compact js-edit-reminder" data-id="' + escapeAttribute(item.id) + '">Edit</button><button class="button button-secondary button-compact js-delete-reminder" data-id="' + escapeAttribute(item.id) + '">Delete</button></div></div>';
+            }).join("") + '</div>'
+          : '<div class="empty-state">No reminders yet. Pick a day and schedule one.</div>') +
+      '</div>';
 
     app.innerHTML = buildShell(
       '<section class="dashboard-hero">' +
@@ -1690,6 +1883,8 @@
           '<div class="divider"></div>' +
           '<p class="section-label">Recent Activity</p>' +
           recentAttempts +
+          '<div class="divider"></div>' +
+          calendarHtml +
           '<div class="divider"></div>' +
           '<p class="section-label">My Reports</p>' +
           reportsHtml +
@@ -1732,6 +1927,75 @@
     app.querySelectorAll(".js-open-result").forEach(function (button) {
       button.addEventListener("click", function () {
         navigate("results/" + button.dataset.id);
+      });
+    });
+    app.querySelectorAll("[data-calendar-date]").forEach(function (button) {
+      button.addEventListener("click", function () {
+        runtime.dashboardReminderDate = button.getAttribute("data-calendar-date") || runtime.dashboardReminderDate;
+        renderDashboard(user);
+      });
+    });
+    var calendarPrevMonth = document.getElementById("calendar-prev-month");
+    if (calendarPrevMonth) {
+      calendarPrevMonth.addEventListener("click", function () {
+        runtime.dashboardCalendarMonth = shiftMonthKey(runtime.dashboardCalendarMonth, -1);
+        renderDashboard(user);
+      });
+    }
+    var calendarNextMonth = document.getElementById("calendar-next-month");
+    if (calendarNextMonth) {
+      calendarNextMonth.addEventListener("click", function () {
+        runtime.dashboardCalendarMonth = shiftMonthKey(runtime.dashboardCalendarMonth, 1);
+        renderDashboard(user);
+      });
+    }
+    var reminderForm = document.getElementById("reminder-form");
+    if (reminderForm) {
+      reminderForm.addEventListener("submit", async function (event) {
+        event.preventDefault();
+        var form = new FormData(reminderForm);
+        var remindAt = String(form.get("date") || "") + "T" + String(form.get("time") || "00:00") + ":00";
+        showOverlayLoader(editingReminder ? "Updating plan." : "Saving plan.");
+        try {
+          var payload = {
+            title: form.get("title"),
+            testId: form.get("testId"),
+            remindAt: new Date(remindAt).toISOString(),
+          };
+          if (editingReminder) {
+            await store.updateReminder(editingReminder.id, payload);
+            runtime.dashboardEditingReminderId = null;
+          } else {
+            await store.createReminder(payload);
+          }
+          runtime.dashboardReminderDate = String(form.get("date") || runtime.dashboardReminderDate);
+          await store.refreshFromRemote();
+          renderDashboard(user);
+        } finally {
+          hideOverlayLoader();
+        }
+      });
+    }
+    var cancelReminderEdit = document.getElementById("cancel-reminder-edit");
+    if (cancelReminderEdit) {
+      cancelReminderEdit.addEventListener("click", function () {
+        runtime.dashboardEditingReminderId = null;
+        renderDashboard(user);
+      });
+    }
+    app.querySelectorAll(".js-edit-reminder").forEach(function (button) {
+      button.addEventListener("click", function () {
+        runtime.dashboardEditingReminderId = button.dataset.id;
+        renderDashboard(user);
+      });
+    });
+    app.querySelectorAll(".js-delete-reminder").forEach(function (button) {
+      button.addEventListener("click", async function () {
+        await store.deleteReminder(button.dataset.id);
+        if (runtime.dashboardEditingReminderId === button.dataset.id) {
+          runtime.dashboardEditingReminderId = null;
+        }
+        renderDashboard(user);
       });
     });
   }
@@ -2205,7 +2469,8 @@
         getInstructionsModalMarkup(user, test, questions) +
         getImageLightboxMarkup() +
         '<div class="exam-footerbar">Version: 17.07.00</div>' +
-      '</section>'
+      '</section>',
+      { hideThemeToggle: true }
     );
     renderLatexInElement(document.body);
     bindFigureLoadDiagnostics();
@@ -2671,6 +2936,99 @@
       );
     }
 
+    function buildDonutChartSvg(segments, total, centerLabel, centerValue) {
+      var radius = 54;
+      var circumference = 2 * Math.PI * radius;
+      var offset = 0;
+      var safeTotal = Number(total || 0);
+      if (safeTotal <= 0) {
+        safeTotal = (segments || []).reduce(function (sum, segment) {
+          return sum + Number(segment.value || 0);
+        }, 0);
+      }
+      var rings = (segments || []).map(function (segment) {
+        var value = Math.max(0, Number(segment.value || 0));
+        var fraction = safeTotal > 0 ? value / safeTotal : 0;
+        var dash = Math.max(0, fraction * circumference);
+        var ring = '<circle class="analysis-donut-segment" cx="70" cy="70" r="' + radius + '" stroke="' + escapeAttribute(segment.color) + '" stroke-dasharray="' + dash + ' ' + (circumference - dash) + '" stroke-dashoffset="' + (-offset) + '"></circle>';
+        offset += dash;
+        return ring;
+      }).join("");
+      return (
+        '<div class="analysis-donut">' +
+          '<svg viewBox="0 0 140 140" aria-hidden="true">' +
+            '<circle class="analysis-donut-base" cx="70" cy="70" r="' + radius + '"></circle>' +
+            rings +
+          '</svg>' +
+          '<div class="analysis-donut-center">' +
+            '<span>' + escapeHtml(String(centerLabel || "")) + '</span>' +
+            '<strong>' + escapeHtml(String(centerValue || "")) + '</strong>' +
+          '</div>' +
+        '</div>'
+      );
+    }
+
+    function buildVisualAnalysisPanel(summary) {
+      var sectionValues = ["SUPR", "REAP"].map(function (key) {
+        return Number(sectionScores && sectionScores[key] && sectionScores[key].score || 0);
+      });
+      var sectionTotal = Math.max(1, sectionValues[0] + sectionValues[1]);
+      var latestAttempts = attemptHistory.slice(0, 6).reverse();
+      var maxHistoryScore = latestAttempts.reduce(function (max, item) {
+        return Math.max(max, Number(item && item.result && item.result.score || 0));
+      }, Math.max(1, Number(maxScore || 0)));
+      var scorePercent = maxScore ? Math.round((Number(result.score || 0) / Number(maxScore || 1)) * 100) : 0;
+      return (
+        '<section class="report-card analysis-stage"' + stageStyle(2) + '>' +
+          '<p class="section-label">Visual analysis</p>' +
+          '<div class="analysis-visual-grid">' +
+            '<div class="analysis-visual-card">' +
+              '<div class="analysis-review-head">' +
+                '<div><h3>Outcome split</h3><p class="helper-text">Correct vs wrong vs skipped</p></div>' +
+              '</div>' +
+              buildDonutChartSvg([
+                { value: Number(result.correctCount || 0), color: "#239442" },
+                { value: Number(result.wrongCount || 0), color: "#b73a28" },
+                { value: Number(result.unattemptedCount !== undefined ? result.unattemptedCount : result.skippedCount || 0), color: "#c9b99f" }
+              ], Number(questions.length || 0), "Coverage", scorePercent + "%") +
+              '<div class="analysis-legend-row">' +
+                '<span><i style="background:#239442"></i>Correct</span>' +
+                '<span><i style="background:#b73a28"></i>Wrong</span>' +
+                '<span><i style="background:#c9b99f"></i>Skipped</span>' +
+              '</div>' +
+            '</div>' +
+            '<div class="analysis-visual-card">' +
+              '<div class="analysis-review-head">' +
+                '<div><h3>Section share</h3><p class="helper-text">Marks captured from each section</p></div>' +
+              '</div>' +
+              buildDonutChartSvg([
+                { value: sectionValues[0], color: "#d8b13d" },
+                { value: sectionValues[1], color: "#8f2d1f" }
+              ], sectionTotal, "Score", String(result.score || 0)) +
+              '<div class="analysis-legend-row">' +
+                '<span><i style="background:#d8b13d"></i>SUPR</span>' +
+                '<span><i style="background:#8f2d1f"></i>REAP</span>' +
+              '</div>' +
+            '</div>' +
+          '</div>' +
+          '<div class="divider"></div>' +
+          '<div class="analysis-visual-card">' +
+            '<div class="analysis-review-head">' +
+              '<div><h3>Attempt trend</h3><p class="helper-text">Latest scores for this same test</p></div>' +
+            '</div>' +
+            (latestAttempts.length
+              ? '<div class="analysis-history-bars">' + latestAttempts.map(function (item, index) {
+                  var score = Number(item && item.result && item.result.score || 0);
+                  var height = Math.max(10, Math.min(100, Math.round((score / Math.max(1, maxHistoryScore)) * 100)));
+                  var isCurrent = item.id === attempt.id;
+                  return '<div class="analysis-history-bar' + (isCurrent ? ' is-current' : '') + '"><span style="height:' + height + '%;"></span><strong>' + escapeHtml(String(score)) + '</strong><small>A' + escapeHtml(String(item.attemptNumber || (index + 1))) + '</small></div>';
+                }).join("") + '</div>'
+              : '<div class="empty-state">Your next attempts will appear here as a score trend.</div>') +
+          '</div>' +
+        '</section>'
+      );
+    }
+
     function buildQuestionReviewShell() {
       return (
         '<section class="report-card analysis-stage"' + stageStyle(6) + '>' +
@@ -2713,8 +3071,11 @@
         );
       }
       if (summary) {
+        html += buildVisualAnalysisPanel(summary);
         html += buildTopicPanel(summary);
         html += buildTimePanel(summary);
+      } else {
+        html += buildVisualAnalysisPanel(null);
       }
       html += (
         '<section class="report-card analysis-stage"' + stageStyle(2) + '>' +
@@ -2995,10 +3356,12 @@
     var questions = store.getQuestions();
     var tests = store.getTests();
     var adminSnapshot = store.getAdminSnapshot();
+    var appConfig = (adminSnapshot && adminSnapshot.appConfig) || (store.getAppConfig ? store.getAppConfig() : { ugeeExamDate: null });
     var editingTest = runtime.adminEditingTestId ? store.getTestById(runtime.adminEditingTestId) : null;
     var editingQuestion = runtime.adminEditingQuestionId
       ? questions.find(function (question) { return question.id === runtime.adminEditingQuestionId; }) || null
       : null;
+    var questionMarkDefaults = getSectionDefaultMarking(editingQuestion ? editingQuestion.section : "SUPR");
     var pendingUploadedImageUrls = dedupeUrls(runtime.pendingUploadedQuestionImageUrls || []);
     runtime.adminSelectedTestId = preferredTestId || runtime.adminSelectedTestId;
     var selectedTestId = tests.some(function (test) {
@@ -3010,9 +3373,9 @@
       return test.id === selectedTestId;
     }) || null;
     var selectedTestQuestions = selectedTest
-      ? questions.filter(function (question) {
+      ? sortQuestionsForSelectedTest(selectedTest, questions.filter(function (question) {
           return selectedTest.questionIds.indexOf(question.id) !== -1;
-        })
+        }))
       : [];
     var selectedSuprCount = selectedTestQuestions.filter(function (question) {
       return question.section === "SUPR";
@@ -3081,6 +3444,11 @@
             '<aside class="admin-card">' +
               '<p class="section-label">Platform</p>' +
               '<div class="helper-text">Admin access is configured in the backend via <strong>ADMIN_EMAILS</strong>. Paid access is verified server-side via Google Sheets (verified emails list).</div>' +
+              '<div class="divider"></div>' +
+              '<form id="app-config-form">' +
+                '<div class="field"><label for="ugee-exam-date">UGEE exam date</label><input id="ugee-exam-date" name="ugeeExamDate" type="date" value="' + escapeAttribute(toDateInputValue(appConfig && appConfig.ugeeExamDate)) + '"></div>' +
+                '<div class="button-row" style="margin-top: 12px;"><button class="button button-secondary" type="submit">Save exam date</button></div>' +
+              '</form>' +
               '<div class="divider"></div>' +
               '<div class="metric-grid">' +
                 '<div class="metric-card"><strong>' + tests.length + '</strong><span>Tests</span></div>' +
@@ -3154,8 +3522,8 @@
                   '<div class="field"><label for="option-2">Option C</label><input id="option-2" name="option2" value="' + escapeAttribute(editingQuestion ? editingQuestion.options[2] : "") + '" required></div>' +
                   '<div class="field"><label for="option-3">Option D</label><input id="option-3" name="option3" value="' + escapeAttribute(editingQuestion ? editingQuestion.options[3] : "") + '" required></div>' +
                   '<div class="field"><label for="correct-option">Correct option</label><select id="correct-option" name="correctOption"><option value="0" ' + (editingQuestion && Number(editingQuestion.correctOption) === 0 ? 'selected' : '') + '>A</option><option value="1" ' + (editingQuestion && Number(editingQuestion.correctOption) === 1 ? 'selected' : '') + '>B</option><option value="2" ' + (editingQuestion && Number(editingQuestion.correctOption) === 2 ? 'selected' : '') + '>C</option><option value="3" ' + (editingQuestion && Number(editingQuestion.correctOption) === 3 ? 'selected' : '') + '>D</option></select></div>' +
-                  '<div class="field"><label for="question-marks">Marks</label><input id="question-marks" name="marks" type="number" step="any" value="' + (editingQuestion ? editingQuestion.marks : 4) + '"></div>' +
-                  '<div class="field"><label for="question-negative">Negative marks</label><input id="question-negative" name="negativeMarks" type="number" step="any" value="' + (editingQuestion ? Math.abs(editingQuestion.negativeMarks) : 1) + '"></div>' +
+                  '<div class="field"><label for="question-marks">Marks</label><input id="question-marks" name="marks" type="number" step="any" value="' + (editingQuestion ? editingQuestion.marks : questionMarkDefaults.marks) + '"></div>' +
+                  '<div class="field"><label for="question-negative">Negative marks</label><input id="question-negative" name="negativeMarks" type="number" step="any" value="' + (editingQuestion ? Math.abs(editingQuestion.negativeMarks) : questionMarkDefaults.negativeMarks) + '"></div>' +
                   '<div class="field" style="grid-column: 1 / -1;"><label for="question-explanation">Solution</label><textarea id="question-explanation" name="explanation" rows="4" required>' + escapeHtml(editingQuestion ? editingQuestion.explanation : "") + '</textarea><div class="helper-text">Supports LaTeX: use $...$ for inline, $$...$$ for display math.</div></div>' +
                   '<div class="field" style="grid-column: 1 / -1;">' +
                     '<div class="latex-preview-toolbar">' +
@@ -3262,6 +3630,24 @@
     document.getElementById("back-dashboard").addEventListener("click", function () {
       navigate("dashboard");
     });
+    var appConfigForm = document.getElementById("app-config-form");
+    if (appConfigForm) {
+      appConfigForm.addEventListener("submit", async function (event) {
+        event.preventDefault();
+        var form = new FormData(appConfigForm);
+        var rawDate = String(form.get("ugeeExamDate") || "").trim();
+        showOverlayLoader("Saving exam date.");
+        try {
+          await store.updateAppConfig({
+            ugeeExamDate: rawDate ? new Date(rawDate + "T00:00:00").toISOString() : null,
+          });
+          await store.refreshFromRemote();
+          rerenderAdminPreserveScroll(user, selectedTestId);
+        } finally {
+          hideOverlayLoader();
+        }
+      });
+    }
 
     var openUsersButton = document.getElementById("open-users");
     if (openUsersButton) {
@@ -3904,6 +4290,19 @@
           }
         });
 
+      var questionSectionSelect = questionForm.querySelector("#question-section");
+      var questionMarksInput = questionForm.querySelector("#question-marks");
+      var questionNegativeInput = questionForm.querySelector("#question-negative");
+      function applySectionMarkDefaults() {
+        if (!questionSectionSelect || !questionMarksInput || !questionNegativeInput) return;
+        var defaults = getSectionDefaultMarking(questionSectionSelect.value);
+        questionMarksInput.value = String(defaults.marks);
+        questionNegativeInput.value = String(defaults.negativeMarks);
+      }
+      if (questionSectionSelect) {
+        questionSectionSelect.addEventListener("change", applySectionMarkDefaults);
+      }
+
       var questionFilesInput = questionForm.querySelector("#question-files");
       if (questionFilesInput) {
         questionFilesInput.addEventListener("change", function () {
@@ -4315,12 +4714,13 @@
       }) : users).slice(0, 60);
 
       var rows = list.map(function (u) {
+        var online = isUserOnline(u);
         return (
           '<div class="table-row">' +
-            '<span><strong>' + highlightMatch(u.name || "Student", needle) + '</strong><br><small>' + highlightMatch(u.email || "", needle) + '</small></span>' +
+            '<span><strong><span class="presence-dot ' + (online ? 'is-online' : 'is-offline') + '"></span>' + highlightMatch(u.name || "Student", needle) + '</strong><br><small>' + highlightMatch(u.email || "", needle) + '</small></span>' +
             '<span>' + escapeHtml(u.role || "student") + '</span>' +
             '<span>' + (u.isPaid ? "Paid" : "Free") + '</span>' +
-            '<span><small>' + escapeHtml(formatDateTime(u.createdAt)) + '</small></span>' +
+            '<span><small>' + escapeHtml(formatDateTime(u.createdAt)) + '</small><br><small class="helper-text">' + (online ? 'Live now' : ('Last seen ' + escapeHtml(formatDateTime(u.lastSeenAt || "")))) + '</small></span>' +
           '</div>'
         );
       }).join("");
@@ -4373,12 +4773,43 @@
       }
     }
 
+    function buildMiniBarRow(label, value, maxValue, suffix) {
+      var safeValue = Number.isFinite(Number(value)) ? Number(value) : 0;
+      var safeMax = Number.isFinite(Number(maxValue)) && Number(maxValue) > 0 ? Number(maxValue) : 1;
+      var width = Math.max(6, Math.min(100, Math.round((safeValue / safeMax) * 100)));
+      return '<div class="analysis-bar-row"><span>' + escapeHtml(label) + '</span><div class="analysis-bar-track"><div class="analysis-bar-fill" style="width:' + width + '%;"></div></div><strong>' + escapeHtml(String(safeValue)) + escapeHtml(String(suffix || "")) + '</strong></div>';
+    }
+
     function renderAnalyticsCards(analytics) {
       var a = analytics || { count: 0, avgScore: 0, avgAccuracy: 0, maxScore: 0 };
       var avgScore = Number.isFinite(Number(a.avgScore)) ? Number(a.avgScore).toFixed(2) : "0.00";
       var avgAcc = Number.isFinite(Number(a.avgAccuracy)) ? Number(a.avgAccuracy).toFixed(1) : "0.0";
       var maxScore = Number.isFinite(Number(a.maxScore)) ? Number(a.maxScore) : 0;
       var count = Number.isFinite(Number(a.count)) ? Number(a.count) : 0;
+      var selectedTestId = (analyticsSelect && analyticsSelect.value) || defaultTestId;
+      var selectedTest = tests.find(function (t) { return t.id === selectedTestId; }) || null;
+      var recentResults = (window.__aceAdminResults || []).filter(function (item) {
+        return item && item.test && item.test.id === selectedTestId;
+      });
+      var maxMarks = selectedTest ? Number((selectedTest.questionIds || []).length ? store.getQuestionsForTest(selectedTest.id).reduce(function (sum, q) { return sum + Number(q.marks || 0); }, 0) : 0) : 0;
+      var scoreBands = { "0-25%": 0, "26-50%": 0, "51-75%": 0, "76-100%": 0 };
+      var timeBands = { "<30m": 0, "30-60m": 0, "60-120m": 0, "120m+": 0 };
+      var latestTrend = recentResults.slice(0, 8).reverse();
+      recentResults.forEach(function (item) {
+        var ratio = maxMarks > 0 ? (Number(item.score || 0) / maxMarks) * 100 : 0;
+        if (ratio <= 25) scoreBands["0-25%"] += 1;
+        else if (ratio <= 50) scoreBands["26-50%"] += 1;
+        else if (ratio <= 75) scoreBands["51-75%"] += 1;
+        else scoreBands["76-100%"] += 1;
+
+        var minutes = Number(item.timeTakenSeconds || 0) / 60;
+        if (minutes < 30) timeBands["<30m"] += 1;
+        else if (minutes < 60) timeBands["30-60m"] += 1;
+        else if (minutes < 120) timeBands["60-120m"] += 1;
+        else timeBands["120m+"] += 1;
+      });
+      var scoreBandMax = Math.max(1, scoreBands["0-25%"], scoreBands["26-50%"], scoreBands["51-75%"], scoreBands["76-100%"]);
+      var timeBandMax = Math.max(1, timeBands["<30m"], timeBands["30-60m"], timeBands["60-120m"], timeBands["120m+"]);
       var container = document.getElementById("analytics-cards");
       if (container) {
         container.innerHTML =
@@ -4388,7 +4819,31 @@
             '<div class="metric-card"><strong>' + escapeHtml(String(maxScore)) + '</strong><span>Top score</span></div>' +
             '<div class="metric-card"><strong>' + escapeHtml(String(avgScore)) + '</strong><span>Avg score</span></div>' +
             '<div class="metric-card"><strong>' + escapeHtml(String(avgAcc)) + '%</strong><span>Avg accuracy</span></div>' +
-          '</div>';
+          '</div>' +
+          '<div class="divider"></div>' +
+          '<p class="section-label">Score spread</p>' +
+          '<div class="analysis-bar-stack">' +
+            buildMiniBarRow("0-25%", scoreBands["0-25%"], scoreBandMax, "") +
+            buildMiniBarRow("26-50%", scoreBands["26-50%"], scoreBandMax, "") +
+            buildMiniBarRow("51-75%", scoreBands["51-75%"], scoreBandMax, "") +
+            buildMiniBarRow("76-100%", scoreBands["76-100%"], scoreBandMax, "") +
+          '</div>' +
+          '<div class="divider"></div>' +
+          '<p class="section-label">Time spread</p>' +
+          '<div class="analysis-bar-stack">' +
+            buildMiniBarRow("<30m", timeBands["<30m"], timeBandMax, "") +
+            buildMiniBarRow("30-60m", timeBands["30-60m"], timeBandMax, "") +
+            buildMiniBarRow("60-120m", timeBands["60-120m"], timeBandMax, "") +
+            buildMiniBarRow("120m+", timeBands["120m+"], timeBandMax, "") +
+          '</div>' +
+          '<div class="divider"></div>' +
+          '<p class="section-label">Recent trend</p>' +
+          (latestTrend.length
+            ? '<div class="trend-sparkline">' + latestTrend.map(function (item) {
+                var height = maxMarks > 0 ? Math.max(12, Math.min(100, Math.round((Number(item.score || 0) / maxMarks) * 100))) : 12;
+                return '<div class="trend-bar"><span style="height:' + height + '%;"></span><small>' + escapeHtml(String(Number(item.score || 0))) + '</small></div>';
+              }).join("") + '</div>'
+            : '<div class="empty-state">More submissions will unlock trend visuals here.</div>');
       }
     }
 
@@ -4403,8 +4858,13 @@
     Promise.resolve().then(async function () {
       try {
         var payload = await store.getAdminResults();
-        renderResultsRows(payload && payload.results ? payload.results : []);
+        window.__aceAdminResults = payload && payload.results ? payload.results : [];
+        renderResultsRows(window.__aceAdminResults);
+        if (defaultTestId || (analyticsSelect && analyticsSelect.value)) {
+          loadAnalytics((analyticsSelect && analyticsSelect.value) || defaultTestId);
+        }
       } catch (_err) {
+        window.__aceAdminResults = [];
         renderResultsRows([]);
       }
     });
@@ -4651,6 +5111,7 @@
     var parts = routeParts();
     var user = auth.getCurrentUser();
     var view = parts[0] || (user ? "dashboard" : "login");
+    applyTheme();
 
     if (view !== "test") {
       stopRuntime(true);
@@ -4755,6 +5216,11 @@
   window.addEventListener("beforeunload", function () {
     clearKeepAliveTimer();
     flushQuestionTime();
+  });
+  document.addEventListener("click", function (event) {
+    var toggle = event.target && event.target.closest ? event.target.closest("[data-theme-toggle='true']") : null;
+    if (!toggle) return;
+    toggleThemePreference();
   });
 
   if (!window.location.hash) {
