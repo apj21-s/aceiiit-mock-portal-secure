@@ -127,6 +127,8 @@ body[data-theme="dark"] .report-card,
 body[data-theme="dark"] .admin-card,
 body[data-theme="dark"] .instructions-card,
 body[data-theme="dark"] .dashboard-card,
+body[data-theme="dark"] .dashboard-highlight-banner,
+body[data-theme="dark"] .dashboard-notice-card,
 body[data-theme="dark"] .question-card,
 body[data-theme="dark"] .solution-card,
 body[data-theme="dark"] .admin-modal-card {
@@ -757,6 +759,51 @@ textarea:focus-visible {
 .instructions-grid {
   grid-template-columns: minmax(0, 2fr) minmax(300px, 1fr);
   margin-top: 20px;
+}
+
+.dashboard-top-notes {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
+  margin-top: 24px;
+}
+
+.dashboard-highlight-banner,
+.dashboard-notice-card {
+  display: grid;
+  gap: 10px;
+  padding: 18px 20px;
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(20, 17, 15, 0.08);
+}
+
+.dashboard-highlight-banner {
+  background:
+    radial-gradient(circle at top right, rgba(216, 177, 61, 0.22), transparent 30%),
+    linear-gradient(135deg, rgba(255, 247, 224, 0.98), rgba(247, 238, 219, 0.98));
+}
+
+.dashboard-notice-card {
+  background: rgba(255, 250, 240, 0.86);
+}
+
+.dashboard-highlight-banner strong,
+.dashboard-notice-card h3 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 1.15rem;
+  letter-spacing: -0.03em;
+  text-transform: uppercase;
+}
+
+.dashboard-highlight-banner span,
+.dashboard-notice-card p {
+  color: var(--ink-soft);
+  line-height: 1.7;
+}
+
+.dashboard-notice-card .empty-state {
+  margin: 0;
 }
 
 .panel,
@@ -2045,6 +2092,15 @@ textarea:focus-visible {
   text-align: center;
 }
 
+.app-footer-inline {
+  width: 100%;
+  margin: 0;
+  padding: 18px 24px 20px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(20, 17, 15, 0.98);
+  color: #f7f0e4;
+}
+
 .theme-nav-button {
   display: inline-flex;
   justify-content: center;
@@ -2114,6 +2170,7 @@ body[data-theme="dark"] .theme-nav-button:hover {
   }
 
   .hero-grid,
+  .dashboard-top-notes,
   .dashboard-stats,
   .summary-grid,
   .analysis-showcase,
@@ -2175,6 +2232,11 @@ body[data-theme="dark"] .theme-nav-button:hover {
 .app-footer {
   width: min(1200px, calc(100% - 28px));
   margin: auto auto 0;
+}
+
+.app-footer-inline {
+  width: 100%;
+  margin: 0;
 }
 
 .utility-layout {

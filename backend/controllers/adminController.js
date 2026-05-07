@@ -291,6 +291,9 @@ async function snapshot(req, res, next) {
       userCount,
       appConfig: {
         ugeeExamDate: appConfig && appConfig.ugeeExamDate ? appConfig.ugeeExamDate : null,
+        featuredTestId: appConfig && appConfig.featuredTestId ? String(appConfig.featuredTestId) : "",
+        noticeTitle: appConfig && appConfig.noticeTitle ? appConfig.noticeTitle : "",
+        noticeBody: appConfig && appConfig.noticeBody ? appConfig.noticeBody : "",
       },
     });
   } catch (err) {
@@ -302,11 +305,23 @@ async function updateAppConfig(req, res, next) {
   try {
     const schema = z.object({
       ugeeExamDate: z.string().datetime().nullable().optional(),
+      featuredTestId: z.string().trim().nullable().optional(),
+      noticeTitle: z.string().max(120).nullable().optional(),
+      noticeBody: z.string().max(2000).nullable().optional(),
     });
     const input = schema.parse(req.body || {});
     const payload = {};
     if (Object.prototype.hasOwnProperty.call(input, "ugeeExamDate")) {
       payload.ugeeExamDate = input.ugeeExamDate ? new Date(input.ugeeExamDate) : null;
+    }
+    if (Object.prototype.hasOwnProperty.call(input, "featuredTestId")) {
+      payload.featuredTestId = input.featuredTestId ? input.featuredTestId : null;
+    }
+    if (Object.prototype.hasOwnProperty.call(input, "noticeTitle")) {
+      payload.noticeTitle = input.noticeTitle ? String(input.noticeTitle).trim() : "";
+    }
+    if (Object.prototype.hasOwnProperty.call(input, "noticeBody")) {
+      payload.noticeBody = input.noticeBody ? String(input.noticeBody).trim() : "";
     }
     payload.updatedBy = req.auth.userId;
 
@@ -319,6 +334,9 @@ async function updateAppConfig(req, res, next) {
     res.json({
       appConfig: {
         ugeeExamDate: config && config.ugeeExamDate ? config.ugeeExamDate : null,
+        featuredTestId: config && config.featuredTestId ? String(config.featuredTestId) : "",
+        noticeTitle: config && config.noticeTitle ? config.noticeTitle : "",
+        noticeBody: config && config.noticeBody ? config.noticeBody : "",
       },
     });
   } catch (err) {

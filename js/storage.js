@@ -18,6 +18,9 @@
       reminders: [],
       appConfig: {
         ugeeExamDate: null,
+        featuredTestId: "",
+        noticeTitle: "",
+        noticeBody: "",
       },
     },
     session: {
@@ -65,7 +68,7 @@
     );
     state.db.questionCache = state.db.questionCache || {};
     state.db.reminders = Array.isArray(state.db.reminders) ? state.db.reminders : [];
-    state.db.appConfig = Object.assign({ ugeeExamDate: null }, state.db.appConfig || {});
+    state.db.appConfig = Object.assign({ ugeeExamDate: null, featuredTestId: "", noticeTitle: "", noticeBody: "" }, state.db.appConfig || {});
     state.session = Object.assign(state.session, loadJson(SESSION_KEY, {}));
     state.session.token = String(state.session.token || "");
     state.session.user = state.session.user || null;
@@ -482,6 +485,18 @@
     return isAdmin(state.session.user) ? refreshAdminData() : refreshStudentData();
   }
 
+  async function touchPresence() {
+    if (!state.session.token || !state.session.user) {
+      return { ok: false };
+    }
+    var me = await api("/api/auth/me", { method: "GET" });
+    if (me && me.user) {
+      state.session.user = me.user;
+      saveState();
+    }
+    return { ok: true, user: me && me.user ? me.user : null };
+  }
+
   async function sendOtp(payload) {
     await api("/api/auth/send-otp", {
       method: "POST",
@@ -773,7 +788,7 @@
   }
 
   function getAppConfig() {
-    return clone(state.db.appConfig || { ugeeExamDate: null });
+    return clone(state.db.appConfig || { ugeeExamDate: null, featuredTestId: "", noticeTitle: "", noticeBody: "" });
   }
 
   function listReminders() {
@@ -1075,6 +1090,7 @@
     },
     getCurrentUser: getCurrentUser,
     refreshFromRemote: refreshFromRemote,
+    touchPresence: touchPresence,
     subscribeToRemoteChanges: function () {
       return function () {};
     },

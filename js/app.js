@@ -46,9 +46,9 @@
   var syncPollId = null;
   var syncInFlight = false;
   var syncQueued = false;
-  var KEEP_ALIVE_INTERVAL_MS = 5 * 60 * 1000;
+  var KEEP_ALIVE_INTERVAL_MS = 60 * 1000;
   var KEEP_ALIVE_TIMEOUT_MS = 8000;
-  var USER_ONLINE_WINDOW_MS = 2 * 60 * 1000;
+  var USER_ONLINE_WINDOW_MS = 3 * 60 * 1000;
   var THEME_SETTING_KEY = "theme";
 
   function initials(name) {
@@ -690,6 +690,21 @@
     return new Date(value).toLocaleString();
   }
 
+  function formatDateOnly(value) {
+    if (!value) {
+      return "-";
+    }
+    var date = new Date(value);
+    if (Number.isNaN(date.getTime())) {
+      return String(value);
+    }
+    return [
+      String(date.getDate()).padStart(2, "0"),
+      String(date.getMonth() + 1).padStart(2, "0"),
+      String(date.getFullYear())
+    ].join("/");
+  }
+
   function rerenderAdminPreserveScroll(user, selectedTestId) {
     var scrollY = window.scrollY || window.pageYOffset || 0;
     var active = document.activeElement;
@@ -1137,12 +1152,12 @@
       }
     }, KEEP_ALIVE_TIMEOUT_MS);
 
-    fetch("/health", {
+    Promise.resolve(store.touchPresence ? store.touchPresence() : fetch("/api/auth/me", {
       method: "GET",
       cache: "no-store",
       credentials: "same-origin",
       signal: controller ? controller.signal : undefined,
-    })
+    }))
       .catch(function () {})
       .finally(function () {
         runtime.keepAliveInFlight = false;
@@ -1226,13 +1241,17 @@
   function buildShell(content, options) {
     options = options || {};
     var shellClass = "page-shell";
+    var footerHtml = '<div class="app-footer">AceIIIT MockTest Portal</div>';
     if (options.fluid) {
       shellClass += " is-fluid";
+    }
+    if (options.hideFooter) {
+      footerHtml = "";
     }
     return (
       '<main class="' + shellClass + '">' +
         content +
-        '<div class="app-footer">AceIIIT MockTest Portal</div>' +
+        footerHtml +
       "</main>"
     );
   }
@@ -1711,7 +1730,28 @@
 
   function renderDashboard(user) {
     var snapshot = store.getDashboardSnapshot(user.id);
-    var appConfig = store.getAppConfig ? store.getAppConfig() : { ugeeExamDate: null };
+    var appConfig = store.getAppConfig ? store.getAppConfig() : { ugeeExamDate: null, featuredTestId: "", noticeTitle: "", noticeBody: "" };
+    var featuredTest = appConfig && appConfig.featuredTestId
+      ? snapshot.tests.find(function (test) { return test.id === appConfig.featuredTestId; }) || null
+      : null;
+    var featuredBannerHtml = featuredTest
+      ? (
+        '<div class="dashboard-highlight-banner">' +
+          '<p class="section-label" style="margin:0;">Up Soon</p>' +
+          '<strong>' + escapeHtml(featuredTest.title) + '</strong>' +
+          '<span>' + escapeHtml(featuredTest.subtitle || "This mock is being prepared and will appear on your dashboard soon.") + '</span>' +
+        '</div>'
+      )
+      : "";
+    var noticeBoardHtml = appConfig && (appConfig.noticeTitle || appConfig.noticeBody)
+      ? (
+        '<div class="dashboard-notice-card">' +
+          '<p class="section-label">Notice board</p>' +
+          (appConfig.noticeTitle ? '<h3>' + escapeHtml(appConfig.noticeTitle) + '</h3>' : "") +
+          (appConfig.noticeBody ? '<p>' + escapeHtml(appConfig.noticeBody).replace(/\n/g, "<br>") + '</p>' : "") +
+        '</div>'
+      )
+      : '<div class="dashboard-notice-card"><p class="section-label">Notice board</p><div class="empty-state">No notice from admin right now.</div></div>';
     var reminderEligibleTests = snapshot.tests.filter(function (test) {
       if (!test || test.status !== "live") {
         return false;
@@ -1851,7 +1891,7 @@
           if (cell.iso === toDateInputValue(new Date())) classes.push("is-today");
           return '<button type="button" class="' + classes.join(" ") + '" data-calendar-date="' + escapeAttribute(cell.iso) + '"><span>' + escapeHtml(String(cell.label)) + '</span></button>';
         }).join("") + '</div>' +
-        '<div class="calendar-helper">' + (examDateValue ? ('UGEE exam day: ' + escapeHtml(formatDateTime(appConfig.ugeeExamDate))) : 'Admin has not set the UGEE exam date yet.') + '</div>' +
+        '<div class="calendar-helper">' + (examDateValue ? ('UGEE exam day: ' + escapeHtml(formatDateOnly(appConfig.ugeeExamDate))) : 'Admin has not set the UGEE exam date yet.') + '</div>' +
         '<div class="divider"></div>' +
         '<form id="reminder-form" class="grid-two">' +
           '<div class="field" style="grid-column: 1 / -1;"><label for="reminder-title">Plan title</label><input id="reminder-title" name="title" value="' + escapeAttribute(editingReminder ? editingReminder.title : "Attempt mock test") + '" required></div>' +
@@ -1888,6 +1928,7 @@
         '<p class="section-label" style="margin-top: 18px;">Dashboard</p>' +
         '<h1>' + escapeHtml(timeGreeting()) + ', ' + escapeHtml(firstName(user.name)) + '.</h1>' +
         '<p>Choose a paper, read the instructions, and start the timed SUPR → REAP flow.</p>' +
+        '<div class="dashboard-top-notes">' + featuredBannerHtml + noticeBoardHtml + '</div>' +
       '</section>' +
       '<section class="dashboard-grid">' +
         '<div class="panel">' +
@@ -3382,7 +3423,7 @@
     var questions = store.getQuestions();
     var tests = store.getTests();
     var adminSnapshot = store.getAdminSnapshot();
-    var appConfig = (adminSnapshot && adminSnapshot.appConfig) || (store.getAppConfig ? store.getAppConfig() : { ugeeExamDate: null });
+    var appConfig = (adminSnapshot && adminSnapshot.appConfig) || (store.getAppConfig ? store.getAppConfig() : { ugeeExamDate: null, featuredTestId: "", noticeTitle: "", noticeBody: "" });
     var editingTest = runtime.adminEditingTestId ? store.getTestById(runtime.adminEditingTestId) : null;
     var editingQuestion = runtime.adminEditingQuestionId
       ? questions.find(function (question) { return question.id === runtime.adminEditingQuestionId; }) || null
@@ -3474,7 +3515,14 @@
               '<div class="divider"></div>' +
               '<form id="app-config-form">' +
                 '<div class="field"><label for="ugee-exam-date">UGEE exam date</label><input id="ugee-exam-date" name="ugeeExamDate" type="date" value="' + escapeAttribute(toDateInputValue(appConfig && appConfig.ugeeExamDate)) + '"></div>' +
-                '<div class="button-row" style="margin-top: 12px;"><button class="button button-secondary" type="submit">Save exam date</button></div>' +
+                '<div class="field"><label for="featured-test-id">Coming soon test</label><select id="featured-test-id" name="featuredTestId"><option value="">None</option>' +
+                  tests.map(function (test) {
+                    return '<option value="' + escapeAttribute(test.id) + '"' + (appConfig && appConfig.featuredTestId === test.id ? ' selected' : '') + '>' + escapeHtml(test.title) + '</option>';
+                  }).join("") +
+                '</select></div>' +
+                '<div class="field"><label for="notice-title">Notice title</label><input id="notice-title" name="noticeTitle" value="' + escapeAttribute((appConfig && appConfig.noticeTitle) || "") + '" placeholder="Important update"></div>' +
+                '<div class="field" style="grid-column: 1 / -1;"><label for="notice-body">Notice board message</label><textarea id="notice-body" name="noticeBody" rows="5" placeholder="Add any dashboard notice here. Everyone will see it.">' + escapeHtml((appConfig && appConfig.noticeBody) || "") + '</textarea></div>' +
+                '<div class="button-row" style="margin-top: 12px;"><button class="button button-secondary" type="submit">Save platform notices</button></div>' +
               '</form>' +
               '<div class="divider"></div>' +
               '<div class="metric-grid">' +
@@ -3632,8 +3680,9 @@
             '</aside>' +
           '</div>' +
         '</div>' +
+        '<div class="app-footer app-footer-inline">AceIIIT MockTest Portal</div>' +
       '</section>'
-    , { fluid: true });
+    , { fluid: true, hideFooter: true });
     renderLatexInElement(document.body);
 
     var testForm = document.getElementById("test-form");
@@ -3663,10 +3712,16 @@
         event.preventDefault();
         var form = new FormData(appConfigForm);
         var rawDate = String(form.get("ugeeExamDate") || "").trim();
-        showOverlayLoader("Saving exam date.");
+        var featuredTestId = String(form.get("featuredTestId") || "").trim();
+        var noticeTitle = String(form.get("noticeTitle") || "").trim();
+        var noticeBody = String(form.get("noticeBody") || "").trim();
+        showOverlayLoader("Saving platform notice.");
         try {
           await store.updateAppConfig({
             ugeeExamDate: rawDate ? new Date(rawDate + "T00:00:00").toISOString() : null,
+            featuredTestId: featuredTestId || null,
+            noticeTitle: noticeTitle,
+            noticeBody: noticeBody,
           });
           await store.refreshFromRemote();
           rerenderAdminPreserveScroll(user, selectedTestId);
@@ -5056,6 +5111,7 @@
             ) : '<div class="empty-state">Create a test first to view its leaderboard.</div>') +
           '</div>' +
         '</div>' +
+        '<div class="app-footer app-footer-inline">AceIIIT MockTest Portal</div>' +
       '</section>'
     );
     document.getElementById("back-admin").addEventListener("click", function () {

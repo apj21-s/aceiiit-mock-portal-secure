@@ -28,6 +28,9 @@ async function listTests(req, res, next) {
     ]);
     payload.appConfig = {
       ugeeExamDate: appConfig && appConfig.ugeeExamDate ? appConfig.ugeeExamDate : null,
+      featuredTestId: appConfig && appConfig.featuredTestId ? String(appConfig.featuredTestId) : "",
+      noticeTitle: appConfig && appConfig.noticeTitle ? appConfig.noticeTitle : "",
+      noticeBody: appConfig && appConfig.noticeBody ? appConfig.noticeBody : "",
     };
     res.json(payload);
   } catch (err) {
