@@ -48,6 +48,7 @@
   var BUY_SERIES_URL = "https://ketc8up.github.io/AceIIIT/registrations.html";
   var remoteChangeUnsubscribe = null;
   var overlayLoaderVisible = false;
+  var overlayLoaderTimer = 0;
   var syncPollId = null;
   var syncInFlight = false;
   var syncQueued = false;
@@ -55,6 +56,7 @@
   var KEEP_ALIVE_TIMEOUT_MS = 8000;
   var USER_ONLINE_WINDOW_MS = 3 * 60 * 1000;
   var THEME_SETTING_KEY = "theme";
+  var SUPPORT_WHATSAPP_NUMBER = "910000000000";
 
   function initials(name) {
     return String(name || "A")
@@ -373,34 +375,55 @@
     var retryButton = document.getElementById("retry-render");
     if (retryButton) {
       retryButton.addEventListener("click", function () {
-        syncAndRenderCurrentRoute();
+        syncAndRenderCurrentRoute({ showOverlay: true });
       });
     }
   }
 
-  function showOverlayLoader(label) {
+  function showOverlayLoader(label, options) {
     if (!document.body) {
       return;
     }
 
     hideOverlayLoader();
-    document.body.classList.add("is-syncing");
+    var settings = options || {};
+    var delayMs = settings.immediate ? 0 : Math.max(0, Number(settings.delayMs || 260));
 
-    var overlay = document.createElement("div");
-    overlay.className = "sync-overlay";
-    overlay.setAttribute("data-sync-overlay", "true");
-    overlay.innerHTML =
-      '<div class="sync-overlay-card">' +
-        '<div class="sync-ring-loader"><span></span><span></span></div>' +
-        '<p class="sync-overlay-text" aria-label="Syncing">' +
-          '<span>S</span><span>Y</span><span>N</span><span>C</span><span>I</span><span>N</span><span>G</span>' +
-        '</p>' +
-      '</div>';
-    document.body.appendChild(overlay);
-    overlayLoaderVisible = true;
+    function mountOverlay() {
+      if (!document.body) {
+        return;
+      }
+      document.body.classList.add("is-syncing");
+
+      var overlay = document.createElement("div");
+      overlay.className = "sync-overlay";
+      overlay.setAttribute("data-sync-overlay", "true");
+      overlay.innerHTML =
+        '<div class="sync-overlay-card">' +
+          '<div class="sync-ring-loader"><span></span><span></span></div>' +
+          '<p class="sync-overlay-text" aria-label="Syncing">' +
+            '<span>S</span><span>Y</span><span>N</span><span>C</span><span>I</span><span>N</span><span>G</span>' +
+          '</p>' +
+        '</div>';
+      document.body.appendChild(overlay);
+      overlayLoaderVisible = true;
+    }
+
+    if (delayMs === 0) {
+      mountOverlay();
+      return;
+    }
+    overlayLoaderTimer = window.setTimeout(function () {
+      overlayLoaderTimer = 0;
+      mountOverlay();
+    }, delayMs);
   }
 
   function hideOverlayLoader() {
+    if (overlayLoaderTimer) {
+      window.clearTimeout(overlayLoaderTimer);
+      overlayLoaderTimer = 0;
+    }
     overlayLoaderVisible = false;
     document.body.classList.remove("is-syncing");
     var existing = document.querySelector("[data-sync-overlay='true']");
@@ -1604,6 +1627,15 @@
     options = options || {};
     var shellClass = "page-shell";
     var footerHtml = '<div class="app-footer">AceIIIT MockTest Portal</div>';
+    var supportChatHref = "https://wa.me/" + encodeURIComponent(SUPPORT_WHATSAPP_NUMBER) + "?text=" + encodeURIComponent("Hi AceIIIT, I need help with the portal.");
+    var supportChatHtml = options.hideSupportChat
+      ? ""
+      : (
+        '<a class="support-chat-button" href="' + escapeAttribute(supportChatHref) + '" target="_blank" rel="noreferrer" aria-label="Chat on WhatsApp for support" title="WhatsApp support">' +
+          '<span class="support-chat-icon" aria-hidden="true">W</span>' +
+          '<span class="support-chat-copy"><strong>Need help?</strong><small>Chat on WhatsApp</small></span>' +
+        '</a>'
+      );
     if (options.fluid) {
       shellClass += " is-fluid";
     }
@@ -1613,6 +1645,7 @@
     return (
       '<main class="' + shellClass + '">' +
         content +
+        supportChatHtml +
         footerHtml +
       "</main>"
     );
@@ -2769,8 +2802,9 @@
     schedulePlannerNotifications(plannerEvents);
   }
 
-  function syncAndRenderCurrentRoute() {
+  function syncAndRenderCurrentRoute(options) {
     var currentView = routeParts()[0] || "";
+    var settings = options || {};
     if (isExamLikeRoute(currentView)) {
       try {
         renderRoute();
@@ -2786,7 +2820,9 @@
       return;
     }
     syncInFlight = true;
-    showOverlayLoader("Syncing the newest backend changes into this screen.");
+    if (settings.showOverlay) {
+      showOverlayLoader("Syncing the newest backend changes into this screen.", { delayMs: 420 });
+    }
     Promise.resolve(store.refreshFromRemote ? store.refreshFromRemote() : true).then(function () {
       try {
         renderRoute();
@@ -2804,12 +2840,16 @@
       }
     }).finally(function () {
       syncInFlight = false;
-      window.requestAnimationFrame(function () {
-        window.setTimeout(hideOverlayLoader, 180);
-      });
+      if (settings.showOverlay) {
+        window.requestAnimationFrame(function () {
+          window.setTimeout(hideOverlayLoader, 180);
+        });
+      }
       if (syncQueued) {
         syncQueued = false;
-        window.setTimeout(syncAndRenderCurrentRoute, 0);
+        window.setTimeout(function () {
+          syncAndRenderCurrentRoute(settings);
+        }, 0);
       }
     });
   }
@@ -3248,7 +3288,7 @@
         getImageLightboxMarkup() +
         '<div class="exam-footerbar">Version: 17.07.00</div>' +
       '</section>',
-      { hideThemeToggle: true }
+      { hideThemeToggle: true, hideSupportChat: true }
     );
     renderLatexInElement(document.body);
     bindFigureLoadDiagnostics();
@@ -5116,7 +5156,7 @@
           uploadQuestionImagesButton.textContent = "Uploading...";
           try {
             var preparedFiles = await prepareQuestionUploadFiles(runtime.pendingQuestionFiles);
-            showOverlayLoader("Uploading image to Cloudinary.");
+            showOverlayLoader("Uploading image to Cloudinary.", { delayMs: 320 });
             var uploadedUrls = await store.uploadQuestionImages(preparedFiles);
             runtime.pendingUploadedQuestionImageUrls = dedupeUrls((runtime.pendingUploadedQuestionImageUrls || []).concat(uploadedUrls || []));
             if (questionFilesInput) {
@@ -5170,7 +5210,7 @@
             negativeMarks: form.get("negativeMarks")
           };
 
-          showOverlayLoader(runtime.adminEditingQuestionId ? "Updating question." : "Creating question.");
+          showOverlayLoader(runtime.adminEditingQuestionId ? "Updating question." : "Creating question.", { delayMs: 650 });
           var savedQuestion = runtime.adminEditingQuestionId
             ? await store.updateQuestion(runtime.adminEditingQuestionId, payload, selectedFiles)
             : await store.createQuestion(payload, selectedFiles);
@@ -5239,7 +5279,7 @@
       swapped[currentIndex] = swapped[targetIndex];
       swapped[targetIndex] = currentId;
 
-      showOverlayLoader("Updating dashboard order.");
+      showOverlayLoader("Updating dashboard order.", { delayMs: 320 });
       try {
         if (store.reorderTests) {
           await store.reorderTests(swapped);
@@ -5278,7 +5318,7 @@
     app.querySelectorAll(".js-toggle-live").forEach(function (button) {
       button.addEventListener("click", async function () {
         var test = store.getTestById(button.dataset.id);
-        showOverlayLoader("Updating test.");
+        showOverlayLoader("Updating test.", { delayMs: 320 });
         try {
           await store.updateTest(button.dataset.id, {
             status: test.status === "live" ? "draft" : "live"
@@ -5294,7 +5334,7 @@
 
     app.querySelectorAll(".js-delete-test").forEach(function (button) {
       button.addEventListener("click", async function () {
-        showOverlayLoader("Deleting test.");
+        showOverlayLoader("Deleting test.", { delayMs: 320 });
         try {
           await store.deleteTest(button.dataset.id);
           if (runtime.adminSelectedTestId === button.dataset.id) {
@@ -5328,7 +5368,7 @@
 
     app.querySelectorAll(".js-delete-question").forEach(function (button) {
       button.addEventListener("click", async function () {
-        showOverlayLoader("Deleting question.");
+        showOverlayLoader("Deleting question.", { delayMs: 420 });
         try {
           await store.deleteQuestion(button.dataset.id);
           if (runtime.adminEditingQuestionId === button.dataset.id) {
@@ -5345,7 +5385,7 @@
 
     app.querySelectorAll(".js-attach-question").forEach(function (button) {
       button.addEventListener("click", async function () {
-        showOverlayLoader("Attaching question.");
+        showOverlayLoader("Attaching question.", { delayMs: 420 });
         try {
           await store.attachQuestionToTest(selectedTestId, button.dataset.question);
           rerenderAdminPreserveScroll(user, selectedTestId);
@@ -5362,7 +5402,7 @@
         if (!selectedTestId) {
           return;
         }
-        showOverlayLoader("Removing question.");
+        showOverlayLoader("Removing question.", { delayMs: 420 });
         try {
           await store.detachQuestionFromTest(selectedTestId, button.dataset.id);
           rerenderAdminPreserveScroll(user, selectedTestId);
@@ -5984,7 +6024,7 @@
     if (view === "admin" && hasPendingQuestionUploadState()) {
       return;
     }
-    if (view === "dashboard" || view === "admin" || view === "admin-activity" || view === "results" || view === "") {
+    if (view === "dashboard" || view === "results" || view === "") {
       syncAndRenderCurrentRoute();
     }
   });
@@ -6007,7 +6047,7 @@
       if (view === "admin" && hasPendingQuestionUploadState()) {
         return;
       }
-      if (view === "dashboard" || view === "admin" || view === "admin-activity" || view === "results" || view === "") {
+      if (view === "dashboard" || view === "results" || view === "") {
         syncAndRenderCurrentRoute();
       }
     }
@@ -6027,7 +6067,7 @@
   } else {
     renderRoute();
   }
-  showOverlayLoader("Syncing the newest backend changes into this screen.");
+  showOverlayLoader("Syncing the newest backend changes into this screen.", { delayMs: 320 });
   Promise.resolve(store.init()).finally(function () {
     if (store.subscribeToRemoteChanges && !remoteChangeUnsubscribe) {
       remoteChangeUnsubscribe = store.subscribeToRemoteChanges(function () {

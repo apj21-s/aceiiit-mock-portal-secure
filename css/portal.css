@@ -51,6 +51,7 @@ body {
 body {
   min-height: 100vh;
   margin: 0;
+  color-scheme: light;
   background:
     radial-gradient(circle at top left, rgba(197, 160, 40, 0.18), transparent 28%),
     linear-gradient(180deg, var(--paper), #efe6d7 60%, #eadfcd);
@@ -66,6 +67,7 @@ body {
 }
 
 body[data-theme="dark"] {
+  color-scheme: dark;
   background:
     radial-gradient(circle at top left, rgba(215, 179, 74, 0.14), transparent 28%),
     linear-gradient(180deg, #111111, #161616 56%, #1c1c1c);
@@ -249,6 +251,17 @@ body[data-theme="dark"] select {
   background: rgba(255, 255, 255, 0.05);
   color: var(--ink);
   border-color: rgba(255, 255, 255, 0.12);
+}
+
+body[data-theme="dark"] input::placeholder,
+body[data-theme="dark"] textarea::placeholder {
+  color: rgba(244, 237, 226, 0.44);
+}
+
+body[data-theme="dark"] select option,
+body[data-theme="dark"] select optgroup {
+  background: #232323;
+  color: #f4ede2;
 }
 
 body[data-theme="dark"] .button-secondary,
@@ -452,6 +465,12 @@ input,
 select,
 textarea {
   font: inherit;
+}
+
+input,
+select,
+textarea {
+  color-scheme: inherit;
 }
 
 button {
@@ -728,6 +747,73 @@ textarea:focus-visible {
   padding: 14px 16px;
   background: rgba(255, 250, 240, 0.96);
   color: var(--ink);
+}
+
+.field input::placeholder,
+.field textarea::placeholder {
+  color: rgba(79, 70, 61, 0.58);
+}
+
+.field select {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  padding-right: 46px;
+  background-image: linear-gradient(45deg, transparent 50%, currentColor 50%), linear-gradient(135deg, currentColor 50%, transparent 50%);
+  background-position: calc(100% - 20px) calc(50% - 2px), calc(100% - 14px) calc(50% - 2px);
+  background-size: 6px 6px, 6px 6px;
+  background-repeat: no-repeat;
+}
+
+.field select option,
+.field select optgroup {
+  background: rgba(255, 250, 240, 0.98);
+  color: var(--ink);
+}
+
+.field input:disabled,
+.field select:disabled,
+.field textarea:disabled {
+  opacity: 0.72;
+  cursor: not-allowed;
+}
+
+.field input[type="date"]::-webkit-calendar-picker-indicator,
+.field input[type="time"]::-webkit-calendar-picker-indicator {
+  opacity: 0.72;
+  cursor: pointer;
+}
+
+body[data-theme="dark"] .field input[type="date"]::-webkit-calendar-picker-indicator,
+body[data-theme="dark"] .field input[type="time"]::-webkit-calendar-picker-indicator {
+  filter: invert(1) brightness(1.15);
+}
+
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus,
+textarea:-webkit-autofill,
+textarea:-webkit-autofill:hover,
+textarea:-webkit-autofill:focus,
+select:-webkit-autofill,
+select:-webkit-autofill:hover,
+select:-webkit-autofill:focus {
+  -webkit-text-fill-color: var(--ink);
+  transition: background-color 5000s ease-in-out 0s;
+  box-shadow: 0 0 0 1000px rgba(255, 250, 240, 0.96) inset;
+}
+
+body[data-theme="dark"] input:-webkit-autofill,
+body[data-theme="dark"] input:-webkit-autofill:hover,
+body[data-theme="dark"] input:-webkit-autofill:focus,
+body[data-theme="dark"] textarea:-webkit-autofill,
+body[data-theme="dark"] textarea:-webkit-autofill:hover,
+body[data-theme="dark"] textarea:-webkit-autofill:focus,
+body[data-theme="dark"] select:-webkit-autofill,
+body[data-theme="dark"] select:-webkit-autofill:hover,
+body[data-theme="dark"] select:-webkit-autofill:focus {
+  -webkit-text-fill-color: var(--ink);
+  box-shadow: 0 0 0 1000px rgba(255, 255, 255, 0.05) inset;
 }
 
 .auth-panel .field input,
@@ -2308,6 +2394,12 @@ textarea:focus-visible {
   gap: 12px;
 }
 
+.calendar-head .button-row {
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: flex-end;
+}
+
 .calendar-head h3 {
   margin: 6px 0 0;
   font-family: var(--font-display);
@@ -2691,6 +2783,17 @@ textarea:focus-visible {
   color: #f7f0e4;
 }
 
+.auth-panel .field input::placeholder,
+.auth-panel .field textarea::placeholder {
+  color: rgba(247, 240, 228, 0.44);
+}
+
+.auth-panel .field select option,
+.auth-panel .field select optgroup {
+  background: #1f1b18;
+  color: #f7f0e4;
+}
+
 .theme-nav-button {
   display: inline-flex;
   justify-content: center;
@@ -2715,6 +2818,62 @@ textarea:focus-visible {
   line-height: 1;
 }
 
+.support-chat-button {
+  position: fixed;
+  right: 22px;
+  bottom: 24px;
+  z-index: 32;
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 60px;
+  padding: 10px 16px 10px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(21, 115, 71, 0.22);
+  background: linear-gradient(135deg, rgba(36, 179, 96, 0.98), rgba(21, 115, 71, 0.98));
+  color: #f7fff8;
+  text-decoration: none;
+  box-shadow: 0 18px 40px rgba(21, 115, 71, 0.24);
+  transition: transform 160ms ease, box-shadow 160ms ease, filter 160ms ease;
+}
+
+.support-chat-button:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 24px 46px rgba(21, 115, 71, 0.28);
+  filter: saturate(1.04);
+}
+
+.support-chat-icon {
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.18);
+  color: #ffffff;
+  font-family: var(--font-display);
+  font-size: 1rem;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18);
+}
+
+.support-chat-copy {
+  display: grid;
+  gap: 2px;
+  line-height: 1.1;
+}
+
+.support-chat-copy strong {
+  font-size: 0.92rem;
+  letter-spacing: 0.01em;
+}
+
+.support-chat-copy small {
+  font-size: 0.74rem;
+  color: rgba(247, 255, 248, 0.82);
+}
+
 body[data-theme="dark"] .theme-nav-button {
   background: rgba(24, 24, 24, 0.92);
   border-color: rgba(255, 255, 255, 0.08);
@@ -2723,6 +2882,11 @@ body[data-theme="dark"] .theme-nav-button {
 
 body[data-theme="dark"] .theme-nav-button:hover {
   background: rgba(32, 32, 32, 0.98);
+}
+
+body[data-theme="dark"] .support-chat-button {
+  border-color: rgba(70, 195, 123, 0.24);
+  box-shadow: 0 20px 42px rgba(0, 0, 0, 0.34);
 }
 
 @media (max-width: 1120px) {
@@ -2800,6 +2964,27 @@ body[data-theme="dark"] .theme-nav-button:hover {
     height: 38px;
   }
 
+  .support-chat-button {
+    right: 14px;
+    bottom: 16px;
+    min-height: 52px;
+    padding: 8px 12px 8px 8px;
+    gap: 10px;
+  }
+
+  .support-chat-icon {
+    width: 36px;
+    height: 36px;
+  }
+
+  .support-chat-copy strong {
+    font-size: 0.86rem;
+  }
+
+  .support-chat-copy small {
+    font-size: 0.7rem;
+  }
+
   .planner-top-tabs {
     grid-template-columns: 1fr;
   }
@@ -2808,6 +2993,11 @@ body[data-theme="dark"] .theme-nav-button:hover {
   .calendar-head {
     align-items: start;
     flex-direction: column;
+  }
+
+  .calendar-head .button-row {
+    width: 100%;
+    justify-content: flex-start;
   }
 
   .planner-sidebar-stack {
@@ -3121,11 +3311,13 @@ body[data-theme="dark"] .theme-nav-button:hover {
   gap: 0;
   padding: 0;
   grid-template-columns: minmax(0, 1fr) 250px;
+  align-items: start;
 }
 
 .exam-mainpanel {
   gap: 0;
   background: #fffdf9;
+  min-width: 0;
 }
 
 .exam-questioncard {
@@ -3269,16 +3461,38 @@ body[data-theme="dark"] .theme-nav-button:hover {
 }
 
 .exam-actionbar {
-  justify-content: space-between;
+  position: sticky;
+  bottom: 0;
+  z-index: 8;
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 10px;
+  overflow-x: auto;
+  scrollbar-width: thin;
   padding: 10px 12px;
   border-top: 1px solid #1a1410;
   border-right: 1px solid #1a1410;
   background: #f8f2e6;
+  box-shadow: 0 -12px 24px rgba(20, 17, 15, 0.08);
+}
+
+.exam-actionbar .button {
+  flex: 0 0 auto;
+  min-width: 132px;
+  white-space: nowrap;
 }
 
 .exam-sidebar {
+  position: sticky;
+  top: 0;
+  align-self: start;
+  max-height: 100dvh;
+  overflow: auto;
   gap: 0;
   background: #eef0ea;
+  border-left: 1px solid #1a1410;
 }
 
 .exam-candidatecard {
@@ -3756,6 +3970,13 @@ body[data-theme="dark"] .theme-nav-button:hover {
   .exam-actionbar {
     border-right: 0;
   }
+
+  .exam-sidebar {
+    position: static;
+    max-height: none;
+    overflow: visible;
+    border-left: 0;
+  }
 }
 
 @media (max-width: 780px) {
@@ -3788,6 +4009,17 @@ body[data-theme="dark"] .theme-nav-button:hover {
   .exam-sectionbar {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .exam-actionbar {
+    position: sticky;
+    bottom: 0;
+    overflow-x: visible;
+  }
+
+  .exam-actionbar .button {
+    min-width: 0;
+    width: 100%;
   }
 
   .status-grid {
