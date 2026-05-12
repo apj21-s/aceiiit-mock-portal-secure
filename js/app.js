@@ -1632,7 +1632,7 @@
       ? ""
       : (
         '<a class="support-chat-button" href="' + escapeAttribute(supportChatHref) + '" target="_blank" rel="noreferrer" aria-label="Chat on WhatsApp for support" title="WhatsApp support">' +
-          '<span class="support-chat-icon" aria-hidden="true"><img src="assets/favicon-round.svg" alt=""></span>' +
+          '<span class="support-chat-icon" aria-hidden="true"><img src="assets/favicon-current.jpeg" alt=""></span>' +
           '<span class="support-chat-copy"><strong>Need help?</strong><small>Chat on WhatsApp</small></span>' +
         '</a>'
       );

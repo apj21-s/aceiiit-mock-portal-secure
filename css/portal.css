@@ -2980,10 +2980,13 @@ body[data-theme="dark"] select:-webkit-autofill:focus {
 }
 
 .support-chat-icon img {
-  width: 26px;
-  height: 26px;
+  width: 30px;
+  height: 30px;
   display: block;
-  object-fit: contain;
+  object-fit: cover;
+  object-position: center;
+  border-radius: 50%;
+  background: rgba(255, 250, 240, 0.92);
 }
 
 .support-chat-copy {
