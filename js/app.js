@@ -6067,7 +6067,6 @@
   } else {
     renderRoute();
   }
-  showOverlayLoader("Syncing the newest backend changes into this screen.", { delayMs: 320 });
   Promise.resolve(store.init()).finally(function () {
     if (store.subscribeToRemoteChanges && !remoteChangeUnsubscribe) {
       remoteChangeUnsubscribe = store.subscribeToRemoteChanges(function () {
