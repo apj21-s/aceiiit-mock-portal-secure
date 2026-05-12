@@ -56,7 +56,7 @@
   var KEEP_ALIVE_TIMEOUT_MS = 8000;
   var USER_ONLINE_WINDOW_MS = 3 * 60 * 1000;
   var THEME_SETTING_KEY = "theme";
-  var SUPPORT_WHATSAPP_NUMBER = "910000000000";
+  var SUPPORT_WHATSAPP_NUMBER = "919242033507";
 
   function initials(name) {
     return String(name || "A")
@@ -1082,7 +1082,7 @@
       '<div class="planner-bucket">' +
         '<div class="planner-bucket-head"><p class="section-label">' + escapeHtml(title) + '</p><span>' + escapeHtml(String((events || []).length)) + '</span></div>' +
         ((events || []).length
-          ? '<div class="planner-event-list">' + events.map(function (event) {
+          ? '<div class="planner-event-list planner-list-scroll">' + events.map(function (event) {
               return renderPlannerEventCard(event, { showQuickStart: true });
             }).join("") + '</div>'
           : '<div class="empty-state planner-empty">' + escapeHtml(emptyText) + '</div>') +
@@ -2247,7 +2247,7 @@
     }).join("");
 
     var recentAttempts = snapshot.attempts.length
-      ? '<div class="attempt-list">' + snapshot.attempts.slice(0, 5).map(function (attempt) {
+      ? '<div class="attempt-list list-scroll-card">' + snapshot.attempts.slice(0, 5).map(function (attempt) {
           var test = store.getTestById(attempt.testId);
           var stateLabel = attempt.status === "submitted"
             ? "Score " + attempt.result.score + " | Percentile " + attempt.result.percentile
@@ -2267,7 +2267,7 @@
     var reportsHtml = snapshot.attempts.filter(function (attempt) {
       return attempt.status === "submitted" && attempt.resultSnapshot;
     }).length
-      ? '<div class="attempt-list">' + snapshot.attempts.filter(function (attempt) {
+      ? '<div class="attempt-list list-scroll-card">' + snapshot.attempts.filter(function (attempt) {
           return attempt.status === "submitted" && attempt.resultSnapshot;
         }).slice(0, 12).map(function (attempt) {
           var report = attempt.resultSnapshot || {};
@@ -3288,7 +3288,7 @@
         getImageLightboxMarkup() +
         '<div class="exam-footerbar">Version: 17.07.00</div>' +
       '</section>',
-      { hideThemeToggle: true, hideSupportChat: true }
+      { hideThemeToggle: true, hideSupportChat: true, hideFooter: true }
     );
     renderLatexInElement(document.body);
     bindFigureLoadDiagnostics();
@@ -3984,6 +3984,41 @@
     var attemptHistory = store.listUserAttempts(user.id).filter(function (a) {
       return a.testId === attempt.testId && a.status === "submitted" && a.result;
     });
+    var attemptProgressHtml = attemptHistory.length
+      ? (
+        '<div class="report-history-section">' +
+          '<div class="report-history-head">' +
+            '<div><p class="section-label" style="margin:0;">Attempt progression</p><h3>Your recent submitted attempts</h3></div>' +
+            '<span class="meta-chip">' + escapeHtml(String(attemptHistory.length)) + ' total</span>' +
+          '</div>' +
+          '<div class="report-history-strip">' +
+            attemptHistory.slice(0, 6).map(function (a) {
+              var isCurrentAttempt = a.id === attempt.id;
+              return (
+                '<div class="report-history-card' + (isCurrentAttempt ? ' is-current' : '') + '">' +
+                  '<div class="report-history-kicker">' + (isCurrentAttempt ? 'Current attempt' : 'Attempt ' + escapeHtml(String(a.attemptNumber || ""))) + '</div>' +
+                  '<strong>Score ' + escapeHtml(String(a.result.score)) + '</strong>' +
+                  '<div class="report-history-meta">' +
+                    '<span>Percentile ' + escapeHtml(String(a.result.percentile || "-")) + '%</span>' +
+                    '<span>' + escapeHtml(formatDateOnly(a.submittedAt)) + '</span>' +
+                  '</div>' +
+                  (isCurrentAttempt
+                    ? '<span class="meta-chip">Open now</span>'
+                    : '<button class="button button-secondary button-compact js-open-result" data-id="' + escapeAttribute(a.id) + '">Open</button>') +
+                '</div>'
+              );
+            }).join("") +
+          '</div>' +
+        '</div>'
+      )
+      : (
+        '<div class="report-history-section">' +
+          '<div class="report-history-head">' +
+            '<div><p class="section-label" style="margin:0;">Attempt progression</p><h3>Your recent submitted attempts</h3></div>' +
+          '</div>' +
+          '<div class="empty-state">No previous attempts.</div>' +
+        '</div>'
+      );
 
     app.innerHTML = buildShell(
       '<section class="report-layout">' +
@@ -4001,7 +4036,7 @@
             '<h1>' + escapeHtml(test ? test.title : "UGEE Mock Test") + '</h1>' +
             '<p>' + escapeHtml(user.name) + ', your paper was evaluated on the server. Correct answers are not exposed on the client.</p>' +
           '</div>' +
-          '<div class="report-grid">' +
+          '<div class="report-grid report-grid-single">' +
             '<div class="report-card">' +
               '<p class="section-label">Performance summary</p>' +
               '<div class="summary-grid">' +
@@ -4015,28 +4050,12 @@
                 '<div class="summary-card analysis-stage"' + stageStyle(7) + '><strong>' + formatTime(Number(result.totalTime !== undefined ? result.totalTime : result.timeTakenSeconds || 0)) + '</strong><span>Time taken</span></div>' +
               '</div>' +
               '<div class="divider"></div>' +
+              attemptProgressHtml +
+              '<div class="divider"></div>' +
               '<p class="section-label">Section performance</p>' +
               '<div class="bar-list" id="section-performance-root">' + sectionBar("SUPR") + sectionBar("REAP") + '</div>' +
               '<div id="analysis-summary-root">' + buildSummaryPanels(analysis) + '</div>' +
             '</div>' +
-            '<aside class="report-card">' +
-              '<p class="section-label">Attempt history</p>' +
-              (attemptHistory.length ? (
-                '<div class="attempt-list">' +
-                  attemptHistory.slice(0, 10).map(function (a) {
-                    return (
-                      '<div class="attempt-row">' +
-                        '<strong>Attempt ' + escapeHtml(String(a.attemptNumber || "")) + '</strong>' +
-                        '<span class="helper-text">Score ' + escapeHtml(String(a.result.score)) + ' | Percentile ' + escapeHtml(String(a.result.percentile || "-")) + ' | ' + escapeHtml(formatDateTime(a.submittedAt)) + '</span>' +
-                        '<div class="button-row" style="margin-top: 10px;">' +
-                          '<button class="button button-secondary button-compact js-open-result" data-id="' + escapeAttribute(a.id) + '">Open</button>' +
-                        '</div>' +
-                      '</div>'
-                    );
-                  }).join("") +
-                '</div>'
-              ) : '<div class="empty-state">No previous attempts.</div>') +
-            '</aside>' +
           '</div>' +
         '</div>' +
       '</section>'
@@ -4180,6 +4199,7 @@
     var editingQuestion = runtime.adminEditingQuestionId
       ? questions.find(function (question) { return question.id === runtime.adminEditingQuestionId; }) || null
       : null;
+    var questionEditorOpen = !!runtime.adminQuestionEditorOpen || !!editingQuestion;
     var questionMarkDefaults = getSectionDefaultMarking(editingQuestion ? editingQuestion.section : "SUPR");
     var pendingUploadedImageUrls = dedupeUrls(runtime.pendingUploadedQuestionImageUrls || []);
     runtime.adminSelectedTestId = preferredTestId || runtime.adminSelectedTestId;
@@ -4218,6 +4238,95 @@
         questionUsage[questionId].push(test.title);
       });
     });
+
+    var questionFormHtml = tests.length ? (
+      '<form id="question-form" class="grid-two">' +
+        '<div class="field"><label for="question-test">Attach to test</label><select id="question-test" name="testId" required>' +
+          tests.map(function (test) {
+            return '<option value="' + escapeHtml(test.id) + '" ' + (test.id === selectedTestId ? "selected" : "") + '>' + escapeHtml(test.title) + '</option>';
+          }).join("") +
+        '</select></div>' +
+        '<div class="field"><label for="question-section">Section</label><select id="question-section" name="section"><option ' + (editingQuestion && editingQuestion.section === "SUPR" ? 'selected' : '') + '>SUPR</option><option ' + (editingQuestion && editingQuestion.section === "REAP" ? 'selected' : '') + '>REAP</option></select></div>' +
+        '<div class="field"><label for="question-topic">Topic</label><input id="question-topic" name="topic" placeholder="logic / DI / comprehension" value="' + escapeAttribute(editingQuestion ? editingQuestion.topic : "") + '" required></div>' +
+        '<div class="field"><label for="question-difficulty">Difficulty</label><select id="question-difficulty" name="difficulty"><option ' + (editingQuestion && editingQuestion.difficulty === "easy" ? 'selected' : '') + '>easy</option><option ' + (editingQuestion && editingQuestion.difficulty === "medium" ? 'selected' : '') + '>medium</option><option ' + (editingQuestion && editingQuestion.difficulty === "hard" ? 'selected' : '') + '>hard</option></select></div>' +
+        (editingQuestion && getQuestionImageUrls(editingQuestion).length ? (
+          '<div class="field" style="grid-column: 1 / -1;">' +
+            '<label>Existing images</label>' +
+            '<div class="helper-text">' + escapeHtml(getQuestionImageUrls(editingQuestion).length + " image(s) already attached") + '</div>' +
+            '<div class="question-figure-stack">' +
+              getQuestionImageUrls(editingQuestion).slice(0, 4).map(function (url, index) {
+                return '<button type="button" class="question-figure-button" data-open-image="' + escapeAttribute(url) + '"><img class="question-figure" src="' + escapeAttribute(url) + '" alt="Existing image ' + (index + 1) + '"></button>';
+              }).join("") +
+            '</div>' +
+            (getQuestionImageUrls(editingQuestion).length > 4 ? '<div class="helper-text">Showing 4 of ' + escapeHtml(String(getQuestionImageUrls(editingQuestion).length)) + '. Open the image to zoom.</div>' : '') +
+          '</div>'
+        ) : '') +
+        '<div class="field" style="grid-column: 1 / -1;">' +
+          '<label for="question-files">Upload local images</label>' +
+          '<input id="question-files" name="questionFiles" type="file" multiple accept="image/*">' +
+          '<div class="helper-text" id="question-files-status">' + escapeHtml(runtime.pendingQuestionFileNames.length ? runtime.pendingQuestionFileNames.join(", ") : "No image selected") + '</div>' +
+          '<div class="button-row" style="margin-top: 12px;">' +
+            '<button class="button button-secondary" type="button" id="upload-question-images" ' + (runtime.pendingQuestionFiles.length ? "" : "disabled") + '>Upload selected images</button>' +
+          '</div>' +
+          '<div class="helper-text" id="question-uploaded-status" style="margin-top: 10px;">' + escapeHtml(pendingUploadedImageUrls.length ? (pendingUploadedImageUrls.length + " image(s) uploaded to Cloudinary and ready to save") : "Uploaded images will appear here after Cloudinary upload") + '</div>' +
+          '<div id="question-files-preview" class="question-figure-stack" style="margin-top: 12px;">' +
+            (runtime.pendingQuestionFilePreviews.length ? runtime.pendingQuestionFilePreviews.map(function (url, index) {
+              return '<img class="question-figure" src="' + escapeAttribute(url) + '" alt="Selected image ' + (index + 1) + '">';
+            }).join("") : "") +
+          '</div>' +
+          '<div id="question-uploaded-preview" class="question-figure-stack" style="margin-top: 12px;">' +
+            (pendingUploadedImageUrls.length ? pendingUploadedImageUrls.map(function (url, index) {
+              return '<button type="button" class="question-figure-button" data-open-image="' + escapeAttribute(url) + '"><img class="question-figure" src="' + escapeAttribute(url) + '" alt="Uploaded image ' + (index + 1) + '"></button>';
+            }).join("") : "") +
+          '</div>' +
+          '<div class="helper-text">Images upload to Cloudinary and are stored as URLs. Keep them under ~2MB each.</div>' +
+        '</div>' +
+        '<div class="field" style="grid-column: 1 / -1;"><label for="question-drive-links">Google Drive image links</label><textarea id="question-drive-links" name="driveImageLinks" rows="3" placeholder="Paste public Google Drive image share links, one per line">' + escapeHtml(editingQuestion ? getQuestionDriveLinks(editingQuestion).join("\n") : "") + '</textarea><div class="helper-text">Paste public share links from Google Drive and the portal will convert them automatically for display.</div></div>' +
+        '<div class="field" style="grid-column: 1 / -1;"><label for="question-prompt">Question prompt</label><textarea id="question-prompt" name="prompt" rows="4" required>' + escapeHtml(editingQuestion ? editingQuestion.prompt : "") + '</textarea><div class="helper-text">Supports LaTeX: use $...$ for inline, $$...$$ for display math.</div></div>' +
+        '<div class="field" style="grid-column: 1 / -1;"><label for="question-passage">Passage or context</label><textarea id="question-passage" name="passage" rows="4" placeholder="Optional">' + escapeHtml(editingQuestion ? editingQuestion.passage || "" : "") + '</textarea></div>' +
+        '<div class="field"><label for="option-0">Option A</label><input id="option-0" name="option0" value="' + escapeAttribute(editingQuestion ? editingQuestion.options[0] : "") + '" required></div>' +
+        '<div class="field"><label for="option-1">Option B</label><input id="option-1" name="option1" value="' + escapeAttribute(editingQuestion ? editingQuestion.options[1] : "") + '" required></div>' +
+        '<div class="field"><label for="option-2">Option C</label><input id="option-2" name="option2" value="' + escapeAttribute(editingQuestion ? editingQuestion.options[2] : "") + '" required></div>' +
+        '<div class="field"><label for="option-3">Option D</label><input id="option-3" name="option3" value="' + escapeAttribute(editingQuestion ? editingQuestion.options[3] : "") + '" required></div>' +
+        '<div class="field"><label for="correct-option">Correct option</label><select id="correct-option" name="correctOption"><option value="0" ' + (editingQuestion && Number(editingQuestion.correctOption) === 0 ? 'selected' : '') + '>A</option><option value="1" ' + (editingQuestion && Number(editingQuestion.correctOption) === 1 ? 'selected' : '') + '>B</option><option value="2" ' + (editingQuestion && Number(editingQuestion.correctOption) === 2 ? 'selected' : '') + '>C</option><option value="3" ' + (editingQuestion && Number(editingQuestion.correctOption) === 3 ? 'selected' : '') + '>D</option></select></div>' +
+        '<div class="field"><label for="question-marks">Marks</label><input id="question-marks" name="marks" type="number" step="any" value="' + (editingQuestion ? editingQuestion.marks : questionMarkDefaults.marks) + '"></div>' +
+        '<div class="field"><label for="question-negative">Negative marks</label><input id="question-negative" name="negativeMarks" type="number" step="any" value="' + (editingQuestion ? Math.abs(editingQuestion.negativeMarks) : questionMarkDefaults.negativeMarks) + '"></div>' +
+        '<div class="field" style="grid-column: 1 / -1;"><label for="question-explanation">Solution</label><textarea id="question-explanation" name="explanation" rows="4" required>' + escapeHtml(editingQuestion ? editingQuestion.explanation : "") + '</textarea><div class="helper-text">Supports LaTeX: use $...$ for inline, $$...$$ for display math.</div></div>' +
+        '<div class="field" style="grid-column: 1 / -1;">' +
+          '<div class="latex-preview-toolbar">' +
+            '<div>' +
+              '<p class="section-label" style="margin:0;">Live LaTeX preview</p>' +
+              '<div class="helper-text">Renders $...$ (inline) and $$...$$ (display) after you type.</div>' +
+            '</div>' +
+            '<div class="button-row">' +
+              '<button type="button" class="button button-secondary button-compact" id="latex-preview-toggle">' + (runtime.adminLatexPreviewVisible ? "Hide preview" : "Show preview") + '</button>' +
+              '<button type="button" class="button button-secondary button-compact" id="latex-preview-full">Full screen</button>' +
+            '</div>' +
+          '</div>' +
+          '<div id="latex-preview-inline" class="latex-preview" style="display:' + (runtime.adminLatexPreviewVisible ? "block" : "none") + ';"></div>' +
+        '</div>' +
+        '<div class="button-row" style="grid-column: 1 / -1;"><button class="button button-primary" type="submit">' + (editingQuestion ? 'Update question' : 'Add question') + '</button><button class="button button-secondary" type="button" id="cancel-question-edit">' + (editingQuestion ? 'Cancel Edit' : 'Close') + '</button></div>' +
+      '</form>'
+    ) : '<div class="empty-state">Create a test first. As soon as a paper exists, you can add questions directly into it here.</div>';
+    var questionEditorModalHtml = questionEditorOpen
+      ? (
+        '<div class="transition-modal admin-modal-overlay" id="question-editor-overlay">' +
+          '<div class="admin-modal-card admin-modal-card question-editor-modal is-large">' +
+            '<div class="admin-modal-head">' +
+              '<div><p class="section-label" style="margin:0;">Question editor</p><h3>' + escapeHtml(editingQuestion ? "Edit question" : "Add question") + '</h3></div>' +
+              '<button class="button button-secondary button-compact" type="button" id="question-editor-close">Close</button>' +
+            '</div>' +
+            '<div class="admin-modal-body question-editor-body">' +
+              '<div class="question-editor-intro">' +
+                '<div><strong>' + escapeHtml(selectedTest ? selectedTest.title : "Select a test") + '</strong><div class="helper-text">Use this broader editor to write, preview, upload images, and save questions without the cramped builder view.</div></div>' +
+                (selectedTest ? '<span class="meta-chip">' + escapeHtml(selectedTest.sectionDurations ? (selectedTest.sectionDurations.SUPR + "m / " + selectedTest.sectionDurations.REAP + "m") : "") + '</span>' : '') +
+              '</div>' +
+              questionFormHtml +
+            '</div>' +
+          '</div>' +
+        '</div>'
+      )
+      : "";
 
     app.innerHTML = buildShell(
       '<section class="admin-layout">' +
@@ -4298,81 +4407,18 @@
           '</div>' +
           '<div class="admin-grid" style="margin-top: 20px;">' +
             '<div class="admin-card">' +
-              '<p class="section-label">Add question</p>' +
-              (tests.length ? (
-                '<form id="question-form" class="grid-two">' +
-                  '<div class="field"><label for="question-test">Attach to test</label><select id="question-test" name="testId" required>' +
-                    tests.map(function (test) {
-                      return '<option value="' + escapeHtml(test.id) + '" ' + (test.id === selectedTestId ? "selected" : "") + '>' + escapeHtml(test.title) + '</option>';
-                    }).join("") +
-                  '</select></div>' +
-                  '<div class="field"><label for="question-section">Section</label><select id="question-section" name="section"><option ' + (editingQuestion && editingQuestion.section === "SUPR" ? 'selected' : '') + '>SUPR</option><option ' + (editingQuestion && editingQuestion.section === "REAP" ? 'selected' : '') + '>REAP</option></select></div>' +
-                  '<div class="field"><label for="question-topic">Topic</label><input id="question-topic" name="topic" placeholder="logic / DI / comprehension" value="' + escapeAttribute(editingQuestion ? editingQuestion.topic : "") + '" required></div>' +
-                  '<div class="field"><label for="question-difficulty">Difficulty</label><select id="question-difficulty" name="difficulty"><option ' + (editingQuestion && editingQuestion.difficulty === "easy" ? 'selected' : '') + '>easy</option><option ' + (editingQuestion && editingQuestion.difficulty === "medium" ? 'selected' : '') + '>medium</option><option ' + (editingQuestion && editingQuestion.difficulty === "hard" ? 'selected' : '') + '>hard</option></select></div>' +
-                  (editingQuestion && getQuestionImageUrls(editingQuestion).length ? (
-                    '<div class="field" style="grid-column: 1 / -1;">' +
-                      '<label>Existing images</label>' +
-                      '<div class="helper-text">' + escapeHtml(getQuestionImageUrls(editingQuestion).length + " image(s) already attached") + '</div>' +
-                      '<div class="question-figure-stack">' +
-                        getQuestionImageUrls(editingQuestion).slice(0, 4).map(function (url, index) {
-                          return '<button type="button" class="question-figure-button" data-open-image="' + escapeAttribute(url) + '"><img class="question-figure" src="' + escapeAttribute(url) + '" alt="Existing image ' + (index + 1) + '"></button>';
-                        }).join("") +
-                      '</div>' +
-                      (getQuestionImageUrls(editingQuestion).length > 4 ? '<div class="helper-text">Showing 4 of ' + escapeHtml(String(getQuestionImageUrls(editingQuestion).length)) + '. Open the image to zoom.</div>' : '') +
-                    '</div>'
-                  ) : '') +
-                  '<div class="field" style="grid-column: 1 / -1;">' +
-                    '<label for="question-files">Upload local images</label>' +
-                    '<input id="question-files" name="questionFiles" type="file" multiple accept="image/*">' +
-                    '<div class="helper-text" id="question-files-status">' + escapeHtml(runtime.pendingQuestionFileNames.length ? runtime.pendingQuestionFileNames.join(", ") : "No image selected") + '</div>' +
-                    '<div class="button-row" style="margin-top: 12px;">' +
-                      '<button class="button button-secondary" type="button" id="upload-question-images" ' + (runtime.pendingQuestionFiles.length ? "" : "disabled") + '>Upload selected images</button>' +
-                    '</div>' +
-                    '<div class="helper-text" id="question-uploaded-status" style="margin-top: 10px;">' + escapeHtml(pendingUploadedImageUrls.length ? (pendingUploadedImageUrls.length + " image(s) uploaded to Cloudinary and ready to save") : "Uploaded images will appear here after Cloudinary upload") + '</div>' +
-                    '<div id="question-files-preview" class="question-figure-stack" style="margin-top: 12px;">' +
-                      (runtime.pendingQuestionFilePreviews.length ? runtime.pendingQuestionFilePreviews.map(function (url, index) {
-                        return '<img class="question-figure" src="' + escapeAttribute(url) + '" alt="Selected image ' + (index + 1) + '">';
-                      }).join("") : "") +
-                    '</div>' +
-                    '<div id="question-uploaded-preview" class="question-figure-stack" style="margin-top: 12px;">' +
-                      (pendingUploadedImageUrls.length ? pendingUploadedImageUrls.map(function (url, index) {
-                        return '<button type="button" class="question-figure-button" data-open-image="' + escapeAttribute(url) + '"><img class="question-figure" src="' + escapeAttribute(url) + '" alt="Uploaded image ' + (index + 1) + '"></button>';
-                      }).join("") : "") +
-                    '</div>' +
-                    '<div class="helper-text">Images upload to Cloudinary and are stored as URLs. Keep them under ~2MB each.</div>' +
-                  '</div>' +
-                  '<div class="field" style="grid-column: 1 / -1;"><label for="question-drive-links">Google Drive image links</label><textarea id="question-drive-links" name="driveImageLinks" rows="3" placeholder="Paste public Google Drive image share links, one per line">' + escapeHtml(editingQuestion ? getQuestionDriveLinks(editingQuestion).join("\n") : "") + '</textarea><div class="helper-text">Paste public share links from Google Drive and the portal will convert them automatically for display.</div></div>' +
-                  '<div class="field" style="grid-column: 1 / -1;"><label for="question-prompt">Question prompt</label><textarea id="question-prompt" name="prompt" rows="4" required>' + escapeHtml(editingQuestion ? editingQuestion.prompt : "") + '</textarea><div class="helper-text">Supports LaTeX: use $...$ for inline, $$...$$ for display math.</div></div>' +
-                  '<div class="field" style="grid-column: 1 / -1;"><label for="question-passage">Passage or context</label><textarea id="question-passage" name="passage" rows="4" placeholder="Optional">' + escapeHtml(editingQuestion ? editingQuestion.passage || "" : "") + '</textarea></div>' +
-                  '<div class="field"><label for="option-0">Option A</label><input id="option-0" name="option0" value="' + escapeAttribute(editingQuestion ? editingQuestion.options[0] : "") + '" required></div>' +
-                  '<div class="field"><label for="option-1">Option B</label><input id="option-1" name="option1" value="' + escapeAttribute(editingQuestion ? editingQuestion.options[1] : "") + '" required></div>' +
-                  '<div class="field"><label for="option-2">Option C</label><input id="option-2" name="option2" value="' + escapeAttribute(editingQuestion ? editingQuestion.options[2] : "") + '" required></div>' +
-                  '<div class="field"><label for="option-3">Option D</label><input id="option-3" name="option3" value="' + escapeAttribute(editingQuestion ? editingQuestion.options[3] : "") + '" required></div>' +
-                  '<div class="field"><label for="correct-option">Correct option</label><select id="correct-option" name="correctOption"><option value="0" ' + (editingQuestion && Number(editingQuestion.correctOption) === 0 ? 'selected' : '') + '>A</option><option value="1" ' + (editingQuestion && Number(editingQuestion.correctOption) === 1 ? 'selected' : '') + '>B</option><option value="2" ' + (editingQuestion && Number(editingQuestion.correctOption) === 2 ? 'selected' : '') + '>C</option><option value="3" ' + (editingQuestion && Number(editingQuestion.correctOption) === 3 ? 'selected' : '') + '>D</option></select></div>' +
-                  '<div class="field"><label for="question-marks">Marks</label><input id="question-marks" name="marks" type="number" step="any" value="' + (editingQuestion ? editingQuestion.marks : questionMarkDefaults.marks) + '"></div>' +
-                  '<div class="field"><label for="question-negative">Negative marks</label><input id="question-negative" name="negativeMarks" type="number" step="any" value="' + (editingQuestion ? Math.abs(editingQuestion.negativeMarks) : questionMarkDefaults.negativeMarks) + '"></div>' +
-                  '<div class="field" style="grid-column: 1 / -1;"><label for="question-explanation">Solution</label><textarea id="question-explanation" name="explanation" rows="4" required>' + escapeHtml(editingQuestion ? editingQuestion.explanation : "") + '</textarea><div class="helper-text">Supports LaTeX: use $...$ for inline, $$...$$ for display math.</div></div>' +
-                  '<div class="field" style="grid-column: 1 / -1;">' +
-                    '<div class="latex-preview-toolbar">' +
-                      '<div>' +
-                        '<p class="section-label" style="margin:0;">Live LaTeX preview</p>' +
-                        '<div class="helper-text">Renders $...$ (inline) and $$...$$ (display) after you type.</div>' +
-                      '</div>' +
-                      '<div class="button-row">' +
-                        '<button type="button" class="button button-secondary button-compact" id="latex-preview-toggle">' + (runtime.adminLatexPreviewVisible ? "Hide preview" : "Show preview") + '</button>' +
-                        '<button type="button" class="button button-secondary button-compact" id="latex-preview-full">Full screen</button>' +
-                      '</div>' +
-                    '</div>' +
-                    '<div id="latex-preview-inline" class="latex-preview" style="display:' + (runtime.adminLatexPreviewVisible ? "block" : "none") + ';"></div>' +
-                  '</div>' +
-                  '<div class="button-row" style="grid-column: 1 / -1;"><button class="button button-primary" type="submit">' + (editingQuestion ? 'Update question' : 'Add question') + '</button>' + (editingQuestion ? '<button class="button button-secondary" type="button" id="cancel-question-edit">Cancel Edit</button>' : '') + '</div>' +
-                '</form>'
-              ) : '<div class="empty-state">Create a test first. As soon as a paper exists, you can add questions directly into it here.</div>') +
+              '<div class="button-row" style="justify-content: space-between; align-items: center; margin-bottom: 10px;">' +
+                '<p class="section-label" style="margin:0;">Question editor</p>' +
+                (tests.length ? '<button class="button button-secondary" type="button" id="open-question-editor">' + (editingQuestion ? 'Continue editing' : 'Open broad editor') + '</button>' : '') +
+              '</div>' +
+              (tests.length
+                ? '<div class="helper-text">Use the dedicated broad editor window for adding and editing questions, LaTeX preview, image upload, and solution writing.</div>'
+                : '<div class="empty-state">Create a test first. As soon as a paper exists, you can add questions directly into it here.</div>') +
               (selectedTest ? (
                 '<div class="divider"></div>' +
                 '<p class="section-label">Questions In Selected Test</p>' +
                 (selectedTestQuestions.length ? (
-                  '<div class="question-bank compact-bank">' +
+                  '<div class="question-bank compact-bank list-scroll-card">' +
                     selectedTestQuestions.map(function (question, index) {
                       return '<div class="bank-item"><strong>Q' + (index + 1) + ' | ' + escapeHtml(question.id) + ' | ' + escapeHtml(question.section) + '</strong><span>' + formatRichText(question.prompt) + '</span><span class="helper-text">' + escapeHtml(question.topic) + ' | ' + escapeHtml(question.difficulty) + '</span><div class="button-row"><button class="button button-secondary button-compact js-edit-question-inline" data-id="' + escapeAttribute(question.id) + '">Edit Question</button><button class="button button-secondary button-compact js-detach-question" data-id="' + escapeAttribute(question.id) + '">Remove From Test</button></div></div>';
                     }).join("") +
@@ -4386,7 +4432,7 @@
                   '<div class="field"><label for="bank-search">Search question</label><input id="bank-search" value="' + escapeAttribute(runtime.adminBankQuery) + '" placeholder="Search by id, topic, prompt"></div>' +
                   '<div class="field"><label for="bank-filter">Filter section</label><select id="bank-filter"><option value="all"' + (runtime.adminBankSectionFilter === "all" ? ' selected' : '') + '>All</option><option value="SUPR"' + (runtime.adminBankSectionFilter === "SUPR" ? ' selected' : '') + '>SUPR</option><option value="REAP"' + (runtime.adminBankSectionFilter === "REAP" ? ' selected' : '') + '>REAP</option></select></div>' +
                 '</div>' +
-                (filteredBankQuestions.length ? '<div class="question-bank compact-bank">' +
+                (filteredBankQuestions.length ? '<div class="question-bank compact-bank list-scroll-card">' +
                   filteredBankQuestions.map(function (question) {
                     return '<div class="bank-item"><strong>' + highlightMatch(question.id, runtime.adminBankQuery) + ' | ' + escapeHtml(question.section) + '</strong><span>' + highlightMatch(question.prompt, runtime.adminBankQuery) + '</span><div class="button-row"><button class="button button-secondary js-attach-question" data-question="' + escapeAttribute(question.id) + '">Add to test</button></div></div>';
                   }).join("") +
@@ -4399,7 +4445,7 @@
                 '<button class="button button-secondary button-compact" type="button" id="open-tests-modal">Full screen</button>' +
               '</div>' +
               (tests.length ? (
-                '<div class="table-like tests-table">' +
+                '<div class="table-like tests-table table-scroll-card">' +
                   '<div class="table-row header"><span>Test</span><span>Dashboard</span><span>Questions</span><span>SUPR / REAP</span><span>ID</span><span>Action</span></div>' +
                   tests.map(function (test, index) {
                     var moveUpDisabled = index === 0 ? ' disabled' : '';
@@ -4414,7 +4460,7 @@
                 '<button class="button button-secondary button-compact" type="button" id="open-bank-modal">Full screen</button>' +
               '</div>' +
               (questions.length ? (
-                '<div class="question-bank">' +
+                '<div class="question-bank list-scroll-card">' +
                   questions.slice(0, 14).map(function (question) {
                     var attachedTo = questionUsage[question.id] || [];
                     return (
@@ -4432,6 +4478,7 @@
             '</aside>' +
           '</div>' +
         '</div>' +
+        questionEditorModalHtml +
         '<div class="app-footer app-footer-inline">AceIIIT MockTest Portal</div>' +
       '</section>'
     , { fluid: true, hideFooter: true });
@@ -4792,7 +4839,7 @@
 
             if (kind === "tests") {
               return (
-                '<div class="table-like">' +
+                '<div class="table-like table-scroll-card">' +
                   '<div class="table-row header"><span>Test</span><span>Access</span><span>Deleted</span><span></span></div>' +
                   list.map(function (t) {
                     return (
@@ -4813,7 +4860,7 @@
 
             if (kind === "questions") {
               return (
-                '<div class="table-like">' +
+                '<div class="table-like table-scroll-card">' +
                   '<div class="table-row header"><span>Question</span><span>Section</span><span>Deleted</span><span></span></div>' +
                   list.map(function (q) {
                     return (
@@ -4833,7 +4880,7 @@
             }
 
             return (
-              '<div class="table-like">' +
+              '<div class="table-like table-scroll-card">' +
                 '<div class="table-row header"><span>User</span><span>Access</span><span>Deleted</span><span></span></div>' +
                 list.map(function (u) {
                   return (
@@ -5215,6 +5262,7 @@
             ? await store.updateQuestion(runtime.adminEditingQuestionId, payload, selectedFiles)
             : await store.createQuestion(payload, selectedFiles);
           runtime.adminEditingQuestionId = null;
+          runtime.adminQuestionEditorOpen = false;
           resetPendingQuestionUploads();
           clearLocalDraft(ADMIN_QUESTION_DRAFT_KEY);
           hideOverlayLoader();
@@ -5244,9 +5292,44 @@
     if (cancelQuestionEdit) {
       cancelQuestionEdit.addEventListener("click", function () {
         runtime.adminEditingQuestionId = null;
+        runtime.adminQuestionEditorOpen = false;
         resetPendingQuestionUploads();
         clearLocalDraft(ADMIN_QUESTION_DRAFT_KEY);
         rerenderAdminPreserveScroll(user, selectedTestId);
+      });
+    }
+
+    var openQuestionEditor = document.getElementById("open-question-editor");
+    if (openQuestionEditor) {
+      openQuestionEditor.addEventListener("click", function () {
+        runtime.adminQuestionEditorOpen = true;
+        rerenderAdminPreserveScroll(user, selectedTestId);
+      });
+    }
+
+    var questionEditorClose = document.getElementById("question-editor-close");
+    if (questionEditorClose) {
+      questionEditorClose.addEventListener("click", function () {
+        runtime.adminQuestionEditorOpen = false;
+        if (!runtime.adminEditingQuestionId) {
+          resetPendingQuestionUploads();
+          clearLocalDraft(ADMIN_QUESTION_DRAFT_KEY);
+        }
+        rerenderAdminPreserveScroll(user, selectedTestId);
+      });
+    }
+
+    var questionEditorOverlay = document.getElementById("question-editor-overlay");
+    if (questionEditorOverlay) {
+      questionEditorOverlay.addEventListener("click", function (event) {
+        if (event.target === questionEditorOverlay) {
+          runtime.adminQuestionEditorOpen = false;
+          if (!runtime.adminEditingQuestionId) {
+            resetPendingQuestionUploads();
+            clearLocalDraft(ADMIN_QUESTION_DRAFT_KEY);
+          }
+          rerenderAdminPreserveScroll(user, selectedTestId);
+        }
       });
     }
 
@@ -5355,6 +5438,7 @@
     app.querySelectorAll(".js-edit-question").forEach(function (button) {
       button.addEventListener("click", function () {
         runtime.adminEditingQuestionId = button.dataset.id;
+        runtime.adminQuestionEditorOpen = true;
         rerenderAdminPreserveScroll(user, selectedTestId);
       });
     });
@@ -5362,6 +5446,7 @@
     app.querySelectorAll(".js-edit-question-inline").forEach(function (button) {
       button.addEventListener("click", function () {
         runtime.adminEditingQuestionId = button.dataset.id;
+        runtime.adminQuestionEditorOpen = true;
         rerenderAdminPreserveScroll(user, selectedTestId);
       });
     });
@@ -5505,7 +5590,7 @@
             '</div>' +
             '<aside class="report-card">' +
               '<p class="section-label">Recent results</p>' +
-              '<div id="results-table" class="table-like" style="margin-top: 14px;"><div class="empty-state">Loading…</div></div>' +
+              '<div id="results-table" class="table-like table-scroll-card" style="margin-top: 14px;"><div class="empty-state">Loading…</div></div>' +
             '</aside>' +
             '<div class="report-card">' +
               '<div class="button-row" style="justify-content: space-between; align-items:center;">' +
@@ -5517,7 +5602,7 @@
                   (tests.length ? tests.map(function (t) { return '<option value="' + escapeAttribute(t.id) + '"' + (t.id === defaultTestId ? " selected" : "") + '>' + escapeHtml(t.title) + '</option>'; }).join("") : '<option value="">No tests</option>') +
                 '</select>' +
               '</div>' +
-              '<div id="leaderboard-table" class="table-like" style="margin-top: 14px;"><div class="empty-state">Loading…</div></div>' +
+              '<div id="leaderboard-table" class="table-like table-scroll-card" style="margin-top: 14px;"><div class="empty-state">Loading…</div></div>' +
             '</div>' +
             '<aside class="report-card">' +
               '<p class="section-label">Analytics</p>' +
@@ -5821,14 +5906,14 @@
             '<div class="divider"></div>' +
             '<p class="section-label">Deleted users</p>' +
             (snapshot.deletedUsers && snapshot.deletedUsers.length ? (
-              '<div class="question-bank compact-bank">' +
+              '<div class="question-bank compact-bank list-scroll-card">' +
                 snapshot.deletedUsers.map(function (item) {
                   return '<div class="bank-item"><strong>' + escapeHtml(item.name) + '</strong><span>' + escapeHtml(item.email) + '</span><span class="helper-text">Deleted: ' + escapeHtml(formatDateTime(item.deletedAt)) + '</span><div class="button-row"><button class="button button-secondary button-compact js-restore-user" data-id="' + escapeAttribute(item.id) + '">Restore</button><button class="button button-danger button-compact js-delete-user-forever" data-id="' + escapeAttribute(item.id) + '">Delete Forever</button></div></div>';
                 }).join("") +
               '</div>'
             ) : '<div class="empty-state">No deleted users.</div>') +
             '</div>' +
-            '<aside class="report-card"><p class="section-label">Attempts and logins</p><div class="question-bank compact-bank">' +
+            '<aside class="report-card"><p class="section-label">Attempts and logins</p><div class="question-bank compact-bank list-scroll-card">' +
               snapshot.attempts.map(function (attempt) {
                 var attemptUser = snapshot.users.find(function (item) { return item.id === attempt.userId; });
                 var attemptTest = tests.find(function (item) { return item.id === attempt.testId; });
