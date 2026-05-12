@@ -2108,12 +2108,18 @@
     var noticeBoardHtml = appConfig && (appConfig.noticeTitle || appConfig.noticeBody)
       ? (
         '<div class="dashboard-notice-card">' +
-          '<p class="section-label">Notice board</p>' +
-          (appConfig.noticeTitle ? '<h3>' + escapeHtml(appConfig.noticeTitle) + '</h3>' : "") +
-          (appConfig.noticeBody ? '<p>' + escapeHtml(appConfig.noticeBody).replace(/\n/g, "<br>") + '</p>' : "") +
+          '<div class="notice-board-frame">' +
+            '<span class="notice-pin notice-pin-left" aria-hidden="true"></span>' +
+            '<span class="notice-pin notice-pin-right" aria-hidden="true"></span>' +
+            '<div class="notice-board-paper">' +
+              '<p class="section-label">Notice board</p>' +
+              (appConfig.noticeTitle ? '<h3>' + escapeHtml(appConfig.noticeTitle) + '</h3>' : "") +
+              (appConfig.noticeBody ? '<p>' + escapeHtml(appConfig.noticeBody).replace(/\n/g, "<br>") + '</p>' : "") +
+            '</div>' +
+          '</div>' +
         '</div>'
       )
-      : '<div class="dashboard-notice-card"><p class="section-label">Notice board</p><div class="empty-state">No notice from admin right now.</div></div>';
+      : '<div class="dashboard-notice-card"><div class="notice-board-frame"><span class="notice-pin notice-pin-left" aria-hidden="true"></span><span class="notice-pin notice-pin-right" aria-hidden="true"></span><div class="notice-board-paper"><p class="section-label">Notice board</p><div class="empty-state">No notice from admin right now.</div></div></div></div>';
     var reminderEligibleTests = snapshot.tests.filter(function (test) {
       if (!test || test.status !== "live") {
         return false;
@@ -2133,6 +2139,9 @@
     var plannerStats = buildPlannerStats(plannerEvents);
     var plannerRecommendations = buildPlannerRecommendations(plannerEvents, snapshot);
     var plannerDayBuckets = getPlannerDayBuckets(plannerEvents);
+    runtime.dashboardPlannerView = ["planner", "history", "reports"].indexOf(runtime.dashboardPlannerView) >= 0
+      ? runtime.dashboardPlannerView
+      : "planner";
     var examDateValue = toDateInputValue(appConfig && appConfig.ugeeExamDate);
     runtime.dashboardReminderDate = editingReminder && editingReminder.plannedAt
       ? toDateInputValue(editingReminder.plannedAt)
@@ -2263,80 +2272,115 @@
     var notificationPromptHtml = ("Notification" in window) && Notification.permission !== "granted"
       ? '<button class="button button-secondary button-compact" type="button" id="planner-enable-notifications">Enable alerts</button>'
       : '<span class="meta-chip">Browser alerts ready</span>';
-    var calendarHtml =
-      '<div class="dashboard-calendar-card">' +
-        '<div class="planner-summary-strip">' +
-          '<div class="planner-countdown-card">' +
-            '<p class="section-label" style="margin:0;">UGEE 2026</p>' +
-            '<strong>' + escapeHtml(countdownDays === null ? "Date pending" : (String(countdownDays) + " Days Left")) + '</strong>' +
-            '<span>' + escapeHtml(countdownDays === null ? "Admin will set the final date soon." : (String(suggestedMocksRemaining) + " mocks left this week at your current pace.")) + '</span>' +
-          '</div>' +
-          '<div class="planner-goal-card">' +
-            '<div class="planner-goal-head"><p class="section-label" style="margin:0;">Weekly goal</p><span>' + escapeHtml(String(plannerStats.weeklyCompleted)) + '/' + escapeHtml(String(plannerStats.weeklyGoal)) + '</span></div>' +
-            '<div class="planner-progress"><span style="width:' + escapeAttribute(String(Math.min(100, Math.round((plannerStats.weeklyCompleted / Math.max(1, plannerStats.weeklyGoal)) * 100)))) + '%;"></span></div>' +
-            '<div class="helper-text">Consistency: ' + escapeHtml(String(plannerStats.weeklyConsistency)) + '% • Streak: ' + escapeHtml(String(plannerStats.currentStreak)) + ' day(s)</div>' +
-          '</div>' +
-        '</div>' +
-        '<div class="calendar-head">' +
-          '<div><p class="section-label" style="margin:0;">Mock planner</p><h3>' + escapeHtml(formatMonthLabel(runtime.dashboardCalendarMonth)) + '</h3></div>' +
-          '<div class="button-row">' +
-            notificationPromptHtml +
-            '<button class="button button-secondary button-compact" type="button" id="calendar-prev-month">Prev</button>' +
-            '<button class="button button-secondary button-compact" type="button" id="calendar-next-month">Next</button>' +
-          '</div>' +
-        '</div>' +
-        (runtime.dashboardNotificationMessage ? '<div class="planner-inline-alert">' + escapeHtml(runtime.dashboardNotificationMessage) + '</div>' : '') +
-        '<div class="calendar-weekdays">' + ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map(function (label) {
-          return '<span>' + label + '</span>';
-        }).join("") + '</div>' +
-        '<div class="calendar-grid" id="planner-calendar-grid">' + reminderMonthCells.map(function (cell) {
-          var classes = ["calendar-cell"];
-          if (!cell.inMonth) classes.push("is-muted");
-          if (cell.iso === runtime.dashboardReminderDate) classes.push("is-selected");
-          if (examDateValue && cell.iso === examDateValue) classes.push("is-exam-day");
-          if (cell.iso === toDateInputValue(new Date())) classes.push("is-today");
-          var cellEvents = getEventsForDate(plannerEvents, cell.iso);
-          if (cellEvents.some(function (event) { return event.status === "ongoing"; })) classes.push("has-live");
-          var tooltipText = cellEvents.length ? (cellEvents.length + " planned mock" + (cellEvents.length > 1 ? "s" : "")) : "No planned mocks";
-          var dotsHtml = cellEvents.slice(0, 3).map(function (event) {
-            var meta = getPlannerStatusMeta(event.status);
-            var dotClass = (cell.iso === toDateInputValue(new Date()) && event.status === "planned") ? "is-live" : meta.dot;
-            return '<span class="calendar-dot ' + escapeAttribute(dotClass) + '"></span>';
-          }).join("");
-          return '<button type="button" class="' + classes.join(" ") + '" data-calendar-date="' + escapeAttribute(cell.iso) + '" title="' + escapeAttribute(tooltipText) + '"><span class="calendar-date-number">' + escapeHtml(String(cell.label)) + '</span><span class="calendar-dot-stack">' + dotsHtml + (cellEvents.length > 3 ? '<span class="calendar-dot-more">+' + escapeHtml(String(cellEvents.length - 3)) + '</span>' : '') + '</span><span class="calendar-tooltip">' + escapeHtml(tooltipText) + '</span></button>';
-        }).join("") + '</div>' +
-        '<div class="calendar-helper">' + (examDateValue ? ('UGEE exam day: ' + escapeHtml(formatDateOnly(appConfig.ugeeExamDate))) : 'Admin has not set the UGEE exam date yet.') + '</div>' +
-        '<div class="planner-analytics-grid">' +
-          '<div class="planner-analytics-card"><strong>' + escapeHtml(String(plannerStats.totalPlanned)) + '</strong><span>Total planned mocks</span></div>' +
-          '<div class="planner-analytics-card"><strong>' + escapeHtml(String(plannerStats.completed)) + '</strong><span>Completed mocks</span></div>' +
-          '<div class="planner-analytics-card"><strong>' + escapeHtml(String(plannerStats.missed)) + '</strong><span>Missed mocks</span></div>' +
-          '<div class="planner-analytics-card"><strong>' + escapeHtml(String(plannerStats.completionRate)) + '%</strong><span>Completion rate</span></div>' +
-          '<div class="planner-analytics-card"><strong>' + escapeHtml(String(plannerStats.weeklyConsistency)) + '%</strong><span>Weekly consistency</span></div>' +
-          '<div class="planner-analytics-card"><strong>' + escapeHtml(String(plannerStats.monthlyActivity)) + '</strong><span>Monthly activity</span></div>' +
-        '</div>' +
-        '<div class="planner-selected-date-card">' +
-          '<div class="planner-bucket-head"><p class="section-label">Selected date</p><span>' + escapeHtml(formatDateOnly(runtime.dashboardReminderDate)) + '</span></div>' +
-          (selectedDateEvents.length
-            ? '<div class="planner-event-list compact-scroll">' + selectedDateEvents.map(function (event) {
-                return renderPlannerEventCard(event, { showQuickStart: true, showManageActions: true });
-              }).join("") + '</div>'
-            : '<div class="empty-state planner-empty">No planned mocks on this date yet. Click any mock card to schedule one.</div>') +
-        '</div>' +
-        '<div class="planner-sidebar-stack">' +
-          renderPlannerBucket("Today", plannerDayBuckets.today, "No mocks scheduled for today.") +
-          renderPlannerBucket("Tomorrow", plannerDayBuckets.tomorrow, "Nothing lined up for tomorrow yet.") +
-          renderPlannerBucket("Upcoming", plannerDayBuckets.upcoming.slice(0, 6), "Your future plans will appear here.") +
-        '</div>' +
-        '<div class="planner-insights-grid">' +
-          '<div class="planner-insight-card"><p class="section-label">Recommendations</p><strong>' + escapeHtml(plannerRecommendations.nextMock ? plannerRecommendations.nextMock.title : "Schedule your next mock") + '</strong><span>Best timing: ' + escapeHtml(plannerRecommendations.bestHour) + '</span><span>Weak zone: ' + escapeHtml(plannerRecommendations.weakSection) + '</span><span>' + escapeHtml(plannerRecommendations.consistencyTip) + '</span></div>' +
-          '<div class="planner-insight-card"><p class="section-label">Completed history</p>' +
+    var plannerBucketSections = [];
+    if (plannerDayBuckets.today.length) {
+      plannerBucketSections.push(renderPlannerBucket("Today", plannerDayBuckets.today, "No mocks scheduled for today."));
+    }
+    if (plannerDayBuckets.tomorrow.length) {
+      plannerBucketSections.push(renderPlannerBucket("Tomorrow", plannerDayBuckets.tomorrow, "Nothing lined up for tomorrow yet."));
+    }
+    if (plannerDayBuckets.upcoming.length) {
+      plannerBucketSections.push(renderPlannerBucket("Upcoming", plannerDayBuckets.upcoming.slice(0, 6), "Your future plans will appear here."));
+    }
+    var plannerUpcomingHtml = plannerBucketSections.length
+      ? '<div class="planner-sidebar-stack">' + plannerBucketSections.join("") + '</div>'
+      : '<div class="planner-bucket"><div class="planner-bucket-head"><p class="section-label">Upcoming</p><span>0</span></div><div class="empty-state planner-empty">Your future plans will appear here once you schedule a mock.</div></div>';
+    var plannerTabsHtml =
+      '<div class="planner-top-tabs" role="tablist" aria-label="Dashboard planner sections">' +
+        '<button class="planner-tab-button js-planner-view' + (runtime.dashboardPlannerView === "planner" ? ' is-active' : '') + '" type="button" data-view="planner" role="tab" aria-selected="' + (runtime.dashboardPlannerView === "planner" ? 'true' : 'false') + '"><span aria-hidden="true">&#128197;</span> Planner</button>' +
+        '<button class="planner-tab-button js-planner-view' + (runtime.dashboardPlannerView === "history" ? ' is-active' : '') + '" type="button" data-view="history" role="tab" aria-selected="' + (runtime.dashboardPlannerView === "history" ? 'true' : 'false') + '"><span aria-hidden="true">&#128340;</span> History</button>' +
+        '<button class="planner-tab-button js-planner-view' + (runtime.dashboardPlannerView === "reports" ? ' is-active' : '') + '" type="button" data-view="reports" role="tab" aria-selected="' + (runtime.dashboardPlannerView === "reports" ? 'true' : 'false') + '"><span aria-hidden="true">&#128196;</span> Reports</button>' +
+      '</div>';
+    var plannerViewHtml =
+      runtime.dashboardPlannerView === "history"
+        ? (
+          '<div class="planner-tab-panel planner-history-panel">' +
+            '<div class="planner-panel-head"><div><p class="section-label" style="margin:0;">Completed History</p><h3>Mock timeline</h3></div><span class="meta-chip">' + escapeHtml(String(plannerHistoryEvents.length)) + ' recent</span></div>' +
             (plannerHistoryEvents.length
-              ? '<div class="planner-history-list">' + plannerHistoryEvents.map(function (event) {
-                  return '<div class="planner-history-item"><strong>' + escapeHtml(event.title) + '</strong><span>' + escapeHtml(formatDateOnly(event.plannedAt)) + ' • ' + escapeHtml(event.startTime) + '</span><span>Score ' + escapeHtml(String(event.score || 0)) + ' • Accuracy ' + escapeHtml(String(event.accuracy || 0)) + '%</span><div class="button-row"><button class="button button-secondary button-compact js-open-result" data-id="' + escapeAttribute(event.completedAttempt && event.completedAttempt.id || "") + '">Quick Review</button></div></div>';
+              ? '<div class="planner-history-list planner-history-list-large">' + plannerHistoryEvents.map(function (event) {
+                  return '<div class="planner-history-item"><strong>' + escapeHtml(event.title) + '</strong><span>' + escapeHtml(formatDateOnly(event.plannedAt)) + ' &bull; ' + escapeHtml(event.startTime) + '</span><span>Score ' + escapeHtml(String(event.score || 0)) + ' &bull; Accuracy ' + escapeHtml(String(event.accuracy || 0)) + '%</span><div class="button-row"><button class="button button-secondary button-compact js-open-result" data-id="' + escapeAttribute(event.completedAttempt && event.completedAttempt.id || "") + '">Quick Review</button></div></div>';
                 }).join("") + '</div>'
               : '<div class="empty-state planner-empty">Complete a planned mock to unlock your history timeline.</div>') +
-          '</div>' +
-        '</div>' +
+          '</div>'
+        )
+        : runtime.dashboardPlannerView === "reports"
+          ? (
+            '<div class="planner-tab-panel planner-reports-panel">' +
+              '<div class="planner-panel-head"><div><p class="section-label" style="margin:0;">My Reports</p><h3>Saved result reports</h3></div><span class="meta-chip">' + escapeHtml(String(snapshot.attempts.filter(function (attempt) { return attempt.status === "submitted" && attempt.resultSnapshot; }).length)) + '</span></div>' +
+              reportsHtml +
+            '</div>'
+          )
+          : (
+            '<div class="planner-tab-panel planner-main-panel">' +
+              '<div class="planner-summary-strip">' +
+                '<div class="planner-countdown-card">' +
+                  '<p class="section-label" style="margin:0;">UGEE 2026</p>' +
+                  '<strong>' + escapeHtml(countdownDays === null ? "Date pending" : (String(countdownDays) + " Days Left")) + '</strong>' +
+                  '<span>' + escapeHtml(countdownDays === null ? "Admin will set the final date soon." : (String(suggestedMocksRemaining) + " mocks left this week at your current pace.")) + '</span>' +
+                '</div>' +
+                '<div class="planner-goal-card">' +
+                  '<div class="planner-goal-head"><p class="section-label" style="margin:0;">Weekly goal</p><span>' + escapeHtml(String(plannerStats.weeklyCompleted)) + '/' + escapeHtml(String(plannerStats.weeklyGoal)) + '</span></div>' +
+                  '<div class="planner-progress"><span style="width:' + escapeAttribute(String(Math.min(100, Math.round((plannerStats.weeklyCompleted / Math.max(1, plannerStats.weeklyGoal)) * 100)))) + '%;"></span></div>' +
+                  '<div class="helper-text">Consistency: ' + escapeHtml(String(plannerStats.weeklyConsistency)) + '% &bull; Streak: ' + escapeHtml(String(plannerStats.currentStreak)) + ' day(s)</div>' +
+                '</div>' +
+              '</div>' +
+              '<div class="calendar-head">' +
+                '<div><p class="section-label" style="margin:0;">Mock planner</p><h3>' + escapeHtml(formatMonthLabel(runtime.dashboardCalendarMonth)) + '</h3></div>' +
+                '<div class="button-row">' +
+                  notificationPromptHtml +
+                  '<button class="button button-secondary button-compact planner-arrow-button" type="button" id="calendar-prev-month" aria-label="Previous month">&larr;</button>' +
+                  '<button class="button button-secondary button-compact planner-arrow-button" type="button" id="calendar-next-month" aria-label="Next month">&rarr;</button>' +
+                '</div>' +
+              '</div>' +
+              (runtime.dashboardNotificationMessage ? '<div class="planner-inline-alert">' + escapeHtml(runtime.dashboardNotificationMessage) + '</div>' : '') +
+              '<div class="calendar-weekdays">' + ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map(function (label) {
+                return '<span>' + label + '</span>';
+              }).join("") + '</div>' +
+              '<div class="calendar-grid" id="planner-calendar-grid">' + reminderMonthCells.map(function (cell) {
+                var classes = ["calendar-cell"];
+                if (!cell.inMonth) classes.push("is-muted");
+                if (cell.iso === runtime.dashboardReminderDate) classes.push("is-selected");
+                if (examDateValue && cell.iso === examDateValue) classes.push("is-exam-day");
+                if (cell.iso === toDateInputValue(new Date())) classes.push("is-today");
+                var cellEvents = getEventsForDate(plannerEvents, cell.iso);
+                if (cellEvents.some(function (event) { return event.status === "ongoing"; })) classes.push("has-live");
+                var tooltipText = cellEvents.length ? (cellEvents.length + " planned mock" + (cellEvents.length > 1 ? "s" : "")) : "No planned mocks";
+                var dotsHtml = cellEvents.slice(0, 3).map(function (event) {
+                  var meta = getPlannerStatusMeta(event.status);
+                  var dotClass = (cell.iso === toDateInputValue(new Date()) && event.status === "planned") ? "is-live" : meta.dot;
+                  return '<span class="calendar-dot ' + escapeAttribute(dotClass) + '"></span>';
+                }).join("");
+                return '<button type="button" class="' + classes.join(" ") + '" data-calendar-date="' + escapeAttribute(cell.iso) + '" title="' + escapeAttribute(tooltipText) + '"><span class="calendar-date-number">' + escapeHtml(String(cell.label)) + '</span><span class="calendar-dot-stack">' + dotsHtml + (cellEvents.length > 3 ? '<span class="calendar-dot-more">+' + escapeHtml(String(cellEvents.length - 3)) + '</span>' : '') + '</span><span class="calendar-tooltip">' + escapeHtml(tooltipText) + '</span></button>';
+              }).join("") + '</div>' +
+              '<div class="calendar-helper">' + (examDateValue ? ('UGEE exam day: ' + escapeHtml(formatDateOnly(appConfig.ugeeExamDate))) : 'Admin has not set the UGEE exam date yet.') + '</div>' +
+              '<div class="planner-analytics-grid planner-analytics-grid-compact">' +
+                '<div class="planner-analytics-card"><strong>' + escapeHtml(String(plannerStats.totalPlanned)) + '</strong><span>Total planned mocks</span></div>' +
+                '<div class="planner-analytics-card"><strong>' + escapeHtml(String(plannerStats.completed)) + '</strong><span>Completed mocks</span></div>' +
+                '<div class="planner-analytics-card"><strong>' + escapeHtml(String(plannerStats.missed)) + '</strong><span>Missed mocks</span></div>' +
+                '<div class="planner-analytics-card"><strong>' + escapeHtml(String(plannerStats.completionRate)) + '%</strong><span>Completion rate</span></div>' +
+                '<div class="planner-analytics-card"><strong>' + escapeHtml(String(plannerStats.weeklyConsistency)) + '%</strong><span>Weekly consistency</span></div>' +
+                '<div class="planner-analytics-card"><strong>' + escapeHtml(String(plannerStats.monthlyActivity)) + '</strong><span>Monthly activity</span></div>' +
+              '</div>' +
+              '<div class="planner-main-grid">' +
+                '<div class="planner-selected-date-card">' +
+                  '<div class="planner-bucket-head"><p class="section-label">Selected date</p><span>' + escapeHtml(formatDateOnly(runtime.dashboardReminderDate)) + '</span></div>' +
+                  (selectedDateEvents.length
+                    ? '<div class="planner-event-list compact-scroll">' + selectedDateEvents.map(function (event) {
+                        return renderPlannerEventCard(event, { showQuickStart: true, showManageActions: true });
+                      }).join("") + '</div>'
+                    : '<div class="empty-state planner-empty">No planned mocks on this date yet. Click any mock card to schedule one.</div>') +
+                '</div>' +
+                '<div class="planner-right-rail">' +
+                  plannerUpcomingHtml +
+                  '<div class="planner-insight-card planner-recommendation-card"><p class="section-label">Recommendations</p><strong>' + escapeHtml(plannerRecommendations.nextMock ? plannerRecommendations.nextMock.title : "Schedule your next mock") + '</strong><span>Best timing: ' + escapeHtml(plannerRecommendations.bestHour) + '</span><span>Weak zone: ' + escapeHtml(plannerRecommendations.weakSection) + '</span><span>' + escapeHtml(plannerRecommendations.consistencyTip) + '</span></div>' +
+                '</div>' +
+              '</div>' +
+            '</div>'
+          );
+    var calendarHtml =
+      '<div class="dashboard-calendar-card planner-section-shell">' +
+        plannerTabsHtml +
+        plannerViewHtml +
       '</div>';
     var plannerModalHtml = (runtime.dashboardPlannerModalDate || runtime.dashboardScheduleModalTestId)
       ? (
@@ -2411,9 +2455,6 @@
           recentAttempts +
           '<div class="divider"></div>' +
           calendarHtml +
-          '<div class="divider"></div>' +
-          '<p class="section-label">My Reports</p>' +
-          reportsHtml +
         '</aside>' +
       '</section>' +
       plannerModalHtml
@@ -2441,6 +2482,13 @@
     app.querySelectorAll(".js-buy-series").forEach(function (button) {
       button.addEventListener("click", function () {
         openBuySeries();
+      });
+    });
+
+    app.querySelectorAll(".js-planner-view").forEach(function (button) {
+      button.addEventListener("click", function () {
+        runtime.dashboardPlannerView = button.dataset.view || "planner";
+        renderDashboard(user);
       });
     });
 
