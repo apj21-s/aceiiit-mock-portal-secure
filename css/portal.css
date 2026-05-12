@@ -174,6 +174,11 @@ body[data-theme="dark"] .question-editor-intro {
   background: rgba(255, 255, 255, 0.05);
 }
 
+body[data-theme="dark"] .active-paper-panel {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
 body[data-theme="dark"] .planner-tag-option span,
 body[data-theme="dark"] .planner-history-item,
 body[data-theme="dark"] .planner-status-chip.planned,
@@ -1259,6 +1264,12 @@ body[data-theme="dark"] select:-webkit-autofill:focus {
   background: rgba(255, 250, 240, 0.75);
 }
 
+.admin-layout-inline-footer {
+  display: flex;
+  flex-direction: column;
+  min-height: calc(100dvh - 28px);
+}
+
 .instructions-bar,
 .report-bar,
 .admin-bar,
@@ -1333,6 +1344,10 @@ body[data-theme="dark"] select:-webkit-autofill:focus {
 .report-body,
 .admin-body {
   padding: 24px;
+}
+
+.admin-layout-inline-footer .admin-body {
+  flex: 1 1 auto;
 }
 
 .instructions-card ul,
@@ -2954,18 +2969,21 @@ body[data-theme="dark"] select:-webkit-autofill:focus {
 .support-chat-icon {
   width: 40px;
   height: 40px;
-  display: grid;
+  display: inline-grid;
   place-items: center;
   border-radius: 50%;
   background: linear-gradient(180deg, #d8b13d, #c69f2a);
   color: #15110f;
-  font-family: var(--font-display);
-  font-size: 1rem;
-  font-weight: 900;
-  letter-spacing: 0.04em;
   box-shadow:
     inset 0 1px 0 rgba(255, 249, 239, 0.36),
     0 8px 18px rgba(20, 17, 15, 0.18);
+}
+
+.support-chat-icon img {
+  width: 26px;
+  height: 26px;
+  display: block;
+  object-fit: contain;
 }
 
 .support-chat-copy {
@@ -3167,6 +3185,10 @@ body[data-theme="dark"] .support-chat-button {
 .app-footer-inline {
   width: 100%;
   margin: 0;
+}
+
+.admin-layout-inline-footer .app-footer-inline {
+  margin-top: auto;
 }
 
 .utility-layout {
@@ -3951,6 +3973,32 @@ body[data-theme="dark"] .support-chat-button {
   background: rgba(20, 17, 15, 0.04);
 }
 
+.active-paper-panel {
+  display: grid;
+  gap: 10px;
+  padding: 14px 16px;
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(20, 17, 15, 0.08);
+  background: rgba(255, 252, 245, 0.88);
+}
+
+.active-paper-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.active-paper-title-row strong {
+  font-family: var(--font-display);
+  font-size: 1.06rem;
+  line-height: 1.2;
+}
+
+.active-paper-chips {
+  margin-top: 0;
+}
+
 .latex-preview-toolbar {
   display: flex;
   align-items: flex-start;
@@ -4140,6 +4188,10 @@ body[data-theme="dark"] .support-chat-button {
   .admin-layout,
   .app-footer {
     width: min(100%, calc(100% - 18px));
+  }
+
+  .admin-layout-inline-footer {
+    min-height: calc(100dvh - 18px);
   }
 
   .instructions-utility-shell,

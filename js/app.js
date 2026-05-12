@@ -1632,7 +1632,7 @@
       ? ""
       : (
         '<a class="support-chat-button" href="' + escapeAttribute(supportChatHref) + '" target="_blank" rel="noreferrer" aria-label="Chat on WhatsApp for support" title="WhatsApp support">' +
-          '<span class="support-chat-icon" aria-hidden="true">W</span>' +
+          '<span class="support-chat-icon" aria-hidden="true"><img src="assets/favicon-round.svg" alt=""></span>' +
           '<span class="support-chat-copy"><strong>Need help?</strong><small>Chat on WhatsApp</small></span>' +
         '</a>'
       );
@@ -4222,6 +4222,22 @@
     var selectedReapCount = selectedTestQuestions.filter(function (question) {
       return question.section === "REAP";
     }).length;
+    var activePaperSummaryHtml = selectedTest
+      ? (
+        '<div class="active-paper-panel">' +
+          '<p class="section-label">Active paper</p>' +
+          '<div class="active-paper-title-row">' +
+            '<strong>' + escapeHtml(selectedTest.title) + '</strong>' +
+            '<span class="meta-chip ' + (selectedTest.status === "live" ? 'is-live' : 'is-draft') + '">' + escapeHtml(selectedTest.status || "draft") + '</span>' +
+          '</div>' +
+          '<div class="meta-row active-paper-chips">' +
+            '<span class="meta-chip">SUPR ' + selectedSuprCount + '</span>' +
+            '<span class="meta-chip">REAP ' + selectedReapCount + '</span>' +
+            '<span class="meta-chip">' + (selectedTest.sectionDurations ? selectedTest.sectionDurations.SUPR : 60) + 'm / ' + (selectedTest.sectionDurations ? selectedTest.sectionDurations.REAP : 120) + 'm</span>' +
+          '</div>' +
+        '</div>'
+      )
+      : "";
     var questionUsage = {};
     var availableBankQuestions = questions.filter(function (question) {
       return !selectedTest || selectedTest.questionIds.indexOf(question.id) === -1;
@@ -4321,6 +4337,7 @@
                 '<div><strong>' + escapeHtml(selectedTest ? selectedTest.title : "Select a test") + '</strong><div class="helper-text">Use this broader editor to write, preview, upload images, and save questions without the cramped builder view.</div></div>' +
                 (selectedTest ? '<span class="meta-chip">' + escapeHtml(selectedTest.sectionDurations ? (selectedTest.sectionDurations.SUPR + "m / " + selectedTest.sectionDurations.REAP + "m") : "") + '</span>' : '') +
               '</div>' +
+              activePaperSummaryHtml +
               questionFormHtml +
             '</div>' +
           '</div>' +
@@ -4329,7 +4346,7 @@
       : "";
 
     app.innerHTML = buildShell(
-      '<section class="admin-layout">' +
+      '<section class="admin-layout admin-layout-inline-footer">' +
         '<div class="admin-bar">' +
           '<div class="brand-mark"><span class="brand-dot"></span> AceIIIT</div>' +
           '<div class="button-row">' +
@@ -4394,14 +4411,7 @@
               '</div>' +
               (selectedTest ? (
                 '<div class="divider"></div>' +
-                '<p class="section-label">Active paper</p>' +
-                '<div class="meta-row">' +
-                  '<span class="meta-chip">' + escapeHtml(selectedTest.title) + '</span>' +
-                  '<span class="meta-chip">SUPR ' + selectedSuprCount + '</span>' +
-                  '<span class="meta-chip">REAP ' + selectedReapCount + '</span>' +
-                  '<span class="meta-chip">' + (selectedTest.sectionDurations ? selectedTest.sectionDurations.SUPR : 60) + 'm / ' + (selectedTest.sectionDurations ? selectedTest.sectionDurations.REAP : 120) + 'm</span>' +
-                  '<span class="meta-chip ' + (selectedTest.status === "live" ? 'is-live' : 'is-draft') + '">' + escapeHtml(selectedTest.status || "draft") + '</span>' +
-                '</div>'
+                activePaperSummaryHtml
               ) : "") +
             '</aside>' +
           '</div>' +
