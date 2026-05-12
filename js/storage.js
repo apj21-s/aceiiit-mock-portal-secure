@@ -353,6 +353,9 @@
       testId: String(reminder && reminder.testId || ""),
       plannedAt: reminder && reminder.plannedAt ? reminder.plannedAt : null,
       remindAt: reminder && reminder.remindAt ? reminder.remindAt : null,
+      reminderMinutes: Number(reminder && reminder.reminderMinutes || 300),
+      subjectFocus: Array.isArray(reminder && reminder.subjectFocus) ? reminder.subjectFocus.slice(0, 3) : [],
+      notes: String(reminder && reminder.notes || ""),
       sentAt: reminder && reminder.sentAt ? reminder.sentAt : null,
       failureReason: String(reminder && reminder.failureReason || ""),
     };
@@ -683,6 +686,15 @@
 
   function getOrCreateAttempt(userId, testId) {
     return getInProgressAttempt(userId, testId) || createAttempt(userId, testId);
+  }
+
+  function discardAttempt(attemptId) {
+    var targetId = String(attemptId || "");
+    state.db.attempts = (state.db.attempts || []).filter(function (attempt) {
+      return String(attempt && attempt.id || "") !== targetId;
+    });
+    saveState();
+    return { ok: true };
   }
 
   function patchAttempt(attemptId, updater) {
@@ -1114,6 +1126,7 @@
     getInProgressAttempt: getInProgressAttempt,
     createAttempt: createAttempt,
     getOrCreateAttempt: getOrCreateAttempt,
+    discardAttempt: discardAttempt,
     patchAttempt: patchAttempt,
     submitAttempt: submitAttempt,
     markAttemptSubmissionCooldown: function () {

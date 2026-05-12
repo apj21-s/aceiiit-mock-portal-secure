@@ -20,6 +20,11 @@
     adminActivityTestId: null,
     dashboardCalendarMonth: "",
     dashboardReminderDate: "",
+    dashboardPlannerModalDate: "",
+    dashboardScheduleModalTestId: "",
+    dashboardNotificationMessage: "",
+    dashboardTouchStartX: 0,
+    dashboardTouchStartY: 0,
     imageLightboxUrl: "",
     lastPresencePingAt: 0,
     pendingQuestionFileNames: [],
@@ -596,6 +601,28 @@
     return Number(test.durationMinutes || 0);
   }
 
+  function getAttemptElapsedMs(attempt) {
+    if (!attempt || !attempt.startedAt) {
+      return 0;
+    }
+    var startedAtMs = new Date(attempt.startedAt).getTime();
+    if (!Number.isFinite(startedAtMs)) {
+      return 0;
+    }
+    return Math.max(0, Date.now() - startedAtMs);
+  }
+
+  function isAttemptExpired(attempt, test) {
+    if (!attempt || attempt.status !== "in_progress" || !test) {
+      return false;
+    }
+    var totalDurationMs = getTotalDuration(test) * 60 * 1000;
+    if (!totalDurationMs) {
+      return false;
+    }
+    return getAttemptElapsedMs(attempt) > (totalDurationMs + (10 * 60 * 1000));
+  }
+
   function getSectionQuestions(questions, sectionKey) {
     return questions.filter(function (question) {
       return question.section === sectionKey;
@@ -703,6 +730,341 @@
       String(date.getMonth() + 1).padStart(2, "0"),
       String(date.getFullYear())
     ].join("/");
+  }
+
+  function formatTimeOnly(value) {
+    if (!value) {
+      return "--:--";
+    }
+    var date = new Date(value);
+    if (Number.isNaN(date.getTime())) {
+      return "--:--";
+    }
+    return String(date.getHours()).padStart(2, "0") + ":" + String(date.getMinutes()).padStart(2, "0");
+  }
+
+  function formatReminderLabel(minutes) {
+    var value = Number(minutes || 300);
+    if (value >= 24 * 60 && value % (24 * 60) === 0) {
+      return (value / (24 * 60)) + " day before";
+    }
+    if (value >= 60 && value % 60 === 0) {
+      return (value / 60) + " hour before";
+    }
+    return value + " min before";
+  }
+
+  function sameDay(left, right) {
+    if (!left || !right) return false;
+    return toDateInputValue(left) === toDateInputValue(right);
+  }
+
+  function normalizeSubjectFocus(value) {
+    var items = Array.isArray(value) ? value : (value ? [value] : []);
+    return items
+      .map(function (item) { return String(item || "").trim(); })
+      .filter(function (item, index, arr) {
+        return item && ["Physics", "Maths", "Logical"].indexOf(item) >= 0 && arr.indexOf(item) === index;
+      })
+      .slice(0, 3);
+  }
+
+  function getReminderStatus(reminder, attempts) {
+    var plannedAtMs = reminder && reminder.plannedAt ? new Date(reminder.plannedAt).getTime() : 0;
+    var nowMs = Date.now();
+    var submittedAttempts = (attempts || []).filter(function (attempt) {
+      return attempt && attempt.status === "submitted";
+    });
+    var completedAttempt = submittedAttempts.find(function (attempt) {
+      var submittedAtMs = attempt && attempt.submittedAt ? new Date(attempt.submittedAt).getTime() : 0;
+      return submittedAtMs && plannedAtMs && submittedAtMs >= (plannedAtMs - (12 * 60 * 60 * 1000));
+    }) || null;
+    if (completedAttempt) {
+      return { key: "completed", completedAttempt: completedAttempt };
+    }
+
+    var liveAttempt = (attempts || []).find(function (attempt) {
+      return attempt && attempt.status === "in_progress";
+    }) || null;
+    if (liveAttempt) {
+      return { key: "ongoing", completedAttempt: null };
+    }
+
+    if (plannedAtMs && plannedAtMs < nowMs) {
+      return { key: "missed", completedAttempt: null };
+    }
+
+    return { key: "planned", completedAttempt: null };
+  }
+
+  function buildPlannerEvents(snapshot, reminders) {
+    var attemptsByTest = {};
+    (snapshot && snapshot.attempts || []).forEach(function (attempt) {
+      if (!attemptsByTest[attempt.testId]) {
+        attemptsByTest[attempt.testId] = [];
+      }
+      attemptsByTest[attempt.testId].push(attempt);
+    });
+
+    return (reminders || []).map(function (reminder) {
+      var test = (snapshot && snapshot.tests || []).find(function (item) {
+        return item.id === reminder.testId;
+      }) || store.getTestById(reminder.testId) || null;
+      var statusInfo = getReminderStatus(reminder, attemptsByTest[reminder.testId] || []);
+      return {
+        id: reminder.id,
+        mockId: reminder.testId,
+        title: reminder.title || (test && test.title) || "Planned mock",
+        date: toDateInputValue(reminder.plannedAt),
+        startTime: formatTimeOnly(reminder.plannedAt),
+        endTime: formatTimeOnly(new Date(new Date(reminder.plannedAt).getTime() + ((getTotalDuration(test) || 0) * 60 * 1000))),
+        status: statusInfo.key,
+        reminder: Number(reminder.reminderMinutes || 300),
+        completed: statusInfo.key === "completed",
+        score: statusInfo.completedAttempt && statusInfo.completedAttempt.result ? Number(statusInfo.completedAttempt.result.score || 0) : null,
+        accuracy: statusInfo.completedAttempt && statusInfo.completedAttempt.result ? Number(statusInfo.completedAttempt.result.accuracy || 0) : null,
+        subjectFocus: normalizeSubjectFocus(reminder.subjectFocus),
+        notes: reminder.notes || "",
+        plannedAt: reminder.plannedAt,
+        remindAt: reminder.remindAt,
+        sentAt: reminder.sentAt,
+        failureReason: reminder.failureReason || "",
+        test: test,
+        duration: getTotalDuration(test),
+        completedAttempt: statusInfo.completedAttempt || null,
+      };
+    }).sort(function (left, right) {
+      return new Date(left.plannedAt || 0).getTime() - new Date(right.plannedAt || 0).getTime();
+    });
+  }
+
+  function getPlannerStatusMeta(status) {
+    if (status === "completed") {
+      return { label: "Completed", tone: "completed", dot: "is-completed" };
+    }
+    if (status === "missed") {
+      return { label: "Missed", tone: "missed", dot: "is-missed" };
+    }
+    if (status === "ongoing") {
+      return { label: "Ongoing", tone: "live", dot: "is-live" };
+    }
+    return { label: "Planned", tone: "planned", dot: "is-planned" };
+  }
+
+  function getEventsForDate(events, isoDate) {
+    return (events || []).filter(function (event) {
+      return event.date === isoDate;
+    });
+  }
+
+  function getPlannerDayBuckets(events) {
+    var today = toDateInputValue(new Date());
+    var tomorrow = toDateInputValue(new Date(Date.now() + 24 * 60 * 60 * 1000));
+    return {
+      today: (events || []).filter(function (event) { return event.date === today; }),
+      tomorrow: (events || []).filter(function (event) { return event.date === tomorrow; }),
+      upcoming: (events || []).filter(function (event) { return event.date !== today && event.date !== tomorrow && event.status !== "completed"; }),
+    };
+  }
+
+  function getWeekRange(dateLike) {
+    var date = new Date(dateLike || Date.now());
+    date.setHours(0, 0, 0, 0);
+    var day = date.getDay() || 7;
+    var start = new Date(date);
+    start.setDate(date.getDate() - (day - 1));
+    var end = new Date(start);
+    end.setDate(start.getDate() + 7);
+    return { start: start, end: end };
+  }
+
+  function buildPlannerStats(events) {
+    var totalPlanned = (events || []).length;
+    var completed = (events || []).filter(function (event) { return event.status === "completed"; });
+    var missed = (events || []).filter(function (event) { return event.status === "missed"; });
+    var weekRange = getWeekRange(new Date());
+    var weeklyCompleted = completed.filter(function (event) {
+      var time = new Date(event.plannedAt || 0).getTime();
+      return time >= weekRange.start.getTime() && time < weekRange.end.getTime();
+    }).length;
+    var weeklyGoal = 5;
+    var completionRate = totalPlanned ? Math.round((completed.length / totalPlanned) * 100) : 0;
+    var completedDays = completed.map(function (event) { return event.date; }).filter(Boolean);
+    var uniqueCompletedDays = completedDays.filter(function (day, index, arr) { return arr.indexOf(day) === index; }).sort();
+    var currentStreak = 0;
+    var cursor = new Date();
+    cursor.setHours(0, 0, 0, 0);
+    while (uniqueCompletedDays.indexOf(toDateInputValue(cursor)) >= 0) {
+      currentStreak += 1;
+      cursor.setDate(cursor.getDate() - 1);
+    }
+    var monthlyActivity = completed.filter(function (event) {
+      return sameDay(new Date(event.plannedAt || 0), new Date(event.plannedAt || 0)) &&
+        new Date(event.plannedAt || 0).getMonth() === new Date().getMonth() &&
+        new Date(event.plannedAt || 0).getFullYear() === new Date().getFullYear();
+    }).length;
+    return {
+      totalPlanned: totalPlanned,
+      completed: completed.length,
+      missed: missed.length,
+      completionRate: completionRate,
+      weeklyGoal: weeklyGoal,
+      weeklyCompleted: weeklyCompleted,
+      currentStreak: currentStreak,
+      monthlyActivity: monthlyActivity,
+      weeklyConsistency: Math.min(100, Math.round((weeklyCompleted / weeklyGoal) * 100)),
+    };
+  }
+
+  function buildPlannerRecommendations(events, snapshot) {
+    var completed = (events || []).filter(function (event) {
+      return event.status === "completed" && event.completedAttempt && event.completedAttempt.result;
+    });
+    var byHour = {};
+    completed.forEach(function (event) {
+      var hour = new Date(event.plannedAt || 0).getHours();
+      byHour[hour] = byHour[hour] || { total: 0, count: 0 };
+      byHour[hour].total += Number(event.score || 0);
+      byHour[hour].count += 1;
+    });
+    var bestHour = Object.keys(byHour).sort(function (left, right) {
+      var leftAvg = byHour[left].total / byHour[left].count;
+      var rightAvg = byHour[right].total / byHour[right].count;
+      return rightAvg - leftAvg;
+    })[0];
+    var lastCompletedTestId = completed.length ? completed[completed.length - 1].mockId : "";
+    var nextMock = (snapshot && snapshot.tests || []).find(function (test) {
+      return test.id !== lastCompletedTestId;
+    }) || ((snapshot && snapshot.tests || [])[0] || null);
+    var weakSection = completed.reduce(function (acc, event) {
+      var sectionScores = event.completedAttempt && event.completedAttempt.result && event.completedAttempt.result.sectionScores;
+      if (!sectionScores) return acc;
+      ["SUPR", "REAP"].forEach(function (sectionKey) {
+        acc[sectionKey] = acc[sectionKey] || { score: 0, count: 0 };
+        acc[sectionKey].score += Number(sectionScores[sectionKey] && sectionScores[sectionKey].score || 0);
+        acc[sectionKey].count += 1;
+      });
+      return acc;
+    }, {});
+    var weakSectionKey = Object.keys(weakSection).sort(function (left, right) {
+      return (weakSection[left].score / Math.max(1, weakSection[left].count)) - (weakSection[right].score / Math.max(1, weakSection[right].count));
+    })[0] || "SUPR";
+    return {
+      nextMock: nextMock,
+      weakSection: weakSectionKey,
+      bestHour: bestHour !== undefined ? String(bestHour).padStart(2, "0") + ":00" : "19:00",
+      consistencyTip: completed.length < 3 ? "Schedule 3 mocks this week to build rhythm." : "Keep your streak alive with one more planned mock tomorrow.",
+    };
+  }
+
+  function suggestRescheduleSlot(events, fromDate) {
+    var base = new Date(fromDate || Date.now());
+    base.setHours(19, 0, 0, 0);
+    if (base.getTime() <= Date.now()) {
+      base.setDate(base.getDate() + 1);
+    }
+    for (var dayOffset = 0; dayOffset < 14; dayOffset += 1) {
+      var candidate = new Date(base);
+      candidate.setDate(base.getDate() + dayOffset);
+      var isoDate = toDateInputValue(candidate);
+      var sameDayEvents = getEventsForDate(events, isoDate);
+      if (sameDayEvents.length < 2) {
+        return candidate;
+      }
+    }
+    return new Date(Date.now() + (24 * 60 * 60 * 1000));
+  }
+
+  function requestPlannerNotificationPermission() {
+    if (!("Notification" in window) || Notification.permission !== "default") {
+      return Promise.resolve(("Notification" in window) ? Notification.permission : "unsupported");
+    }
+    return Notification.requestPermission();
+  }
+
+  function schedulePlannerNotifications(events) {
+    if (!("Notification" in window) || Notification.permission !== "granted") {
+      return;
+    }
+    runtime.plannerNotificationTimers = runtime.plannerNotificationTimers || [];
+    runtime.plannerNotificationTimers.forEach(function (timerId) {
+      window.clearTimeout(timerId);
+    });
+    runtime.plannerNotificationTimers = [];
+    (events || []).forEach(function (event) {
+      var remindAtMs = event && event.remindAt ? new Date(event.remindAt).getTime() : 0;
+      if (!remindAtMs || remindAtMs < Date.now() || (remindAtMs - Date.now()) > (24 * 60 * 60 * 1000)) {
+        return;
+      }
+      var delay = Math.max(0, remindAtMs - Date.now());
+      var timerId = window.setTimeout(function () {
+        try {
+          var notification = new Notification("AceIIIT Mock Planner", {
+            body: event.title + " starts at " + formatTimeOnly(event.plannedAt) + " on " + formatDateOnly(event.plannedAt),
+          });
+          notification.onclick = function () {
+            window.focus();
+            runtime.dashboardPlannerModalDate = event.date;
+            renderRoute();
+          };
+        } catch (_err) {}
+        runtime.dashboardNotificationMessage = event.title + " reminder: starts at " + formatTimeOnly(event.plannedAt) + ".";
+        renderRoute();
+      }, delay);
+      runtime.plannerNotificationTimers.push(timerId);
+    });
+  }
+
+  function renderPlannerEventCard(event, options) {
+    options = options || {};
+    var meta = getPlannerStatusMeta(event.status);
+    var title = event.title || "Planned mock";
+    var reminderLabel = formatReminderLabel(event.reminder);
+    var quickAction = options.showQuickStart
+      ? '<button class="button button-secondary button-compact js-start-planned-mock" data-test="' + escapeAttribute(event.mockId) + '" data-event="' + escapeAttribute(event.id) + '">Start Test</button>'
+      : "";
+    var extraActions = options.showManageActions
+      ? '<button class="button button-secondary button-compact js-edit-reminder" data-id="' + escapeAttribute(event.id) + '">Edit</button>' +
+        '<button class="button button-secondary button-compact js-reschedule-reminder" data-id="' + escapeAttribute(event.id) + '">Reschedule</button>' +
+        (event.status === "missed" ? '<button class="button button-secondary button-compact js-quick-reschedule" data-id="' + escapeAttribute(event.id) + '">Quick Reschedule</button>' : '') +
+        '<button class="button button-secondary button-compact js-delete-reminder" data-id="' + escapeAttribute(event.id) + '">Delete</button>'
+      : "";
+    return (
+      '<article class="planner-event-card status-' + escapeAttribute(meta.tone) + '">' +
+        '<div class="planner-event-head">' +
+          '<div>' +
+            '<strong>' + escapeHtml(title) + '</strong>' +
+            '<div class="helper-text">' + escapeHtml(event.test && event.test.title ? event.test.title : title) + '</div>' +
+          '</div>' +
+          '<span class="planner-status-chip ' + escapeAttribute(meta.tone) + '">' + escapeHtml(meta.label) + '</span>' +
+        '</div>' +
+        '<div class="planner-event-meta">' +
+          '<span class="meta-chip">' + escapeHtml(formatDateOnly(event.plannedAt)) + '</span>' +
+          '<span class="meta-chip">' + escapeHtml(event.startTime) + ' - ' + escapeHtml(event.endTime) + '</span>' +
+          '<span class="meta-chip">' + escapeHtml(String(event.duration || 0)) + ' min</span>' +
+        '</div>' +
+        '<div class="planner-event-meta">' +
+          '<span class="meta-chip">Reminder ' + escapeHtml(reminderLabel) + '</span>' +
+          (event.subjectFocus && event.subjectFocus.length ? '<span class="meta-chip">' + escapeHtml(event.subjectFocus.join(", ")) + '</span>' : '') +
+          (event.score !== null && event.score !== undefined ? '<span class="meta-chip">Score ' + escapeHtml(String(event.score)) + '</span>' : '') +
+        '</div>' +
+        (event.notes ? '<div class="helper-text">' + escapeHtml(event.notes) + '</div>' : '') +
+        '<div class="button-row">' + quickAction + extraActions + (event.completedAttempt ? '<button class="button button-secondary button-compact js-open-result" data-id="' + escapeAttribute(event.completedAttempt.id) + '">Quick Review</button>' : '') + '</div>' +
+      '</article>'
+    );
+  }
+
+  function renderPlannerBucket(title, events, emptyText) {
+    return (
+      '<div class="planner-bucket">' +
+        '<div class="planner-bucket-head"><p class="section-label">' + escapeHtml(title) + '</p><span>' + escapeHtml(String((events || []).length)) + '</span></div>' +
+        ((events || []).length
+          ? '<div class="planner-event-list">' + events.map(function (event) {
+              return renderPlannerEventCard(event, { showQuickStart: true });
+            }).join("") + '</div>'
+          : '<div class="empty-state planner-empty">' + escapeHtml(emptyText) + '</div>') +
+      '</div>'
+    );
   }
 
   function rerenderAdminPreserveScroll(user, selectedTestId) {
@@ -1761,15 +2123,16 @@
       }
       return true;
     });
-    var reminders = store.listReminders ? store.listReminders().filter(function (item) {
-      var plannedAt = item && item.plannedAt ? new Date(item.plannedAt).getTime() : 0;
-      return !item.sentAt && Number.isFinite(plannedAt) && plannedAt > Date.now();
-    }).sort(function (left, right) {
+    var reminders = store.listReminders ? store.listReminders().sort(function (left, right) {
       return new Date(left.plannedAt || left.remindAt || 0).getTime() - new Date(right.plannedAt || right.remindAt || 0).getTime();
     }) : [];
+    var plannerEvents = buildPlannerEvents(snapshot, reminders);
     var editingReminder = runtime.dashboardEditingReminderId
       ? reminders.find(function (item) { return item.id === runtime.dashboardEditingReminderId; }) || null
       : null;
+    var plannerStats = buildPlannerStats(plannerEvents);
+    var plannerRecommendations = buildPlannerRecommendations(plannerEvents, snapshot);
+    var plannerDayBuckets = getPlannerDayBuckets(plannerEvents);
     var examDateValue = toDateInputValue(appConfig && appConfig.ugeeExamDate);
     runtime.dashboardReminderDate = editingReminder && editingReminder.plannedAt
       ? toDateInputValue(editingReminder.plannedAt)
@@ -1791,6 +2154,11 @@
       var inProgress = attempts.find(function (attempt) {
         return attempt.status === "in_progress";
       });
+      var isExpiredInProgress = isAttemptExpired(inProgress, test);
+      var plannedEventsForTest = plannerEvents.filter(function (event) {
+        return event.mockId === test.id && (event.status === "planned" || event.status === "ongoing");
+      });
+      var nextPlannedEvent = plannedEventsForTest[0] || null;
       var submitted = attempts.filter(function (attempt) {
         return attempt.status === "submitted";
       });
@@ -1798,7 +2166,9 @@
       var locked = !test.isFree && !user.isPaid && !auth.isAdmin(user);
       var sectionLabel = test.isFree ? "Free mock" : "Paid mock";
       var actionHtml = inProgress
-        ? '<button class="button button-primary js-resume-test" data-id="' + test.id + '">Resume Test</button>'
+        ? (isExpiredInProgress
+            ? '<button class="button button-primary js-restart-attempt" data-id="' + test.id + '" data-attempt="' + inProgress.id + '">Restart Test</button><button class="button button-secondary js-quit-attempt" data-id="' + test.id + '" data-attempt="' + inProgress.id + '">Quit Test</button>'
+            : '<button class="button button-primary js-resume-test" data-id="' + test.id + '" data-attempt="' + inProgress.id + '">Resume Test</button><button class="button button-secondary js-quit-attempt" data-id="' + test.id + '" data-attempt="' + inProgress.id + '">Quit Test</button>')
         : '<button class="button button-primary js-open-instructions" data-id="' + test.id + '">Start Test</button>';
       var reportHtml = latestSubmitted
         ? '<button class="button button-secondary js-open-result" data-id="' + latestSubmitted.id + '">Last Report</button>'
@@ -1817,16 +2187,19 @@
         '<article class="dashboard-card">' +
           '<p class="section-label">' + escapeHtml(sectionLabel) + '</p>' +
           '<h3>' + escapeHtml(test.title) + '</h3>' +
+          (nextPlannedEvent ? '<div class="planner-inline-row"><span class="meta-chip is-live">Planned</span><span class="helper-text">Next: ' + escapeHtml(formatDateOnly(nextPlannedEvent.plannedAt)) + ' • ' + escapeHtml(formatTimeOnly(nextPlannedEvent.plannedAt)) + '</span></div>' : '') +
           '<p>' + escapeHtml(test.subtitle) + '</p>' +
           '<div class="meta-row">' +
             '<span class="meta-chip">' + getTotalDuration(test) + ' mins total</span>' +
             '<span class="meta-chip">SUPR ' + test.sectionDurations.SUPR + 'm | REAP ' + test.sectionDurations.REAP + 'm</span>' +
             '<span class="meta-chip">' + (Number(test.questionCount || 0) || test.questionIds.length) + ' questions</span>' +
             '<span class="meta-chip">Locked sectional flow</span>' +
-            (locked ? '<span class="meta-chip" style="background: rgba(217, 170, 55, 0.18); border-color: rgba(217, 170, 55, 0.25);">Locked 🔒</span>' : '') +
+            (locked ? '<span class="meta-chip" style="background: rgba(217, 170, 55, 0.18); border-color: rgba(217, 170, 55, 0.25);">Locked</span>' : '') +
+            (inProgress && !locked ? '<span class="meta-chip ' + (isExpiredInProgress ? 'is-draft' : '') + '">' + escapeHtml(isExpiredInProgress ? 'Old unfinished attempt' : 'Attempt in progress') + '</span>' : '') +
           '</div>' +
+          (inProgress && !locked ? '<div class="helper-text" style="margin-top: 10px;">' + escapeHtml(isExpiredInProgress ? 'Your older unfinished attempt can no longer be resumed safely. Quit it and restart from a fresh attempt.' : 'You can resume this unfinished attempt, or quit it from here and start over.') + '</div>' : '') +
           '<div class="divider"></div>' +
-          '<div class="button-row">' + actionHtml + reportHtml + '</div>' +
+          '<div class="button-row">' + actionHtml + reportHtml + (locked ? '' : '<button class="button button-secondary js-plan-test" data-id="' + test.id + '">' + (nextPlannedEvent ? 'Edit Plan' : 'Plan Mock') + '</button>') + '</div>' +
         '</article>'
       );
     }).join("");
@@ -1871,48 +2244,139 @@
         }).join("") + '</div>'
       : '<div class="empty-state">Submitted reports will stay here for later review.</div>';
     var reminderMonthCells = buildCalendarCells(runtime.dashboardCalendarMonth);
+    var selectedDateEvents = getEventsForDate(plannerEvents, runtime.dashboardReminderDate);
+    var plannerHistoryEvents = plannerEvents.filter(function (event) { return event.status === "completed"; }).slice(0, 6);
+    var countdownDays = examDateValue ? Math.max(0, Math.ceil((new Date(appConfig.ugeeExamDate).getTime() - Date.now()) / (24 * 60 * 60 * 1000))) : null;
+    var suggestedMocksRemaining = Math.max(0, plannerStats.weeklyGoal - plannerStats.weeklyCompleted);
+    var reminderOptionValues = [10, 30, 60, 1440];
+    var modalDate = runtime.dashboardPlannerModalDate || "";
+    var modalDateEvents = modalDate ? getEventsForDate(plannerEvents, modalDate) : [];
+    var modalFormReminder = editingReminder || null;
+    var modalDefaultTestId = runtime.dashboardScheduleModalTestId || (modalFormReminder ? modalFormReminder.testId : ((reminderEligibleTests[0] && reminderEligibleTests[0].id) || ""));
+    var modalDefaultDate = modalDate || runtime.dashboardReminderDate;
+    var modalDefaultTime = modalFormReminder && modalFormReminder.plannedAt
+      ? formatTimeOnly(modalFormReminder.plannedAt)
+      : "19:00";
+    var modalDefaultReminderMinutes = modalFormReminder ? Number(modalFormReminder.reminderMinutes || 300) : 60;
+    var modalDefaultNotes = modalFormReminder ? (modalFormReminder.notes || "") : "";
+    var modalDefaultSubjectFocus = normalizeSubjectFocus(modalFormReminder ? modalFormReminder.subjectFocus : []);
+    var notificationPromptHtml = ("Notification" in window) && Notification.permission !== "granted"
+      ? '<button class="button button-secondary button-compact" type="button" id="planner-enable-notifications">Enable alerts</button>'
+      : '<span class="meta-chip">Browser alerts ready</span>';
     var calendarHtml =
       '<div class="dashboard-calendar-card">' +
+        '<div class="planner-summary-strip">' +
+          '<div class="planner-countdown-card">' +
+            '<p class="section-label" style="margin:0;">UGEE 2026</p>' +
+            '<strong>' + escapeHtml(countdownDays === null ? "Date pending" : (String(countdownDays) + " Days Left")) + '</strong>' +
+            '<span>' + escapeHtml(countdownDays === null ? "Admin will set the final date soon." : (String(suggestedMocksRemaining) + " mocks left this week at your current pace.")) + '</span>' +
+          '</div>' +
+          '<div class="planner-goal-card">' +
+            '<div class="planner-goal-head"><p class="section-label" style="margin:0;">Weekly goal</p><span>' + escapeHtml(String(plannerStats.weeklyCompleted)) + '/' + escapeHtml(String(plannerStats.weeklyGoal)) + '</span></div>' +
+            '<div class="planner-progress"><span style="width:' + escapeAttribute(String(Math.min(100, Math.round((plannerStats.weeklyCompleted / Math.max(1, plannerStats.weeklyGoal)) * 100)))) + '%;"></span></div>' +
+            '<div class="helper-text">Consistency: ' + escapeHtml(String(plannerStats.weeklyConsistency)) + '% • Streak: ' + escapeHtml(String(plannerStats.currentStreak)) + ' day(s)</div>' +
+          '</div>' +
+        '</div>' +
         '<div class="calendar-head">' +
           '<div><p class="section-label" style="margin:0;">Mock planner</p><h3>' + escapeHtml(formatMonthLabel(runtime.dashboardCalendarMonth)) + '</h3></div>' +
           '<div class="button-row">' +
+            notificationPromptHtml +
             '<button class="button button-secondary button-compact" type="button" id="calendar-prev-month">Prev</button>' +
             '<button class="button button-secondary button-compact" type="button" id="calendar-next-month">Next</button>' +
           '</div>' +
         '</div>' +
+        (runtime.dashboardNotificationMessage ? '<div class="planner-inline-alert">' + escapeHtml(runtime.dashboardNotificationMessage) + '</div>' : '') +
         '<div class="calendar-weekdays">' + ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map(function (label) {
           return '<span>' + label + '</span>';
         }).join("") + '</div>' +
-        '<div class="calendar-grid">' + reminderMonthCells.map(function (cell) {
+        '<div class="calendar-grid" id="planner-calendar-grid">' + reminderMonthCells.map(function (cell) {
           var classes = ["calendar-cell"];
           if (!cell.inMonth) classes.push("is-muted");
           if (cell.iso === runtime.dashboardReminderDate) classes.push("is-selected");
           if (examDateValue && cell.iso === examDateValue) classes.push("is-exam-day");
           if (cell.iso === toDateInputValue(new Date())) classes.push("is-today");
-          return '<button type="button" class="' + classes.join(" ") + '" data-calendar-date="' + escapeAttribute(cell.iso) + '"><span>' + escapeHtml(String(cell.label)) + '</span></button>';
+          var cellEvents = getEventsForDate(plannerEvents, cell.iso);
+          if (cellEvents.some(function (event) { return event.status === "ongoing"; })) classes.push("has-live");
+          var tooltipText = cellEvents.length ? (cellEvents.length + " planned mock" + (cellEvents.length > 1 ? "s" : "")) : "No planned mocks";
+          var dotsHtml = cellEvents.slice(0, 3).map(function (event) {
+            var meta = getPlannerStatusMeta(event.status);
+            var dotClass = (cell.iso === toDateInputValue(new Date()) && event.status === "planned") ? "is-live" : meta.dot;
+            return '<span class="calendar-dot ' + escapeAttribute(dotClass) + '"></span>';
+          }).join("");
+          return '<button type="button" class="' + classes.join(" ") + '" data-calendar-date="' + escapeAttribute(cell.iso) + '" title="' + escapeAttribute(tooltipText) + '"><span class="calendar-date-number">' + escapeHtml(String(cell.label)) + '</span><span class="calendar-dot-stack">' + dotsHtml + (cellEvents.length > 3 ? '<span class="calendar-dot-more">+' + escapeHtml(String(cellEvents.length - 3)) + '</span>' : '') + '</span><span class="calendar-tooltip">' + escapeHtml(tooltipText) + '</span></button>';
         }).join("") + '</div>' +
         '<div class="calendar-helper">' + (examDateValue ? ('UGEE exam day: ' + escapeHtml(formatDateOnly(appConfig.ugeeExamDate))) : 'Admin has not set the UGEE exam date yet.') + '</div>' +
-        '<div class="divider"></div>' +
-        '<form id="reminder-form" class="grid-two">' +
-          '<div class="field" style="grid-column: 1 / -1;"><label for="reminder-title">Plan title</label><input id="reminder-title" name="title" value="' + escapeAttribute(editingReminder ? editingReminder.title : "Attempt mock test") + '" required></div>' +
-          '<div class="field"><label for="reminder-test">Live mock</label><select id="reminder-test" name="testId" required>' +
-            reminderEligibleTests.map(function (test) { return '<option value="' + escapeAttribute(test.id) + '"' + (editingReminder && editingReminder.testId === test.id ? ' selected' : (!editingReminder && reminderEligibleTests[0] && reminderEligibleTests[0].id === test.id ? ' selected' : '')) + '>' + escapeHtml(test.title) + '</option>'; }).join("") +
-          '</select></div>' +
-          '<div class="field"><label for="reminder-date">Date</label><input id="reminder-date" name="date" type="date" value="' + escapeAttribute(runtime.dashboardReminderDate) + '" required></div>' +
-          '<div class="field"><label for="reminder-time">Time</label><input id="reminder-time" name="time" type="time" value="' + escapeAttribute(editingReminder && editingReminder.plannedAt ? (function () { var d = new Date(editingReminder.plannedAt); return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0"); })() : "19:00") + '" required></div>' +
-          (reminderEligibleTests.length ? '' : '<div class="field" style="grid-column: 1 / -1;"><div class="helper-text">No live mocks are available for planning yet.</div></div>') +
-          '<div class="field" style="grid-column: 1 / -1;"><div class="helper-text">You will receive exactly one reminder email 5 hours before this planned mock attempt on ' + escapeHtml(user.email || "") + '.</div></div>' +
-          '<div class="button-row" style="grid-column: 1 / -1;"><button class="button button-primary" type="submit"' + (reminderEligibleTests.length ? '' : ' disabled') + '>' + (editingReminder ? 'Update plan' : 'Save plan') + '</button>' + (editingReminder ? '<button class="button button-secondary" type="button" id="cancel-reminder-edit">Cancel</button>' : '') + '</div>' +
-        '</form>' +
-        '<div class="divider"></div>' +
-        '<p class="section-label">Upcoming reminders</p>' +
-        (reminders.length
-          ? '<div class="attempt-list">' + reminders.slice(0, 8).map(function (item) {
-              var reminderTest = snapshot.tests.find(function (test) { return test.id === item.testId; });
-              return '<div class="attempt-item"><strong>' + escapeHtml(item.title || (reminderTest ? reminderTest.title : "Planned mock")) + '</strong><div class="helper-text">' + escapeHtml(reminderTest ? reminderTest.title : "Selected live mock") + '</div><div class="meta-row"><span class="meta-chip">Planned ' + escapeHtml(formatDateTime(item.plannedAt || item.remindAt)) + '</span><span class="meta-chip">Reminder 5h before</span></div><div class="button-row"><button class="button button-secondary button-compact js-edit-reminder" data-id="' + escapeAttribute(item.id) + '">Edit</button><button class="button button-secondary button-compact js-delete-reminder" data-id="' + escapeAttribute(item.id) + '">Delete</button></div></div>';
-            }).join("") + '</div>'
-          : '<div class="empty-state">No reminders yet. Pick a day and schedule one.</div>') +
+        '<div class="planner-analytics-grid">' +
+          '<div class="planner-analytics-card"><strong>' + escapeHtml(String(plannerStats.totalPlanned)) + '</strong><span>Total planned mocks</span></div>' +
+          '<div class="planner-analytics-card"><strong>' + escapeHtml(String(plannerStats.completed)) + '</strong><span>Completed mocks</span></div>' +
+          '<div class="planner-analytics-card"><strong>' + escapeHtml(String(plannerStats.missed)) + '</strong><span>Missed mocks</span></div>' +
+          '<div class="planner-analytics-card"><strong>' + escapeHtml(String(plannerStats.completionRate)) + '%</strong><span>Completion rate</span></div>' +
+          '<div class="planner-analytics-card"><strong>' + escapeHtml(String(plannerStats.weeklyConsistency)) + '%</strong><span>Weekly consistency</span></div>' +
+          '<div class="planner-analytics-card"><strong>' + escapeHtml(String(plannerStats.monthlyActivity)) + '</strong><span>Monthly activity</span></div>' +
+        '</div>' +
+        '<div class="planner-selected-date-card">' +
+          '<div class="planner-bucket-head"><p class="section-label">Selected date</p><span>' + escapeHtml(formatDateOnly(runtime.dashboardReminderDate)) + '</span></div>' +
+          (selectedDateEvents.length
+            ? '<div class="planner-event-list compact-scroll">' + selectedDateEvents.map(function (event) {
+                return renderPlannerEventCard(event, { showQuickStart: true, showManageActions: true });
+              }).join("") + '</div>'
+            : '<div class="empty-state planner-empty">No planned mocks on this date yet. Click any mock card to schedule one.</div>') +
+        '</div>' +
+        '<div class="planner-sidebar-stack">' +
+          renderPlannerBucket("Today", plannerDayBuckets.today, "No mocks scheduled for today.") +
+          renderPlannerBucket("Tomorrow", plannerDayBuckets.tomorrow, "Nothing lined up for tomorrow yet.") +
+          renderPlannerBucket("Upcoming", plannerDayBuckets.upcoming.slice(0, 6), "Your future plans will appear here.") +
+        '</div>' +
+        '<div class="planner-insights-grid">' +
+          '<div class="planner-insight-card"><p class="section-label">Recommendations</p><strong>' + escapeHtml(plannerRecommendations.nextMock ? plannerRecommendations.nextMock.title : "Schedule your next mock") + '</strong><span>Best timing: ' + escapeHtml(plannerRecommendations.bestHour) + '</span><span>Weak zone: ' + escapeHtml(plannerRecommendations.weakSection) + '</span><span>' + escapeHtml(plannerRecommendations.consistencyTip) + '</span></div>' +
+          '<div class="planner-insight-card"><p class="section-label">Completed history</p>' +
+            (plannerHistoryEvents.length
+              ? '<div class="planner-history-list">' + plannerHistoryEvents.map(function (event) {
+                  return '<div class="planner-history-item"><strong>' + escapeHtml(event.title) + '</strong><span>' + escapeHtml(formatDateOnly(event.plannedAt)) + ' • ' + escapeHtml(event.startTime) + '</span><span>Score ' + escapeHtml(String(event.score || 0)) + ' • Accuracy ' + escapeHtml(String(event.accuracy || 0)) + '%</span><div class="button-row"><button class="button button-secondary button-compact js-open-result" data-id="' + escapeAttribute(event.completedAttempt && event.completedAttempt.id || "") + '">Quick Review</button></div></div>';
+                }).join("") + '</div>'
+              : '<div class="empty-state planner-empty">Complete a planned mock to unlock your history timeline.</div>') +
+          '</div>' +
+        '</div>' +
       '</div>';
+    var plannerModalHtml = (runtime.dashboardPlannerModalDate || runtime.dashboardScheduleModalTestId)
+      ? (
+        '<div class="transition-modal planner-modal-overlay" id="planner-modal-overlay">' +
+          '<div class="planner-modal-card">' +
+            '<div class="planner-modal-head"><div><p class="section-label" style="margin:0;">Planner</p><h3>' + escapeHtml(runtime.dashboardPlannerModalDate ? ('Plans for ' + formatDateOnly(runtime.dashboardPlannerModalDate)) : 'Schedule mock') + '</h3></div><button class="button button-secondary button-compact" type="button" id="planner-modal-close">Close</button></div>' +
+            '<div class="planner-modal-body">' +
+              '<div class="planner-modal-column">' +
+                '<p class="section-label">Planned mocks on this date</p>' +
+                (modalDateEvents.length
+                  ? '<div class="planner-event-list modal-scroll">' + modalDateEvents.map(function (event) {
+                      return renderPlannerEventCard(event, { showQuickStart: true, showManageActions: true });
+                    }).join("") + '</div>'
+                  : '<div class="empty-state planner-empty">No mocks are planned on this date yet.</div>') +
+              '</div>' +
+              '<div class="planner-modal-column">' +
+                '<p class="section-label">' + escapeHtml(editingReminder ? 'Edit scheduled mock' : 'Schedule a mock') + '</p>' +
+                '<form id="reminder-form" class="grid-two planner-form">' +
+                  '<div class="field" style="grid-column: 1 / -1;"><label for="reminder-title">Plan title</label><input id="reminder-title" name="title" value="' + escapeAttribute(editingReminder ? editingReminder.title : "Attempt mock test") + '" required></div>' +
+                  '<div class="field"><label for="reminder-test">Live mock</label><select id="reminder-test" name="testId" required>' +
+                    reminderEligibleTests.map(function (test) { return '<option value="' + escapeAttribute(test.id) + '"' + (modalDefaultTestId === test.id ? ' selected' : '') + '>' + escapeHtml(test.title) + '</option>'; }).join("") +
+                  '</select></div>' +
+                  '<div class="field"><label for="reminder-date">Date</label><input id="reminder-date" name="date" type="date" value="' + escapeAttribute(modalDefaultDate) + '" required></div>' +
+                  '<div class="field"><label for="reminder-time">Time</label><input id="reminder-time" name="time" type="time" value="' + escapeAttribute(modalDefaultTime) + '" required></div>' +
+                  '<div class="field"><label for="reminder-window">Reminder</label><select id="reminder-window" name="reminderMinutes">' + reminderOptionValues.map(function (minutes) {
+                    return '<option value="' + escapeAttribute(String(minutes)) + '"' + (Number(modalDefaultReminderMinutes) === minutes ? ' selected' : '') + '>' + escapeHtml(formatReminderLabel(minutes)) + '</option>';
+                  }).join("") + '</select></div>' +
+                  '<div class="field" style="grid-column: 1 / -1;"><label>Subject focus</label><div class="planner-tag-grid">' + ["Physics", "Maths", "Logical"].map(function (subject) {
+                    return '<label class="planner-tag-option"><input type="checkbox" name="subjectFocus" value="' + escapeAttribute(subject) + '"' + (modalDefaultSubjectFocus.indexOf(subject) >= 0 ? ' checked' : '') + '><span>' + escapeHtml(subject) + '</span></label>';
+                  }).join("") + '</div></div>' +
+                  '<div class="field" style="grid-column: 1 / -1;"><label for="reminder-notes">Notes</label><textarea id="reminder-notes" name="notes" rows="3" placeholder="Focus points or plan notes">' + escapeHtml(modalDefaultNotes) + '</textarea></div>' +
+                  '<div class="field" style="grid-column: 1 / -1;"><div class="helper-text">Reminder email and optional browser alert will use your logged-in email ' + escapeHtml(user.email || "") + '.</div></div>' +
+                  '<div class="button-row" style="grid-column: 1 / -1;"><button class="button button-primary" type="submit"' + (reminderEligibleTests.length ? '' : ' disabled') + '>' + (editingReminder ? 'Update plan' : 'Save plan') + '</button>' + (editingReminder ? '<button class="button button-secondary" type="button" id="cancel-reminder-edit">Cancel</button>' : '') + '</div>' +
+                '</form>' +
+              '</div>' +
+            '</div>' +
+          '</div>' +
+        '</div>'
+      )
+      : "";
 
     app.innerHTML = buildShell(
       '<section class="dashboard-hero">' +
@@ -1951,7 +2415,8 @@
           '<p class="section-label">My Reports</p>' +
           reportsHtml +
         '</aside>' +
-      '</section>'
+      '</section>' +
+      plannerModalHtml
     );
 
     document.getElementById("logout-button").addEventListener("click", function () {
@@ -1981,8 +2446,55 @@
 
     app.querySelectorAll(".js-resume-test").forEach(function (button) {
       button.addEventListener("click", function () {
-        var attempt = store.getOrCreateAttempt(user.id, button.dataset.id);
+        var existingAttempt = button.dataset.attempt ? store.getAttemptById(button.dataset.attempt) : store.getInProgressAttempt(user.id, button.dataset.id);
+        var attemptTest = store.getTestById(button.dataset.id);
+        if (existingAttempt && isAttemptExpired(existingAttempt, attemptTest)) {
+          var shouldRestart = window.confirm("This unfinished attempt is too old to resume safely. Restart it from the beginning?");
+          if (!shouldRestart) {
+            return;
+          }
+          store.discardAttempt(existingAttempt.id);
+          navigate("instructions/" + button.dataset.id);
+          return;
+        }
+        var attempt = existingAttempt || store.getOrCreateAttempt(user.id, button.dataset.id);
         navigate("test/" + attempt.id);
+      });
+    });
+
+    app.querySelectorAll(".js-quit-attempt").forEach(function (button) {
+      button.addEventListener("click", function () {
+        var attemptId = button.dataset.attempt;
+        if (!attemptId) {
+          return;
+        }
+        var shouldQuit = window.confirm("Quit this unfinished test? Your saved in-progress answers for this attempt will be removed.");
+        if (!shouldQuit) {
+          return;
+        }
+        store.discardAttempt(attemptId);
+        if (runtime.attemptId === attemptId) {
+          stopRuntime(true);
+        }
+        renderDashboard(user);
+      });
+    });
+
+    app.querySelectorAll(".js-restart-attempt").forEach(function (button) {
+      button.addEventListener("click", function () {
+        var attemptId = button.dataset.attempt;
+        var testId = button.dataset.id;
+        var shouldRestart = window.confirm("Restart this test from the beginning? The old unfinished attempt will be removed.");
+        if (!shouldRestart) {
+          return;
+        }
+        if (attemptId) {
+          store.discardAttempt(attemptId);
+          if (runtime.attemptId === attemptId) {
+            stopRuntime(true);
+          }
+        }
+        navigate("instructions/" + testId);
       });
     });
 
@@ -1991,9 +2503,53 @@
         navigate("results/" + button.dataset.id);
       });
     });
+
+    function openPlannerModal(dateIso, testId) {
+      runtime.dashboardPlannerModalDate = dateIso || runtime.dashboardReminderDate;
+      runtime.dashboardReminderDate = runtime.dashboardPlannerModalDate;
+      runtime.dashboardScheduleModalTestId = testId || "";
+      renderDashboard(user);
+    }
+
+    function closePlannerModal() {
+      runtime.dashboardPlannerModalDate = "";
+      runtime.dashboardScheduleModalTestId = "";
+      runtime.dashboardEditingReminderId = null;
+      renderDashboard(user);
+    }
+
+    function startMockFromPlanner(testId) {
+      if (!testId) return;
+      var existingAttempt = store.getInProgressAttempt(user.id, testId);
+      var attemptTest = store.getTestById(testId);
+      if (existingAttempt && isAttemptExpired(existingAttempt, attemptTest)) {
+        store.discardAttempt(existingAttempt.id);
+        existingAttempt = null;
+      }
+      if (existingAttempt) {
+        navigate("test/" + existingAttempt.id);
+        return;
+      }
+      navigate("instructions/" + testId);
+    }
+
+    app.querySelectorAll(".js-plan-test").forEach(function (button) {
+      button.addEventListener("click", function () {
+        openPlannerModal(runtime.dashboardReminderDate || toDateInputValue(new Date()), button.dataset.id);
+      });
+    });
+
+    app.querySelectorAll(".js-start-planned-mock").forEach(function (button) {
+      button.addEventListener("click", function () {
+        startMockFromPlanner(button.dataset.test);
+      });
+    });
+
     app.querySelectorAll("[data-calendar-date]").forEach(function (button) {
       button.addEventListener("click", function () {
         runtime.dashboardReminderDate = button.getAttribute("data-calendar-date") || runtime.dashboardReminderDate;
+        runtime.dashboardPlannerModalDate = runtime.dashboardReminderDate;
+        runtime.dashboardScheduleModalTestId = "";
         renderDashboard(user);
       });
     });
@@ -2011,18 +2567,77 @@
         renderDashboard(user);
       });
     }
+    var plannerCalendarGrid = document.getElementById("planner-calendar-grid");
+    if (plannerCalendarGrid) {
+      plannerCalendarGrid.addEventListener("touchstart", function (event) {
+        var touch = event.touches && event.touches[0];
+        if (!touch) return;
+        runtime.dashboardTouchStartX = touch.clientX;
+        runtime.dashboardTouchStartY = touch.clientY;
+      }, { passive: true });
+      plannerCalendarGrid.addEventListener("touchend", function (event) {
+        var touch = event.changedTouches && event.changedTouches[0];
+        if (!touch) return;
+        var deltaX = touch.clientX - Number(runtime.dashboardTouchStartX || 0);
+        var deltaY = touch.clientY - Number(runtime.dashboardTouchStartY || 0);
+        if (Math.abs(deltaX) > 40 && Math.abs(deltaY) < 30) {
+          runtime.dashboardCalendarMonth = shiftMonthKey(runtime.dashboardCalendarMonth, deltaX < 0 ? 1 : -1);
+          renderDashboard(user);
+        }
+      }, { passive: true });
+    }
+    var enableNotifications = document.getElementById("planner-enable-notifications");
+    if (enableNotifications) {
+      enableNotifications.addEventListener("click", function () {
+        requestPlannerNotificationPermission().finally(function () {
+          renderDashboard(user);
+        });
+      });
+    }
+    var plannerModalClose = document.getElementById("planner-modal-close");
+    if (plannerModalClose) {
+      plannerModalClose.addEventListener("click", function () {
+        closePlannerModal();
+      });
+    }
+    var plannerModalOverlay = document.getElementById("planner-modal-overlay");
+    if (plannerModalOverlay) {
+      plannerModalOverlay.addEventListener("click", function (event) {
+        if (event.target === plannerModalOverlay) {
+          closePlannerModal();
+        }
+      });
+    }
     var reminderForm = document.getElementById("reminder-form");
     if (reminderForm) {
       reminderForm.addEventListener("submit", async function (event) {
         event.preventDefault();
         var form = new FormData(reminderForm);
         var remindAt = String(form.get("date") || "") + "T" + String(form.get("time") || "00:00") + ":00";
+        var selectedTestId = String(form.get("testId") || "").trim();
+        var reminderMinutes = Number(form.get("reminderMinutes") || 60);
+        var subjectFocus = normalizeSubjectFocus(form.getAll("subjectFocus"));
+        var notes = String(form.get("notes") || "").trim();
+        var duplicatePlan = plannerEvents.find(function (plannerEvent) {
+          return plannerEvent.mockId === selectedTestId &&
+            plannerEvent.plannedAt === new Date(remindAt).toISOString() &&
+            plannerEvent.id !== (editingReminder && editingReminder.id);
+        });
+        if (duplicatePlan) {
+          var allowDuplicate = window.confirm("This mock is already planned at the same time. Do you still want to save another plan?");
+          if (!allowDuplicate) {
+            return;
+          }
+        }
         showOverlayLoader(editingReminder ? "Updating plan." : "Saving plan.");
         try {
           var payload = {
             title: form.get("title"),
-            testId: form.get("testId"),
+            testId: selectedTestId,
             remindAt: new Date(remindAt).toISOString(),
+            reminderMinutes: reminderMinutes,
+            subjectFocus: subjectFocus,
+            notes: notes,
           };
           if (editingReminder) {
             await store.updateReminder(editingReminder.id, payload);
@@ -2031,7 +2646,11 @@
             await store.createReminder(payload);
           }
           runtime.dashboardReminderDate = String(form.get("date") || runtime.dashboardReminderDate);
+          runtime.dashboardPlannerModalDate = runtime.dashboardReminderDate;
+          runtime.dashboardScheduleModalTestId = "";
+          runtime.dashboardNotificationMessage = "Planner updated for " + String(form.get("title") || "your mock") + ".";
           await store.refreshFromRemote();
+          schedulePlannerNotifications(buildPlannerEvents(store.getDashboardSnapshot(user.id), store.listReminders ? store.listReminders() : []));
           renderDashboard(user);
         } finally {
           hideOverlayLoader();
@@ -2042,24 +2661,64 @@
     if (cancelReminderEdit) {
       cancelReminderEdit.addEventListener("click", function () {
         runtime.dashboardEditingReminderId = null;
+        runtime.dashboardScheduleModalTestId = "";
         renderDashboard(user);
       });
     }
     app.querySelectorAll(".js-edit-reminder").forEach(function (button) {
       button.addEventListener("click", function () {
         runtime.dashboardEditingReminderId = button.dataset.id;
+        var currentEvent = plannerEvents.find(function (event) { return event.id === button.dataset.id; });
+        runtime.dashboardPlannerModalDate = currentEvent ? currentEvent.date : runtime.dashboardReminderDate;
         renderDashboard(user);
+      });
+    });
+    app.querySelectorAll(".js-reschedule-reminder").forEach(function (button) {
+      button.addEventListener("click", function () {
+        runtime.dashboardEditingReminderId = button.dataset.id;
+        var currentEvent = plannerEvents.find(function (event) { return event.id === button.dataset.id; });
+        runtime.dashboardPlannerModalDate = currentEvent ? currentEvent.date : runtime.dashboardReminderDate;
+        renderDashboard(user);
+      });
+    });
+    app.querySelectorAll(".js-quick-reschedule").forEach(function (button) {
+      button.addEventListener("click", async function () {
+        var currentEvent = plannerEvents.find(function (event) { return event.id === button.dataset.id; });
+        if (!currentEvent) return;
+        var suggestedDate = suggestRescheduleSlot(plannerEvents, new Date());
+        showOverlayLoader("Rescheduling mock.");
+        try {
+          await store.updateReminder(currentEvent.id, {
+            title: currentEvent.title,
+            testId: currentEvent.mockId,
+            remindAt: suggestedDate.toISOString(),
+            reminderMinutes: currentEvent.reminder,
+            subjectFocus: currentEvent.subjectFocus,
+            notes: currentEvent.notes,
+          });
+          runtime.dashboardPlannerModalDate = toDateInputValue(suggestedDate);
+          await store.refreshFromRemote();
+          renderDashboard(user);
+        } finally {
+          hideOverlayLoader();
+        }
       });
     });
     app.querySelectorAll(".js-delete-reminder").forEach(function (button) {
       button.addEventListener("click", async function () {
+        var confirmed = window.confirm("Delete this scheduled mock plan?");
+        if (!confirmed) {
+          return;
+        }
         await store.deleteReminder(button.dataset.id);
         if (runtime.dashboardEditingReminderId === button.dataset.id) {
           runtime.dashboardEditingReminderId = null;
         }
+        runtime.dashboardNotificationMessage = "Planned mock removed.";
         renderDashboard(user);
       });
     });
+    schedulePlannerNotifications(plannerEvents);
   }
 
   function syncAndRenderCurrentRoute() {
@@ -2327,6 +2986,11 @@
     }
 
     var test = store.getTestById(attempt.testId);
+    if (isAttemptExpired(attempt, test)) {
+      window.alert("This unfinished attempt is too old to resume safely. Please restart it from the dashboard.");
+      navigate("dashboard");
+      return;
+    }
     var questions = initialQuestions.length ? initialQuestions : store.getQuestionsForTest(attempt.testId);
     var suprQuestions = getSectionQuestions(questions, "SUPR");
     var reapQuestions = getSectionQuestions(questions, "REAP");

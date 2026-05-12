@@ -2,6 +2,17 @@ const Reminder = require("../models/Reminder");
 const Test = require("../models/Test");
 const { sendReminderEmail } = require("../utils/mailService");
 
+function formatReminderLead(reminderMinutes) {
+  const safe = Number(reminderMinutes || 300);
+  if (safe >= 1440 && safe % 1440 === 0) {
+    return `${safe / 1440} day${safe === 1440 ? "" : "s"}`;
+  }
+  if (safe >= 60 && safe % 60 === 0) {
+    return `${safe / 60} hour${safe === 60 ? "" : "s"}`;
+  }
+  return `${safe} minute${safe === 1 ? "" : "s"}`;
+}
+
 class ReminderService {
   constructor() {
     this._timer = null;
@@ -51,16 +62,22 @@ class ReminderService {
   async sendReminder(reminder) {
     const test = reminder.testId ? await Test.findById(reminder.testId).select("title").lean() : null;
     const title = String(reminder.title || (test && test.title) || "Attempt your mock");
+    const reminderLead = formatReminderLead(reminder.reminderMinutes);
+    const subjectFocus = Array.isArray(reminder.subjectFocus) && reminder.subjectFocus.length
+      ? reminder.subjectFocus.join(", ")
+      : "";
     try {
       await sendReminderEmail({
         to: [reminder.email],
-        subject: `Reminder: ${title} is in 5 hours`,
+        subject: `Reminder: ${title} is in ${reminderLead}`,
         html: `
           <div style="font-family: Arial, sans-serif; line-height: 1.7;">
             <h2>ACE IIIT Mock Plan Reminder</h2>
-            <p>Your planned mock attempt is in <strong>5 hours</strong>.</p>
+            <p>Your planned mock attempt is in <strong>${reminderLead}</strong>.</p>
             <p><strong>${title}</strong></p>
             <p>Planned attempt time: ${new Date(reminder.plannedAt || reminder.remindAt).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}</p>
+            ${subjectFocus ? `<p>Subject focus: ${subjectFocus}</p>` : ""}
+            ${reminder.notes ? `<p>Notes: ${String(reminder.notes)}</p>` : ""}
             <p>Please keep yourself ready and attempt the mock at your planned time.</p>
           </div>
         `,

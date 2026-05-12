@@ -2,13 +2,47 @@ const { z } = require("zod");
 
 const Reminder = require("../models/Reminder");
 const Test = require("../models/Test");
-const REMINDER_LEAD_HOURS = 5;
+const DEFAULT_REMINDER_MINUTES = 5 * 60;
+const ALLOWED_REMINDER_MINUTES = [10, 30, 60, 24 * 60];
+const ALLOWED_SUBJECTS = ["Physics", "Maths", "Logical"];
 
 const reminderSchema = z.object({
   title: z.string().trim().min(2).max(140),
   remindAt: z.string().datetime(),
   testId: z.string().trim().min(1),
+  reminderMinutes: z.coerce.number().int().optional(),
+  subjectFocus: z.array(z.string().trim()).max(3).optional(),
+  notes: z.string().trim().max(500).optional(),
 });
+
+function normalizeReminderMinutes(value) {
+  return ALLOWED_REMINDER_MINUTES.includes(Number(value))
+    ? Number(value)
+    : DEFAULT_REMINDER_MINUTES;
+}
+
+function normalizeSubjectFocus(subjectFocus) {
+  const items = Array.isArray(subjectFocus) ? subjectFocus : [];
+  return items
+    .map((item) => String(item || "").trim())
+    .filter((item, index, arr) => item && ALLOWED_SUBJECTS.includes(item) && arr.indexOf(item) === index)
+    .slice(0, 3);
+}
+
+function toReminderResponse(item) {
+  return {
+    id: String(item._id),
+    title: item.title,
+    testId: item.testId ? String(item.testId) : "",
+    plannedAt: item.plannedAt,
+    remindAt: item.remindAt,
+    reminderMinutes: Number(item.reminderMinutes || DEFAULT_REMINDER_MINUTES),
+    subjectFocus: Array.isArray(item.subjectFocus) ? item.subjectFocus : [],
+    notes: item.notes || "",
+    sentAt: item.sentAt,
+    failureReason: item.failureReason || "",
+  };
+}
 
 async function listReminders(req, res, next) {
   try {
@@ -21,15 +55,7 @@ async function listReminders(req, res, next) {
       .lean();
 
     res.json({
-      reminders: reminders.map((item) => ({
-        id: String(item._id),
-        title: item.title,
-        testId: item.testId ? String(item.testId) : "",
-        plannedAt: item.plannedAt,
-        remindAt: item.remindAt,
-        sentAt: item.sentAt,
-        failureReason: item.failureReason || "",
-      })),
+      reminders: reminders.map(toReminderResponse),
     });
   } catch (err) {
     next(err);
@@ -40,12 +66,15 @@ async function createReminder(req, res, next) {
   try {
     const input = reminderSchema.parse(req.body || {});
     const plannedAt = new Date(input.remindAt);
-    const remindAt = new Date(plannedAt.getTime() - (REMINDER_LEAD_HOURS * 60 * 60 * 1000));
+    const reminderMinutes = normalizeReminderMinutes(input.reminderMinutes);
+    const remindAt = new Date(plannedAt.getTime() - (reminderMinutes * 60 * 1000));
+    const subjectFocus = normalizeSubjectFocus(input.subjectFocus);
+    const notes = String(input.notes || "").trim();
     if (!Number.isFinite(plannedAt.getTime()) || plannedAt.getTime() <= Date.now()) {
       return res.status(400).json({ error: "Plan time must be in the future." });
     }
     if (remindAt.getTime() <= Date.now()) {
-      return res.status(400).json({ error: "Please plan at least 5 hours ahead so the reminder can be sent on time." });
+      return res.status(400).json({ error: "Please choose a future reminder window so the notification can still be sent on time." });
     }
 
     const test = await Test.findOne({ _id: input.testId, deletedAt: null, status: "live" }).select("_id title");
@@ -60,18 +89,13 @@ async function createReminder(req, res, next) {
       plannedAt,
       remindAt,
       testId: test._id,
+      reminderMinutes,
+      subjectFocus,
+      notes,
     });
 
     res.status(201).json({
-      reminder: {
-        id: String(reminder._id),
-        title: reminder.title,
-        testId: reminder.testId ? String(reminder.testId) : "",
-        plannedAt: reminder.plannedAt,
-        remindAt: reminder.remindAt,
-        sentAt: reminder.sentAt,
-        failureReason: reminder.failureReason || "",
-      },
+      reminder: toReminderResponse(reminder),
     });
   } catch (err) {
     next(err);
@@ -90,12 +114,15 @@ async function updateReminder(req, res, next) {
       return res.status(404).json({ error: "Reminder not found." });
     }
     const plannedAt = new Date(input.remindAt);
-    const remindAt = new Date(plannedAt.getTime() - (REMINDER_LEAD_HOURS * 60 * 60 * 1000));
+    const reminderMinutes = normalizeReminderMinutes(input.reminderMinutes);
+    const remindAt = new Date(plannedAt.getTime() - (reminderMinutes * 60 * 1000));
+    const subjectFocus = normalizeSubjectFocus(input.subjectFocus);
+    const notes = String(input.notes || "").trim();
     if (!Number.isFinite(plannedAt.getTime()) || plannedAt.getTime() <= Date.now()) {
       return res.status(400).json({ error: "Plan time must be in the future." });
     }
     if (remindAt.getTime() <= Date.now()) {
-      return res.status(400).json({ error: "Please plan at least 5 hours ahead so the reminder can be sent on time." });
+      return res.status(400).json({ error: "Please choose a future reminder window so the notification can still be sent on time." });
     }
     const test = await Test.findOne({ _id: input.testId, deletedAt: null, status: "live" }).select("_id title");
     if (!test) {
@@ -105,19 +132,14 @@ async function updateReminder(req, res, next) {
     reminder.testId = test._id;
     reminder.plannedAt = plannedAt;
     reminder.remindAt = remindAt;
+    reminder.reminderMinutes = reminderMinutes;
+    reminder.subjectFocus = subjectFocus;
+    reminder.notes = notes;
     reminder.sentAt = null;
     reminder.failureReason = "";
     await reminder.save();
     res.json({
-      reminder: {
-        id: String(reminder._id),
-        title: reminder.title,
-        testId: reminder.testId ? String(reminder.testId) : "",
-        plannedAt: reminder.plannedAt,
-        remindAt: reminder.remindAt,
-        sentAt: reminder.sentAt,
-        failureReason: reminder.failureReason || "",
-      },
+      reminder: toReminderResponse(reminder),
     });
   } catch (err) {
     next(err);
