@@ -206,6 +206,30 @@ body[data-theme="dark"] .planner-tab-button.is-active {
   background: rgba(216, 177, 61, 0.12);
 }
 
+body[data-theme="dark"] .dashboard-hero::before {
+  background:
+    linear-gradient(115deg, transparent 0 44%, rgba(216, 177, 61, 0.13) 50%, transparent 56%),
+    radial-gradient(circle at 12% 18%, rgba(216, 177, 61, 0.11), transparent 30%);
+  opacity: 0.9;
+}
+
+body[data-theme="dark"] .dashboard-card::before {
+  background:
+    radial-gradient(circle at top right, rgba(216, 177, 61, 0.12), transparent 34%),
+    linear-gradient(180deg, rgba(34, 34, 34, 0.96), rgba(24, 24, 24, 0.98));
+}
+
+body[data-theme="dark"] .dashboard-card:hover,
+body[data-theme="dark"] .dashboard-highlight-banner:hover,
+body[data-theme="dark"] .dashboard-stats .summary-card:hover {
+  border-color: rgba(216, 177, 61, 0.28);
+  box-shadow: 0 22px 46px rgba(0, 0, 0, 0.26);
+}
+
+body[data-theme="dark"] .dashboard-grid > .panel::before {
+  background: linear-gradient(90deg, rgba(216, 177, 61, 0.82), transparent 72%);
+}
+
 body[data-theme="dark"] .dashboard-notice-card {
   background:
     radial-gradient(circle at top left, rgba(190, 140, 57, 0.16), transparent 26%),
@@ -454,6 +478,65 @@ body.is-syncing #app {
   50% {
     opacity: 1;
     transform: translateY(-1px);
+  }
+}
+
+@keyframes dashboardReveal {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes dashboardLift {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes dashboardCardIn {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes dashboardSheen {
+  from {
+    transform: translateX(-34%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 0.55;
+  }
+}
+
+@keyframes noticePinSettle {
+  0% {
+    transform: translateY(-8px) scale(0.85);
+    opacity: 0;
+  }
+  70% {
+    transform: translateY(1px) scale(1.05);
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(0) scale(1);
+    opacity: 1;
   }
 }
 
@@ -928,6 +1011,34 @@ body[data-theme="dark"] select:-webkit-autofill:focus {
   background: linear-gradient(180deg, rgba(255, 250, 240, 0.94), rgba(246, 239, 226, 0.94));
 }
 
+.dashboard-hero {
+  position: relative;
+  overflow: hidden;
+  animation: dashboardReveal 420ms ease both;
+}
+
+.dashboard-hero::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(115deg, transparent 0 44%, rgba(255, 255, 255, 0.38) 50%, transparent 56%),
+    radial-gradient(circle at 12% 18%, rgba(216, 177, 61, 0.18), transparent 30%);
+  opacity: 0.55;
+  transform: translateX(-18%);
+  animation: dashboardSheen 900ms ease 180ms both;
+}
+
+.dashboard-hero > * {
+  position: relative;
+  z-index: 1;
+}
+
+.dashboard-hero h1 {
+  max-width: 980px;
+}
+
 .dashboard-grid,
 .report-grid,
 .admin-grid,
@@ -936,11 +1047,38 @@ body[data-theme="dark"] select:-webkit-autofill:focus {
   margin-top: 20px;
 }
 
+.dashboard-grid {
+  align-items: start;
+  animation: dashboardLift 460ms ease 80ms both;
+}
+
+.dashboard-grid > .panel {
+  position: relative;
+  overflow: hidden;
+}
+
+.dashboard-grid > .panel::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 3px;
+  background: linear-gradient(90deg, rgba(216, 177, 61, 0.9), transparent 72%);
+  opacity: 0.75;
+}
+
 .dashboard-top-notes {
   display: grid;
   gap: 16px;
   grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
   margin-top: 24px;
+}
+
+.dashboard-top-notes > * {
+  animation: dashboardCardIn 420ms ease both;
+}
+
+.dashboard-top-notes > *:nth-child(2) {
+  animation-delay: 70ms;
 }
 
 .dashboard-highlight-banner,
@@ -956,6 +1094,13 @@ body[data-theme="dark"] select:-webkit-autofill:focus {
   background:
     radial-gradient(circle at top right, rgba(216, 177, 61, 0.22), transparent 30%),
     linear-gradient(135deg, rgba(255, 247, 224, 0.98), rgba(247, 238, 219, 0.98));
+  transition: transform 180ms ease, box-shadow 180ms ease, border-color 180ms ease;
+}
+
+.dashboard-highlight-banner:hover {
+  transform: translateY(-2px);
+  border-color: rgba(200, 159, 41, 0.32);
+  box-shadow: 0 18px 36px rgba(80, 58, 17, 0.1);
 }
 
 .dashboard-notice-card {
@@ -968,6 +1113,14 @@ body[data-theme="dark"] select:-webkit-autofill:focus {
   box-shadow:
     0 18px 38px rgba(62, 39, 18, 0.18),
     inset 0 0 0 1px rgba(255, 245, 223, 0.08);
+  transition: transform 180ms ease, box-shadow 180ms ease;
+}
+
+.dashboard-notice-card:hover {
+  transform: translateY(-2px);
+  box-shadow:
+    0 24px 46px rgba(62, 39, 18, 0.22),
+    inset 0 0 0 1px rgba(255, 245, 223, 0.1);
 }
 
 .notice-board-frame {
@@ -1018,6 +1171,7 @@ body[data-theme="dark"] select:-webkit-autofill:focus {
     0 4px 10px rgba(0, 0, 0, 0.2),
     inset 0 1px 2px rgba(255, 255, 255, 0.65);
   z-index: 2;
+  animation: noticePinSettle 520ms cubic-bezier(0.2, 0.9, 0.2, 1.1) both;
 }
 
 .notice-pin-left {
@@ -1088,12 +1242,68 @@ body[data-theme="dark"] select:-webkit-autofill:focus {
   padding: 22px;
 }
 
+.dashboard-card {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  transition:
+    transform 180ms ease,
+    box-shadow 180ms ease,
+    border-color 180ms ease,
+    background 180ms ease;
+  animation: dashboardCardIn 420ms ease both;
+}
+
+.dashboard-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  opacity: 0;
+  background:
+    radial-gradient(circle at top right, rgba(216, 177, 61, 0.16), transparent 34%),
+    linear-gradient(180deg, rgba(255, 250, 240, 0.98), rgba(246, 239, 226, 0.98));
+  transition: opacity 180ms ease;
+}
+
+.dashboard-card::after {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: linear-gradient(180deg, rgba(216, 177, 61, 0.95), rgba(143, 45, 31, 0.7));
+  opacity: 0;
+  transition: opacity 180ms ease;
+}
+
+.dashboard-card:hover {
+  transform: translateY(-3px);
+  border-color: rgba(200, 159, 41, 0.32);
+  box-shadow: 0 22px 46px rgba(20, 17, 15, 0.12);
+}
+
+.dashboard-card:hover::before,
+.dashboard-card:hover::after {
+  opacity: 1;
+}
+
+.dashboard-card:nth-child(2) { animation-delay: 55ms; }
+.dashboard-card:nth-child(3) { animation-delay: 110ms; }
+.dashboard-card:nth-child(4) { animation-delay: 165ms; }
+.dashboard-card:nth-child(5) { animation-delay: 220ms; }
+.dashboard-card:nth-child(6) { animation-delay: 275ms; }
+
 .planner-inline-row {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 10px;
   margin: 10px 0 2px;
+}
+
+.dashboard-card .button-row {
+  align-items: center;
+  gap: 10px;
 }
 
 .dashboard-card h3,
@@ -1164,6 +1374,20 @@ body[data-theme="dark"] select:-webkit-autofill:focus {
 .question-bank {
   display: grid;
   gap: 16px;
+}
+
+.dashboard-list {
+  gap: 18px;
+}
+
+.dashboard-stats .summary-card {
+  transition: transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+}
+
+.dashboard-stats .summary-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(200, 159, 41, 0.24);
+  box-shadow: 0 16px 32px rgba(20, 17, 15, 0.08);
 }
 
 .list-scroll-card {
@@ -3042,6 +3266,24 @@ body[data-theme="dark"] .support-chat-button {
   }
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .dashboard-hero,
+  .dashboard-hero::before,
+  .dashboard-grid,
+  .dashboard-top-notes > *,
+  .dashboard-card,
+  .notice-pin {
+    animation: none;
+  }
+
+  .dashboard-card,
+  .dashboard-highlight-banner,
+  .dashboard-notice-card,
+  .dashboard-stats .summary-card {
+    transition: none;
+  }
+}
+
 @media (max-width: 780px) {
   .page-shell {
     width: min(100%, calc(100% - 18px));
@@ -3331,6 +3573,17 @@ body[data-theme="dark"] .support-chat-button {
   border: 1px solid #d8c7ab;
   border-radius: 2px;
   background: #f8f2e6;
+  color: #1f1a16;
+  font-weight: 700;
+}
+
+.checkbox-row-utility span {
+  color: #1f1a16;
+}
+
+.checkbox-row-utility input {
+  flex: 0 0 auto;
+  margin-top: 2px;
 }
 
 .utility-bottom-actions {

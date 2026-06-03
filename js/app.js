@@ -1628,7 +1628,8 @@
     var shellClass = "page-shell";
     var footerHtml = '<div class="app-footer">AceIIIT MockTest Portal</div>';
     var supportChatHref = "https://wa.me/" + encodeURIComponent(SUPPORT_WHATSAPP_NUMBER) + "?text=" + encodeURIComponent("Hi AceIIIT, I need help with the portal.");
-    var supportChatHtml = options.hideSupportChat
+    var currentUser = auth.getCurrentUser ? auth.getCurrentUser() : (store.getCurrentUser ? store.getCurrentUser() : null);
+    var supportChatHtml = options.hideSupportChat || !currentUser
       ? ""
       : (
         '<a class="support-chat-button" href="' + escapeAttribute(supportChatHref) + '" target="_blank" rel="noreferrer" aria-label="Chat on WhatsApp for support" title="WhatsApp support">' +
@@ -2805,6 +2806,7 @@
   function syncAndRenderCurrentRoute(options) {
     var currentView = routeParts()[0] || "";
     var settings = options || {};
+    var shouldShowOverlay = settings.showOverlay !== undefined ? !!settings.showOverlay : !settings.silent;
     if (isExamLikeRoute(currentView)) {
       try {
         renderRoute();
@@ -2820,7 +2822,7 @@
       return;
     }
     syncInFlight = true;
-    if (settings.showOverlay) {
+    if (shouldShowOverlay) {
       showOverlayLoader("Syncing the newest backend changes into this screen.", { delayMs: 420 });
     }
     Promise.resolve(store.refreshFromRemote ? store.refreshFromRemote() : true).then(function () {
@@ -2840,7 +2842,7 @@
       }
     }).finally(function () {
       syncInFlight = false;
-      if (settings.showOverlay) {
+      if (shouldShowOverlay) {
         window.requestAnimationFrame(function () {
           window.setTimeout(hideOverlayLoader, 180);
         });
@@ -2873,7 +2875,7 @@
       if (view === "dashboard" || view === "admin" || view === "admin-activity" || view === "results" || view === "") {
         Promise.resolve(store.refreshFromRemote ? store.refreshFromRemote() : true).then(function (result) {
           if (result && result.changed) {
-            syncAndRenderCurrentRoute();
+            syncAndRenderCurrentRoute({ silent: true });
           }
         });
       }
@@ -6120,7 +6122,7 @@
       return;
     }
     if (view === "dashboard" || view === "results" || view === "") {
-      syncAndRenderCurrentRoute();
+      syncAndRenderCurrentRoute({ silent: true });
     }
   });
   window.addEventListener("visibilitychange", function () {
@@ -6143,7 +6145,7 @@
         return;
       }
       if (view === "dashboard" || view === "results" || view === "") {
-        syncAndRenderCurrentRoute();
+        syncAndRenderCurrentRoute({ silent: true });
       }
     }
   });
@@ -6169,7 +6171,7 @@
         if (isExamLikeRoute(currentView)) {
           return;
         }
-        syncAndRenderCurrentRoute();
+        syncAndRenderCurrentRoute({ silent: true });
       });
     }
     startSyncPolling();
