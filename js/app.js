@@ -3294,6 +3294,20 @@
     );
     renderLatexInElement(document.body);
     bindFigureLoadDiagnostics();
+    restoreExamPaletteScroll();
+
+    function rememberExamPaletteScroll() {
+      var palette = app.querySelector(".exam-palettecard");
+      runtime.examPaletteScrollTop = palette ? palette.scrollTop : 0;
+    }
+
+    function restoreExamPaletteScroll() {
+      var palette = app.querySelector(".exam-palettecard");
+      if (!palette || runtime.examPaletteScrollTop === undefined) {
+        return;
+      }
+      palette.scrollTop = Number(runtime.examPaletteScrollTop || 0);
+    }
 
     function refreshExamSidebar(nextAttempt) {
       var nextActiveSection = nextAttempt.activeSection || activeSection;
@@ -3398,6 +3412,7 @@
 
     app.querySelectorAll(".palette-button[data-question]").forEach(function (button) {
       button.addEventListener("click", function () {
+        rememberExamPaletteScroll();
         flushQuestionTime();
         store.patchAttempt(attempt.id, function (draft) {
           draft.currentQuestionId = button.dataset.question;
@@ -3410,6 +3425,7 @@
     });
 
     function moveToQuestion(offset) {
+      rememberExamPaletteScroll();
       var currentIndex = activeQuestions.findIndex(function (question) {
         return question.id === currentQuestion.id;
       });
