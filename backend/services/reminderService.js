@@ -24,8 +24,10 @@ class ReminderService {
     this.stop();
     this._timer = setInterval(() => {
       this.flushDueReminders().catch((error) => {
-        // eslint-disable-next-line no-console
-        console.error("Reminder flush failed:", error);
+        if (!error || !error.message || !error.message.includes("Reminder SMTP is not configured")) {
+          // eslint-disable-next-line no-console
+          console.error("Reminder flush failed:", error.message || error);
+        }
       });
     }, intervalMs);
     this.flushDueReminders().catch(() => {});
@@ -66,19 +68,43 @@ class ReminderService {
     const subjectFocus = Array.isArray(reminder.subjectFocus) && reminder.subjectFocus.length
       ? reminder.subjectFocus.join(", ")
       : "";
+    const planDate = new Date(reminder.plannedAt || reminder.remindAt);
+    const endDate = new Date(planDate.getTime() + 3 * 60 * 60 * 1000); // 3 hours duration
+    const formatGCalDate = (d) => d.toISOString().replace(/-|:|\.\d\d\d/g, "");
+    
+    const origin = process.env.CLIENT_ORIGIN || "http://localhost:10000";
+    const testLink = reminder.testId ? `${origin}/#instructions/${reminder.testId}` : `${origin}/#dashboard`;
+    
+    const detailsText = `Subject Focus: ${subjectFocus}\n\nNotes: ${reminder.notes || ""}\n\nLink: ${testLink}`;
+    const gCalUrl = `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent(title)}&dates=${formatGCalDate(planDate)}/${formatGCalDate(endDate)}&details=${encodeURIComponent(detailsText)}&location=${encodeURIComponent(testLink)}`;
+
     try {
       await sendReminderEmail({
         to: [reminder.email],
         subject: `Reminder: ${title} is in ${reminderLead}`,
         html: `
-          <div style="font-family: Arial, sans-serif; line-height: 1.7;">
-            <h2>ACE IIIT Mock Plan Reminder</h2>
-            <p>Your planned mock attempt is in <strong>${reminderLead}</strong>.</p>
-            <p><strong>${title}</strong></p>
-            <p>Planned attempt time: ${new Date(reminder.plannedAt || reminder.remindAt).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}</p>
-            ${subjectFocus ? `<p>Subject focus: ${subjectFocus}</p>` : ""}
-            ${reminder.notes ? `<p>Notes: ${String(reminder.notes)}</p>` : ""}
-            <p>Please keep yourself ready and attempt the mock at your planned time.</p>
+          <div style="font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden; color: #333;">
+            <div style="background-color: #d7b34a; padding: 24px; text-align: center; color: #fff;">
+              <h2 style="margin: 0; font-size: 24px;">ACE IIIT Mock Reminder</h2>
+            </div>
+            <div style="padding: 32px 24px; background-color: #fff;">
+              <p style="font-size: 16px; margin-top: 0;">Your planned mock attempt is starting in <strong>${reminderLead}</strong>.</p>
+              <div style="background-color: #f9f9f9; border-left: 4px solid #d7b34a; padding: 16px; margin: 24px 0;">
+                <h3 style="margin: 0 0 8px 0; font-size: 18px;">${title}</h3>
+                <p style="margin: 0 0 4px 0; font-size: 14px; color: #555;"><strong>Time:</strong> ${planDate.toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}</p>
+                ${subjectFocus ? `<p style="margin: 0 0 4px 0; font-size: 14px; color: #555;"><strong>Focus:</strong> ${subjectFocus}</p>` : ""}
+                ${reminder.notes ? `<p style="margin: 0; font-size: 14px; color: #555;"><strong>Notes:</strong> ${String(reminder.notes)}</p>` : ""}
+              </div>
+              <div style="text-align: center; margin: 32px 0;">
+                <a href="${testLink}" style="display: inline-block; background-color: #d7b34a; color: #fff; text-decoration: none; padding: 14px 32px; font-size: 16px; font-weight: bold; border-radius: 4px;">Start Mock Exam Now</a>
+              </div>
+              <div style="text-align: center;">
+                <a href="${gCalUrl}" target="_blank" style="font-size: 14px; color: #d7b34a; text-decoration: none; font-weight: bold;">📅 Add to Google Calendar</a>
+              </div>
+            </div>
+            <div style="background-color: #f0f0f0; padding: 16px; text-align: center; font-size: 12px; color: #888;">
+              You are receiving this because you scheduled a plan on ACE IIIT Mock Portal.
+            </div>
           </div>
         `,
       });

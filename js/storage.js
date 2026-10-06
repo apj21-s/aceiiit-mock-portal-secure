@@ -22,6 +22,8 @@
         noticeTitle: "",
         noticeBody: "",
       },
+      bookmarks: {},
+      studyMaterials: { folders: [], files: [] },
     },
     session: {
       token: "",
@@ -69,6 +71,8 @@
     state.db.questionCache = state.db.questionCache || {};
     state.db.reminders = Array.isArray(state.db.reminders) ? state.db.reminders : [];
     state.db.appConfig = Object.assign({ ugeeExamDate: null, featuredTestId: "", noticeTitle: "", noticeBody: "" }, state.db.appConfig || {});
+    state.db.bookmarks = state.db.bookmarks || {};
+    state.db.studyMaterials = state.db.studyMaterials || { folders: [], files: [] };
     state.session = Object.assign(state.session, loadJson(SESSION_KEY, {}));
     state.session.token = String(state.session.token || "");
     state.session.user = state.session.user || null;
@@ -367,8 +371,10 @@
     var remindersPayload = await api("/api/reminders", { method: "GET" });
     var userId = state.session.user && state.session.user.id;
 
-    var inProgress = (state.db.attempts || []).filter(function (a) {
-      return a && a.status === "in_progress" && a.userId === userId;
+    var inProgressOrPractice = (state.db.attempts || []).filter(function (a) {
+      if (!a) return false;
+      var isPractice = a.testId && String(a.testId).indexOf("practice_") === 0;
+      return (a.status === "in_progress" || isPractice) && a.userId === userId;
     });
 
     var existingTestsById = (state.db.tests || []).reduce(function (acc, test) {
@@ -378,10 +384,13 @@
       return acc;
     }, {});
 
+    var localPracticeTests = (state.db.tests || []).filter(function (t) { return t && t.isPractice; });
+
     state.db.tests = (testsPayload.tests || []).map(function (test) {
       return mergeTestData(existingTestsById[test.id], test);
-    });
+    }).concat(localPracticeTests);
     state.db.questions = Array.isArray(testsPayload.questions) ? clone(testsPayload.questions) : [];
+    state.db.qotd = testsPayload.qotd || null;
     state.db.questionCache = state.db.questionCache || {};
     var questionMap = (state.db.questions || []).reduce(function (acc, question) {
       if (question && question.id) {
@@ -437,7 +446,7 @@
       return acc;
     }, {});
 
-    state.db.attempts = inProgress.concat((attemptsPayload.attempts || []).map(function (remote) {
+    state.db.attempts = inProgressOrPractice.concat((attemptsPayload.attempts || []).map(function (remote) {
       var mapped = mapRemoteAttempt(remote, userId);
       return mergeAttemptData(existingSubmittedById[mapped.id], mapped);
     }));
@@ -451,8 +460,9 @@
   async function refreshAdminData() {
     var snapshot = await api("/api/admin/snapshot", { method: "GET" });
     var remindersPayload = await api("/api/reminders", { method: "GET" });
+    var localPracticeTests = (state.db.tests || []).filter(function (t) { return t && t.isPractice; });
     state.db.adminSnapshot = snapshot;
-    state.db.tests = snapshot.tests || [];
+    state.db.tests = (snapshot.tests || []).concat(localPracticeTests);
     state.db.questions = snapshot.questions || [];
     state.db.questionCache = {};
     state.db.appConfig = Object.assign({}, state.db.appConfig || {}, snapshot.appConfig || {});
@@ -500,21 +510,12 @@
     return { ok: true, user: me && me.user ? me.user : null };
   }
 
-  async function sendOtp(payload) {
-    await api("/api/auth/send-otp", {
-      method: "POST",
-      body: JSON.stringify({ email: normalizeEmail(payload && payload.email) }),
-    });
-    return { ok: true };
-  }
-
-  async function verifyOtp(payload) {
-    var data = await api("/api/auth/verify-otp", {
+  async function login(payload) {
+    var data = await api("/api/auth/login", {
       method: "POST",
       body: JSON.stringify({
         email: normalizeEmail(payload && payload.email),
-        otp: String(payload && payload.otp || "").trim(),
-        name: payload && payload.name ? String(payload.name) : undefined,
+        password: String(payload && payload.password || ""),
       }),
     });
     state.session.token = String(data.token || "");
@@ -522,6 +523,159 @@
     saveState();
     await refreshFromRemote();
     return { ok: true, user: clone(state.session.user) };
+  }
+
+  async function requestActivation(payload) {
+    var data = await api("/api/auth/activate/request", {
+      method: "POST",
+      body: JSON.stringify({ email: normalizeEmail(payload && payload.email) }),
+    });
+    return data;
+  }
+
+  async function verifyActivationToken(token) {
+    var data = await api("/api/auth/activate/verify?token=" + encodeURIComponent(String(token || "").trim()), {
+      method: "GET",
+    });
+    return data;
+  }
+
+  async function completeActivation(payload) {
+    var data = await api("/api/auth/activate/complete", {
+      method: "POST",
+      body: JSON.stringify({
+        token: String(payload && payload.token || "").trim(),
+        password: String(payload && payload.password || ""),
+        name: payload && payload.name ? String(payload.name).trim() : undefined,
+      }),
+    });
+    state.session.token = String(data.token || "");
+    state.session.user = data.user || null;
+    saveState();
+    await refreshFromRemote();
+    return { ok: true, user: clone(state.session.user) };
+  }
+
+  async function requestPasswordReset(payload) {
+    var data = await api("/api/auth/forgot-password/request", {
+      method: "POST",
+      body: JSON.stringify({ email: normalizeEmail(payload && payload.email) }),
+    });
+    return data;
+  }
+
+  async function verifyResetToken(token) {
+    var data = await api("/api/auth/forgot-password/verify?token=" + encodeURIComponent(String(token || "").trim()), {
+      method: "GET",
+    });
+    return data;
+  }
+
+  async function completePasswordReset(payload) {
+    var data = await api("/api/auth/forgot-password/complete", {
+      method: "POST",
+      body: JSON.stringify({
+        token: String(payload && payload.token || ""),
+        password: String(payload && payload.password || ""),
+        name: String(payload && payload.name || "")
+      })
+    });
+    return data;
+  }
+
+  async function updatePassword(payload) {
+    var data = await api("/api/auth/password", {
+      method: "PUT",
+      body: JSON.stringify(payload)
+    });
+    return data;
+  }
+
+  async function googleAuth(payload) {
+    var body = {};
+    if (payload && payload.credential) body.credential = String(payload.credential);
+    if (payload && payload.email) body.email = normalizeEmail(payload.email);
+    if (payload && payload.name) body.name = String(payload.name).trim();
+
+    var data = await api("/api/auth/google", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    state.session.token = String(data.token || "");
+    state.session.user = data.user || null;
+    saveState();
+    await refreshFromRemote();
+    return { ok: true, user: clone(state.session.user) };
+  }
+
+  async function appleAuth(payload) {
+    var body = {};
+    if (payload && payload.identityToken) body.identityToken = String(payload.identityToken);
+    if (payload && payload.email) body.email = normalizeEmail(payload.email);
+    if (payload && payload.name) body.name = String(payload.name).trim();
+
+    var data = await api("/api/auth/apple", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    state.session.token = String(data.token || "");
+    state.session.user = data.user || null;
+    saveState();
+    await refreshFromRemote();
+    return { ok: true, user: clone(state.session.user) };
+  }
+
+  async function getAuthConfig() {
+    try {
+      return await api("/api/auth/config", { method: "GET" });
+    } catch (_err) {
+      return { googleClientId: "", appleClientId: "", appleRedirectUri: "" };
+    }
+  }
+
+  async function sendOtp(payload) {
+    return requestActivation(payload);
+  }
+
+  async function verifyOtp(payload) {
+    if (payload && payload.password) {
+      return login(payload);
+    }
+    return requestActivation(payload);
+  }
+
+  async function getCalendarStatus() {
+    var response = await fetch("/api/calendar/google/status", {
+      headers: { "Authorization": "Bearer " + state.session.token }
+    });
+    if (!response.ok) return { status: "disconnected", autoAddEnabled: false };
+    return await response.json();
+  }
+
+  async function getCalendarConnectUrl() {
+    return api("/api/calendar/google/connect", { method: "GET" });
+  }
+
+  async function toggleCalendarAutoAdd(enabled) {
+    var response = await fetch("/api/calendar/google/auto-add", {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer " + state.session.token
+      },
+      body: JSON.stringify({ enabled: enabled })
+    });
+    if (!response.ok) throw new Error("Failed to toggle auto-add");
+    return await response.json();
+  }
+
+  async function disconnectCalendar() {
+    var response = await fetch("/api/calendar/google/disconnect", {
+      method: "POST",
+      headers: { "Authorization": "Bearer " + state.session.token }
+    });
+    if (!response.ok) throw new Error("Failed to disconnect calendar");
+    return await response.json();
   }
 
   function getSettings() {
@@ -542,8 +696,21 @@
     return clone(state.db.questions || []);
   }
 
+  function getQotd() {
+    return state.db.qotd ? clone(state.db.qotd) : null;
+  }
+
   function getTestById(testId) {
     return clone((state.db.tests || []).find(function (t) { return t.id === testId; }) || null);
+  }
+
+  function sortQuestionsSuprFirst(questions) {
+    return (questions || []).slice().sort(function (a, b) {
+      var aSec = String(a.section || "SUPR").toUpperCase();
+      var bSec = String(b.section || "SUPR").toUpperCase();
+      if (aSec === bSec) return 0;
+      return aSec === "SUPR" ? -1 : 1;
+    });
   }
 
   function getQuestionsForTest(testId) {
@@ -552,21 +719,25 @@
     var questionIds = Array.isArray(test.questionIds) ? test.questionIds : [];
     var cacheEntry = getQuestionCacheEntry(testId);
     var cachedQuestions = cacheEntry && Array.isArray(cacheEntry.questions) ? cacheEntry.questions : [];
+    var resolved = [];
     if (Array.isArray(cachedQuestions) && cachedQuestions.length) {
       if (!questionIds.length) {
-        return cachedQuestions.map(clone);
+        resolved = cachedQuestions.map(clone);
+      } else {
+        var cachedMap = cachedQuestions.reduce(function (acc, q) {
+          acc[q.id] = q;
+          return acc;
+        }, {});
+        resolved = questionIds.map(function (id) { return cachedMap[id]; }).filter(Boolean).map(clone);
       }
-      var cachedMap = cachedQuestions.reduce(function (acc, q) {
+    } else {
+      var questionMap = (state.db.questions || []).reduce(function (acc, q) {
         acc[q.id] = q;
         return acc;
       }, {});
-      return questionIds.map(function (id) { return cachedMap[id]; }).filter(Boolean).map(clone);
+      resolved = questionIds.map(function (id) { return questionMap[id]; }).filter(Boolean).map(clone);
     }
-    var questionMap = (state.db.questions || []).reduce(function (acc, q) {
-      acc[q.id] = q;
-      return acc;
-    }, {});
-    return questionIds.map(function (id) { return questionMap[id]; }).filter(Boolean).map(clone);
+    return sortQuestionsSuprFirst(resolved);
   }
 
   function getAttemptById(attemptId) {
@@ -721,6 +892,69 @@
     var startedAtMs = new Date(localAttempt.startedAt).getTime();
     var timeTakenSeconds = startedAtMs ? Math.max(0, Math.round((Date.now() - startedAtMs) / 1000)) : 0;
 
+    var test = getTestById(localAttempt.testId);
+    if (test && test.isPractice) {
+      var questions = getQuestionsForTest(test.id);
+      var answers = localAttempt.answers || {};
+      var correctCount = 0;
+      var wrongCount = 0;
+      var skippedCount = 0;
+      var score = 0;
+      
+      questions.forEach(function(q) {
+        var ans = answers[q.id];
+        if (ans === undefined || ans === null || ans === "") {
+          skippedCount++;
+        } else {
+          if (Number(ans) === Number(q.correctOption)) {
+            correctCount++;
+            score += Number(q.marks || 1);
+          } else {
+            wrongCount++;
+            score -= Number(q.negativeMarks || 0);
+          }
+        }
+      });
+
+      var accuracy = (correctCount + wrongCount) > 0 ? Math.round((correctCount / (correctCount + wrongCount)) * 100) : 0;
+      
+      var localSubmittedAt = nowIso();
+      var localResult = {
+        score: score,
+        accuracy: accuracy,
+        rank: 1,
+        percentile: 100,
+        correctCount: correctCount,
+        wrongCount: wrongCount,
+        skippedCount: skippedCount,
+        unattemptedCount: skippedCount,
+        timeTakenSeconds: timeTakenSeconds,
+        totalTime: timeTakenSeconds,
+        sectionScores: null,
+        analysis: null
+      };
+      
+      localAttempt.status = "submitted";
+      localAttempt.submittedAt = localSubmittedAt;
+      localAttempt.updatedAt = localSubmittedAt;
+      localAttempt.lastActiveAt = localSubmittedAt;
+      localAttempt.result = localResult;
+      localAttempt.resultSnapshot = {
+        savedAt: localSubmittedAt,
+        testTitle: test.title,
+        testSubtitle: test.subtitle || "",
+        startedAt: localAttempt.startedAt,
+        submittedAt: localAttempt.submittedAt,
+        result: localResult,
+      };
+
+      attempts.splice(index, 1, localAttempt);
+      state.db.attempts = attempts;
+      saveState();
+
+      return clone(localAttempt);
+    }
+
     var response = await api("/api/attempt", {
       method: "POST",
       body: JSON.stringify({
@@ -783,7 +1017,11 @@
   }
 
   function getDashboardSnapshot(userId) {
-    var tests = (state.db.tests || []).filter(function (t) { return t.status === "live"; });
+    var tests = (state.db.tests || []).filter(function (t) { 
+      if (t.status !== "live") return false;
+      if (t.isPractice && t.createdBy !== userId) return false;
+      return true;
+    });
     var attempts = listUserAttempts(userId);
     var submitted = attempts.filter(function (a) { return a.status === "submitted" && a.result; });
     return {
@@ -946,6 +1184,95 @@
     return { ok: true };
   }
 
+  async function attachQuestionsBulk(testId, questionIds) {
+    await api("/api/admin/attach-bulk", { method: "POST", body: JSON.stringify({ testId: testId, questionIds: questionIds }) });
+    await refreshFromRemote();
+    return { ok: true };
+  }
+
+  async function detachQuestionsBulk(testId, questionIds) {
+    await api("/api/admin/detach-bulk", { method: "POST", body: JSON.stringify({ testId: testId, questionIds: questionIds }) });
+    await refreshFromRemote();
+    return { ok: true };
+  }
+
+  async function reorderTestQuestions(testId, questionIds) {
+    await api("/api/admin/reorder-questions", { method: "POST", body: JSON.stringify({ testId: testId, questionIds: questionIds }) });
+    await refreshFromRemote();
+    return { ok: true };
+  }
+
+  async function duplicateTest(testId) {
+    var res = await api("/api/admin/test/" + encodeURIComponent(String(testId)) + "/duplicate", { method: "POST" });
+    await refreshFromRemote();
+    return res;
+  }
+
+  async function generateQuestionsRandom(params) {
+    return api("/api/admin/generate-questions", { method: "POST", body: JSON.stringify(params || {}) });
+  }
+
+  async function attachRandomQuestionsToTest(testId, counts) {
+    counts = counts || {};
+    var suprNeeded = Number(counts.SUPR || 0);
+    var reapNeeded = Number(counts.REAP || 0);
+    var test = getTestById(testId);
+    if (!test) throw new Error("Test not found.");
+
+    var previousQuestionIds = (test.questions || []).slice();
+
+    var allQuestions = getQuestions();
+    var attachedQuestions = getQuestionsForTest(testId);
+    var attachedIds = attachedQuestions.map(function (q) { return q.id; });
+
+    var availableSupr = allQuestions.filter(function (q) {
+      return String(q.section || "SUPR").toUpperCase() === "SUPR" && attachedIds.indexOf(q.id) === -1;
+    });
+    var availableReap = allQuestions.filter(function (q) {
+      return String(q.section || "SUPR").toUpperCase() === "REAP" && attachedIds.indexOf(q.id) === -1;
+    });
+
+    function shuffle(arr) {
+      var copy = arr.slice();
+      for (var i = copy.length - 1; i > 0; i--) {
+        var j = Math.floor(Math.random() * (i + 1));
+        var temp = copy[i];
+        copy[i] = copy[j];
+        copy[j] = temp;
+      }
+      return copy;
+    }
+
+    var selectedSupr = shuffle(availableSupr).slice(0, suprNeeded).map(function (q) { return q.id; });
+    var selectedReap = shuffle(availableReap).slice(0, reapNeeded).map(function (q) { return q.id; });
+
+    var toAttach = selectedSupr.concat(selectedReap);
+    if (!toAttach.length) {
+      throw new Error("No additional available questions found in bank for SUPR or REAP sections.");
+    }
+
+    await attachQuestionsBulk(testId, toAttach);
+
+    var updatedQuestions = getQuestionsForTest(testId);
+    var sortedIds = sortQuestionsSuprFirst(updatedQuestions).map(function (q) { return q.id; });
+    await reorderTestQuestions(testId, sortedIds);
+
+    return {
+      ok: true,
+      attachedCount: toAttach.length,
+      attachedIds: toAttach,
+      previousQuestionIds: previousQuestionIds
+    };
+  }
+
+  async function undoRandomQuestionsAttachment(testId, previousQuestionIds) {
+    if (!Array.isArray(previousQuestionIds)) {
+      throw new Error("No valid backup state to undo random generation.");
+    }
+    await reorderTestQuestions(testId, previousQuestionIds);
+    return { ok: true, restoredCount: previousQuestionIds.length };
+  }
+
   async function getAdminResults() {
     return api("/api/admin/results", { method: "GET" });
   }
@@ -996,6 +1323,16 @@
     return clone(state.db.appConfig);
   }
 
+  async function submitQotdAttempt(payload) {
+    if (!state.session.user) return null;
+    var res = await api("/api/tests/qotd-attempt", { method: "POST", body: JSON.stringify(payload || {}) });
+    if (res.lastQotdAttempt) {
+      state.session.user.lastQotdAttempt = res.lastQotdAttempt;
+      saveState();
+    }
+    return res;
+  }
+
   async function createReminder(input) {
     var payload = await api("/api/reminders", { method: "POST", body: JSON.stringify(input || {}) });
     if (payload && payload.reminder) {
@@ -1028,6 +1365,20 @@
   }
 
   async function getAttemptAnalysis(attemptId) {
+    var attempt = (state.db.attempts || []).find(function (item) { return item.id === attemptId; });
+    var test = attempt ? getTestById(attempt.testId) : null;
+    if (test && test.isPractice && attempt && attempt.result) {
+        return {
+           analysis: "Practice Test Mode",
+           totalTime: attempt.result.timeTakenSeconds,
+           unattemptedCount: attempt.result.unattemptedCount,
+           sectionWise: {
+              SUPR: { score: attempt.result.score, correct: attempt.result.correctCount, wrong: attempt.result.wrongCount, skipped: attempt.result.skippedCount },
+              REAP: { score: 0, correct: 0, wrong: 0, skipped: 0 }
+           }
+        };
+    }
+
     var payload = await api("/api/analysis/" + encodeURIComponent(String(attemptId || "")), { method: "GET" });
     var summary = payload && payload.summary ? payload.summary : null;
     if (!summary) return null;
@@ -1061,6 +1412,40 @@
   }
 
   async function getAttemptQuestionReview(attemptId, page, limit) {
+    var attempt = getAttemptById(attemptId);
+    var test = attempt ? getTestById(attempt.testId) : null;
+    if (test && test.isPractice) {
+        var questions = getQuestionsForTest(test.id);
+        page = Number(page || 1);
+        limit = Number(limit || 20);
+        var offset = (page - 1) * limit;
+        var paginated = questions.slice(offset, offset + limit);
+        
+        var answers = attempt.answers || {};
+        var timeSpent = attempt.timeSpent || {};
+        
+        var reviewQuestions = paginated.map(function(q) {
+            var ans = answers[q.id];
+            var isCorrect = ans !== undefined && ans !== null && ans !== "" && Number(ans) === Number(q.correctOption);
+            var status = (ans === undefined || ans === null || ans === "") ? "skipped" : (isCorrect ? "correct" : "wrong");
+            var marks = isCorrect ? (q.marks || 1) : 0;
+            var negativeMarks = (!isCorrect && status !== "skipped") ? (q.negativeMarks || 0) : 0;
+            
+            return Object.assign({}, q, {
+                status: status,
+                selectedOption: ans !== undefined && ans !== null && ans !== "" ? Number(ans) : null,
+                timeSpent: timeSpent[q.id] || 0,
+                marks: marks,
+                negativeMarks: negativeMarks
+            });
+        });
+        
+        return {
+            questions: reviewQuestions,
+            pagination: { page: page, limit: limit, total: questions.length, pages: Math.ceil(questions.length / limit), hasMore: offset + limit < questions.length }
+        };
+    }
+
     var query = "?page=" + encodeURIComponent(String(page || 1)) + "&limit=" + encodeURIComponent(String(limit || 20));
     try {
       var resultPayload = await api("/api/result/" + encodeURIComponent(String(attemptId || "")) + query + "&includeReview=1", { method: "GET" });
@@ -1090,9 +1475,225 @@
     throw new Error("Import is not supported in API mode.");
   }
 
+  async function verifyUserPayment(userId) {
+    var res = await api("/api/admin/users/" + encodeURIComponent(String(userId)) + "/verify-payment", { method: "POST" });
+    await refreshFromRemote();
+    return res;
+  }
+
+  async function revokeUserPayment(userId) {
+    var res = await api("/api/admin/users/" + encodeURIComponent(String(userId)) + "/revoke-payment", { method: "POST" });
+    await refreshFromRemote();
+    return res;
+  }
+
+  async function syncPaidSheets() {
+    var res = await api("/api/admin/sync-sheets", { method: "POST" });
+    await refreshFromRemote();
+    return res;
+  }
+
+  async function listPayments(params) {
+    var q = new URLSearchParams(params || {}).toString();
+    return api("/api/admin/payments" + (q ? "?" + q : ""), { method: "GET" });
+  }
+
+  async function syncPaymentsNew(seasonId) {
+    var res = await api("/api/admin/payments/sync", { method: "POST", body: JSON.stringify({ seasonId: seasonId }) });
+    await refreshFromRemote();
+    return res;
+  }
+
+  async function verifyPaymentNew(paymentId, sendEmail) {
+    var res = await api("/api/admin/payments/" + encodeURIComponent(String(paymentId)) + "/verify", {
+      method: "POST",
+      body: JSON.stringify({ sendEmail: sendEmail !== false }),
+    });
+    await refreshFromRemote();
+    return res;
+  }
+
+  async function revokePaymentNew(paymentId) {
+    var res = await api("/api/admin/payments/" + encodeURIComponent(String(paymentId)) + "/revoke", { method: "POST" });
+    await refreshFromRemote();
+    return res;
+  }
+
+  async function resendPaymentEmail(paymentId) {
+    return api("/api/admin/payments/" + encodeURIComponent(String(paymentId)) + "/resend-email", { method: "POST" });
+  }
+
+  async function resendReminderEmail(reminderId) {
+    return api("/api/reminders/" + encodeURIComponent(String(reminderId)) + "/resend", { method: "POST" });
+  }
+
+  async function listUsersExtended(params) {
+    var q = new URLSearchParams(params || {}).toString();
+    return api("/api/admin/users-list" + (q ? "?" + q : ""), { method: "GET" });
+  }
+
+  async function getUserDetailsExtended(userId) {
+    return api("/api/admin/users/" + encodeURIComponent(String(userId)) + "/details", { method: "GET" });
+  }
+
+  async function listSeasons() {
+    return api("/api/admin/seasons", { method: "GET" });
+  }
+
+  async function createSeason(data) {
+    return api("/api/admin/seasons", { method: "POST", body: JSON.stringify(data || {}) });
+  }
+
+  async function activateSeason(seasonId) {
+    return api("/api/admin/seasons/" + encodeURIComponent(String(seasonId)) + "/activate", { method: "POST" });
+  }
+
+  async function archiveSeason(seasonId) {
+    return api("/api/admin/seasons/" + encodeURIComponent(String(seasonId)) + "/archive", { method: "POST" });
+  }
+
+  async function duplicateSeason(seasonId, data) {
+    return api("/api/admin/seasons/" + encodeURIComponent(String(seasonId)) + "/duplicate", { method: "POST", body: JSON.stringify(data || {}) });
+  }
+
+  async function publishTest(testId) {
+    var res = await api("/api/admin/test/" + encodeURIComponent(String(testId)) + "/publish", { method: "POST" });
+    await refreshFromRemote();
+    return res;
+  }
+
+  async function getDashboardMetrics() {
+    return api("/api/admin/dashboard", { method: "GET" });
+  }
+
+  async function getAuditLogs(params) {
+    var q = new URLSearchParams(params || {}).toString();
+    return api("/api/admin/audit-logs" + (q ? "?" + q : ""), { method: "GET" });
+  }
+
+  function getBookmarks(userId) {
+    if (!userId) return [];
+    return clone(state.db.bookmarks[userId] || []);
+  }
+
+  function addBookmark(userId, bookmarkData) {
+    if (!userId) return false;
+    state.db.bookmarks[userId] = state.db.bookmarks[userId] || [];
+    var existingIdx = state.db.bookmarks[userId].findIndex(function(b) { return b.id === bookmarkData.id; });
+    if (existingIdx !== -1) return true;
+    
+    state.db.bookmarks[userId].push(Object.assign({ createdAt: nowIso() }, bookmarkData));
+    saveState();
+    return true;
+  }
+
+  function removeBookmark(userId, questionId) {
+    if (!userId) return false;
+    if (!state.db.bookmarks[userId]) return false;
+    state.db.bookmarks[userId] = state.db.bookmarks[userId].filter(function(b) { return b.id !== questionId; });
+    saveState();
+    return true;
+  }
+
+  function hasBookmark(userId, questionId) {
+    if (!userId) return false;
+    if (!state.db.bookmarks[userId]) return false;
+    return state.db.bookmarks[userId].some(function(b) { return b.id === questionId; });
+  }
+
+  function getStudyMaterials() {
+    return clone(state.db.studyMaterials);
+  }
+
+  function createFolder(name, color, icon) {
+    var folder = {
+      id: createId("fldr"),
+      name: String(name || "New Folder").trim(),
+      color: String(color || "var(--brand-accent)"),
+      icon: String(icon || "📁"),
+      createdAt: nowIso()
+    };
+    state.db.studyMaterials.folders.push(folder);
+    saveState();
+    return clone(folder);
+  }
+
+  function deleteFolder(folderId) {
+    state.db.studyMaterials.folders = state.db.studyMaterials.folders.filter(function(f) { return f.id !== folderId; });
+    state.db.studyMaterials.files = state.db.studyMaterials.files.filter(function(f) { return f.folderId !== folderId; });
+    saveState();
+  }
+
+  function uploadMaterial(folderId, fileData) {
+    var file = {
+      id: createId("file"),
+      folderId: String(folderId),
+      name: String(fileData.name || "Untitled"),
+      size: String(fileData.size || "Unknown"),
+      url: String(fileData.url || ""),
+      createdAt: nowIso()
+    };
+    state.db.studyMaterials.files.push(file);
+    saveState();
+    return clone(file);
+  }
+
+  function deleteMaterial(fileId) {
+    state.db.studyMaterials.files = state.db.studyMaterials.files.filter(function(f) { return f.id !== fileId; });
+    saveState();
+  }
+
+  function getPracticeAttemptsCount(userId) {
+    return (state.db.attempts || []).filter(function(a) { 
+      if (a.userId !== userId) return false;
+      var test = getTestById(a.testId);
+      return test && test.isPractice;
+    }).length;
+  }
+
+  function generatePracticeTest(userId, subject, difficulty, count, timerMinutes) {
+    var allQs = getQuestions();
+    
+    var filtered = allQs.filter(function(q) {
+      var matchSub = subject === "all" || q.section === subject || (q.topic && q.topic.indexOf(subject) !== -1);
+      var matchDiff = difficulty === "all" || q.difficulty === difficulty;
+      return matchSub && matchDiff;
+    });
+
+    for (var i = filtered.length - 1; i > 0; i--) {
+      var j = Math.floor(Math.random() * (i + 1));
+      var temp = filtered[i];
+      filtered[i] = filtered[j];
+      filtered[j] = temp;
+    }
+
+    var selected = filtered.slice(0, count);
+
+    var testId = "practice_" + Date.now();
+    var duration = Number(timerMinutes) || 0;
+    
+    var practiceTest = {
+      id: testId,
+      title: "Practice: " + (subject === "all" ? "Mixed Subjects" : subject),
+      subtitle: selected.length + " Questions • " + (duration > 0 ? duration + " Mins" : "Untimed"),
+      isPractice: true,
+      isFree: true,
+      status: "live",
+      createdBy: userId,
+      questionIds: selected.map(function(q) { return q.id; }),
+      questionCount: selected.length,
+      sectionDurations: { SUPR: duration, REAP: duration },
+      createdAt: nowIso()
+    };
+
+    if (!state.db.tests) state.db.tests = [];
+    state.db.tests.push(practiceTest);
+    saveState();
+    return testId;
+  }
+
   window.AceIIIT.__store = {
     init: async function () {
-      loadState();
       if (state.session.token && state.session.user) {
         try {
           await refreshFromRemote();
@@ -1106,9 +1707,23 @@
     subscribeToRemoteChanges: function () {
       return function () {};
     },
+    login: login,
+    requestActivation: requestActivation,
+    verifyActivationToken: verifyActivationToken,
+    completeActivation: completeActivation,
+    requestPasswordReset: requestPasswordReset,
+    verifyResetToken: verifyResetToken,
+    completePasswordReset: completePasswordReset,
+    updatePassword: updatePassword,
+    googleAuth: googleAuth,
+    appleAuth: appleAuth,
+    getAuthConfig: getAuthConfig,
     sendOtp: sendOtp,
     verifyOtp: verifyOtp,
-    logout: function () {
+    logout: async function () {
+      try {
+        await api("/api/auth/logout", { method: "POST" });
+      } catch (_err) {}
       clearSession();
       return { ok: true };
     },
@@ -1118,6 +1733,7 @@
     getQuestions: getQuestions,
     getTestById: getTestById,
     getQuestionsForTest: getQuestionsForTest,
+    getQotd: getQotd,
     getTestQuestionsFromRemote: getTestQuestionsFromRemote,
     ensureTestQuestionsLoaded: ensureTestQuestionsLoaded,
     listUserAttempts: listUserAttempts,
@@ -1145,22 +1761,68 @@
     deleteTest: deleteTest,
     attachQuestionToTest: attachQuestionToTest,
     detachQuestionFromTest: detachQuestionFromTest,
+    attachQuestionsBulk: attachQuestionsBulk,
+    detachQuestionsBulk: detachQuestionsBulk,
+    reorderTestQuestions: reorderTestQuestions,
+    duplicateTest: duplicateTest,
+    generateQuestionsRandom: generateQuestionsRandom,
+    attachRandomQuestionsToTest: attachRandomQuestionsToTest,
+    undoRandomQuestionsAttachment: undoRandomQuestionsAttachment,
     getAdminResults: getAdminResults,
     getAdminTrash: getAdminTrash,
     restoreTrash: restoreTrash,
     purgeTrash: purgeTrash,
     deleteUser: deleteUser,
+    verifyUserPayment: verifyUserPayment,
+    revokeUserPayment: revokeUserPayment,
+    syncPaidSheets: syncPaidSheets,
+    listPayments: listPayments,
+    syncPaymentsNew: syncPaymentsNew,
+    verifyPaymentNew: verifyPaymentNew,
+    revokePaymentNew: revokePaymentNew,
+    resendPaymentEmail: resendPaymentEmail,
+    listUsersExtended: listUsersExtended,
+    getUserDetailsExtended: getUserDetailsExtended,
+    listSeasons: listSeasons,
+    createSeason: createSeason,
+    activateSeason: activateSeason,
+    archiveSeason: archiveSeason,
+    duplicateSeason: duplicateSeason,
+    publishTest: publishTest,
+    getDashboardMetrics: getDashboardMetrics,
+    getAuditLogs: getAuditLogs,
     getAdminLeaderboard: getAdminLeaderboard,
     getAdminTestAnalytics: getAdminTestAnalytics,
     updateAppConfig: updateAppConfig,
     createReminder: createReminder,
     updateReminder: updateReminder,
     deleteReminder: deleteReminder,
+    resendReminderEmail: resendReminderEmail,
+    resendPaymentEmail: resendPaymentEmail,
     uploadQuestionImages: uploadQuestionImages,
+    submitQotdAttempt: submitQotdAttempt,
     getAttemptAnalysis: getAttemptAnalysis,
     getAttemptQuestionReview: getAttemptQuestionReview,
     exportData: exportData,
     importData: importData,
     isAdmin: isAdmin,
+    getCalendarStatus: getCalendarStatus,
+    getCalendarConnectUrl: getCalendarConnectUrl,
+    toggleCalendarAutoAdd: toggleCalendarAutoAdd,
+    disconnectCalendar: disconnectCalendar,
+    getBookmarks: getBookmarks,
+    addBookmark: addBookmark,
+    removeBookmark: removeBookmark,
+    hasBookmark: hasBookmark,
+    getStudyMaterials: getStudyMaterials,
+    createFolder: createFolder,
+    deleteFolder: deleteFolder,
+    uploadMaterial: uploadMaterial,
+    deleteMaterial: deleteMaterial,
+    generatePracticeTest: generatePracticeTest,
+    getPracticeAttemptsCount: getPracticeAttemptsCount
   };
+
+  // Synchronously hydrate state from localStorage so that app.js initial renderRoute() sees the authenticated user immediately
+  loadState();
 })();

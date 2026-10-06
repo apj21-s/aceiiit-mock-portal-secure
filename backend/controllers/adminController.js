@@ -6,8 +6,17 @@ const AppConfig = require("../models/AppConfig");
 const Question = require("../models/Question");
 const Test = require("../models/Test");
 const User = require("../models/User");
+const Entitlement = require("../models/Entitlement");
+const PaymentRecord = require("../models/PaymentRecord");
+const AuditLog = require("../models/AuditLog");
+const Season = require("../models/Season");
 const { invalidateAllTestCaches, invalidateCatalogCache, invalidateTestRuntimeCache } = require("../services/testDataService");
 const { uploadBufferToCloudinary } = require("../utils/uploadToCloudinary");
+const { paidSheetService } = require("../services/paidSheetService");
+const { sendPaymentConfirmationEmail } = require("../utils/mailService");
+const { logAuditEvent } = require("../services/auditLogService");
+const { getActiveSeason } = require("../services/seasonService");
+const { syncGoogleSheetPayments } = require("../services/paymentSyncService");
 
 const NON_ADMIN_ATTEMPT_FILTER = {
   $or: [
@@ -56,19 +65,26 @@ function normalizeOptions(body) {
 }
 
 function normalizeImageUrls(body) {
+  const isAllowedUrl = (url) =>
+    /^https?:\/\//i.test(url) ||
+    /^data:image\//i.test(url) ||
+    /^\/\//.test(url) ||
+    /^\/assets\//i.test(url) ||
+    /^blob:/i.test(url);
+
   const parsed = parseMaybeJson(body.imageUrls, null);
   if (Array.isArray(parsed)) {
     return parsed
       .map((v) => String(v ?? "").trim())
       .filter(Boolean)
-      .filter((url) => /^https?:\/\//i.test(url));
+      .filter(isAllowedUrl);
   }
   if (typeof body.imageUrls === "string") {
     return String(body.imageUrls)
       .split(/[\r\n,]/)
       .map((s) => s.trim())
       .filter(Boolean)
-      .filter((url) => /^https?:\/\//i.test(url));
+      .filter(isAllowedUrl);
   }
   return [];
 }
@@ -156,12 +172,18 @@ async function uploadQuestionImages(req) {
 
   const uploadedUrls = [];
   for (const file of files) {
-    const uploaded = await uploadBufferToCloudinary(file.buffer, {
-      folder: "ugee-questions",
-      resource_type: "image",
-    });
-    if (uploaded && uploaded.secure_url) {
-      uploadedUrls.push(uploaded.secure_url);
+    try {
+      const uploaded = await uploadBufferToCloudinary(file.buffer, {
+        folder: "ugee-questions",
+        resource_type: "image",
+      });
+      if (uploaded && uploaded.secure_url) {
+        uploadedUrls.push(uploaded.secure_url);
+      }
+    } catch (_cloudErr) {
+      const mime = file.mimetype || "image/jpeg";
+      const base64 = file.buffer.toString("base64");
+      uploadedUrls.push(`data:${mime};base64,${base64}`);
     }
   }
   return uploadedUrls;
@@ -284,9 +306,11 @@ async function snapshot(req, res, next) {
         name: u.name,
         email: u.email,
         role: u.role,
-        isPaid: u.isPaid,
+        isPaid: Boolean(u.isPaid || paidSheetService.isVerified(u.email)),
+        isSheetVerified: paidSheetService.isVerified(u.email),
         createdAt: u.createdAt,
         lastSeenAt: u.lastSeenAt || null,
+        isOnline: Boolean(u.lastSeenAt && (Date.now() - new Date(u.lastSeenAt).getTime() < 5 * 60 * 1000)),
       })),
       userCount,
       appConfig: {
@@ -630,6 +654,455 @@ async function testAnalytics(req, res, next) {
   }
 }
 
+async function attachQuestionsBulk(req, res, next) {
+  try {
+    const schema = z.object({
+      testId: z.string().min(1),
+      questionIds: z.array(z.string().min(1)).min(1),
+    });
+    const { testId, questionIds } = schema.parse(req.body || {});
+    const test = await Test.findById(testId);
+    if (!test) return res.status(404).json({ error: "Test not found" });
+    if (test.deletedAt) return res.status(400).json({ error: "Test is in recycle bin" });
+
+    const validQuestions = await Question.find({ _id: { $in: questionIds }, deletedAt: null }).select("_id").lean();
+    const validObjectIds = validQuestions.map((q) => q._id);
+
+    await Test.updateOne(
+      { _id: testId, deletedAt: null },
+      { $addToSet: { questionIds: { $each: validObjectIds } } }
+    );
+    await recalculateTestsMetadata([testId]);
+    invalidateCatalogCache();
+    invalidateTestRuntimeCache(testId);
+    res.json({ ok: true, count: validObjectIds.length });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function detachQuestionsBulk(req, res, next) {
+  try {
+    const schema = z.object({
+      testId: z.string().min(1),
+      questionIds: z.array(z.string().min(1)).min(1),
+    });
+    const { testId, questionIds } = schema.parse(req.body || {});
+    const test = await Test.findById(testId);
+    if (!test) return res.status(404).json({ error: "Test not found" });
+    if (test.deletedAt) return res.status(400).json({ error: "Test is in recycle bin" });
+
+    await Test.updateOne(
+      { _id: testId, deletedAt: null },
+      { $pullAll: { questionIds: questionIds } }
+    );
+    await recalculateTestsMetadata([testId]);
+    invalidateCatalogCache();
+    invalidateTestRuntimeCache(testId);
+    res.json({ ok: true, count: questionIds.length });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function reorderTestQuestions(req, res, next) {
+  try {
+    const schema = z.object({
+      testId: z.string().min(1),
+      questionIds: z.array(z.string()),
+    });
+    const { testId, questionIds } = schema.parse(req.body || {});
+    const test = await Test.findById(testId);
+    if (!test) return res.status(404).json({ error: "Test not found" });
+    if (test.deletedAt) return res.status(400).json({ error: "Test is in recycle bin" });
+
+    test.questionIds = questionIds;
+    await test.save();
+    await recalculateTestsMetadata([testId]);
+    invalidateCatalogCache();
+    invalidateTestRuntimeCache(testId);
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function duplicateTest(req, res, next) {
+  try {
+    const testId = req.params.id;
+    const originalTest = await Test.findById(testId).lean();
+    if (!originalTest || originalTest.deletedAt) {
+      return res.status(404).json({ error: "Test not found" });
+    }
+
+    const newTitle = (originalTest.title || "Untitled Test") + " (Copy)";
+    const newTest = await Test.create({
+      title: newTitle,
+      subtitle: originalTest.subtitle || "",
+      series: originalTest.series || "UGEE 2026",
+      type: originalTest.type || "practice",
+      isFree: Boolean(originalTest.isFree),
+      status: "draft",
+      displayOrder: (originalTest.displayOrder || 100) + 1,
+      sectionDurations: originalTest.sectionDurations || { SUPR: 60, REAP: 120 },
+      durationMinutes: originalTest.durationMinutes || 180,
+      instructions: originalTest.instructions || [],
+      benchmarkScores: originalTest.benchmarkScores || [],
+      questionIds: originalTest.questionIds || [],
+      totalMarks: originalTest.totalMarks || 0,
+      negativeMarks: originalTest.negativeMarks || -0.25,
+    });
+
+    await recalculateTestsMetadata([newTest._id]);
+    invalidateCatalogCache();
+    res.status(201).json({ test: newTest.toJSON() });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function generateQuestionsRandom(req, res, next) {
+  try {
+    const schema = z.object({
+      testId: z.string().optional(),
+      suprCount: z.number().int().min(0).max(100).optional().default(30),
+      reapCount: z.number().int().min(0).max(100).optional().default(30),
+      difficulty: z.string().optional(),
+      excludeExisting: z.boolean().optional().default(true),
+    });
+    const { testId, suprCount, reapCount, difficulty, excludeExisting } = schema.parse(req.body || {});
+
+    let excludeIds = [];
+    if (excludeExisting && testId) {
+      const test = await Test.findById(testId).select("questionIds").lean();
+      if (test && test.questionIds) {
+        excludeIds = test.questionIds.map((id) => String(id));
+      }
+    }
+
+    const baseMatch = { deletedAt: null };
+    if (excludeIds.length) {
+      baseMatch._id = { $nin: excludeIds.map((id) => mongoose.Types.ObjectId.createFromHexString(id)) };
+    }
+    if (difficulty && ["easy", "medium", "hard"].includes(difficulty)) {
+      baseMatch.difficulty = difficulty;
+    }
+
+    const suprMatch = { ...baseMatch, section: "SUPR" };
+    const reapMatch = { ...baseMatch, section: "REAP" };
+
+    const [suprQuestions, reapQuestions] = await Promise.all([
+      suprCount > 0
+        ? Question.aggregate([{ $match: suprMatch }, { $sample: { size: suprCount } }, { $project: { _id: 1 } }])
+        : [],
+      reapCount > 0
+        ? Question.aggregate([{ $match: reapMatch }, { $sample: { size: reapCount } }, { $project: { _id: 1 } }])
+        : [],
+    ]);
+
+    const generatedIds = [...suprQuestions, ...reapQuestions].map((q) => String(q._id));
+    res.json({
+      questionIds: generatedIds,
+      suprFound: suprQuestions.length,
+      reapFound: reapQuestions.length,
+      suprRequested: suprCount,
+      reapRequested: reapCount,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function verifyUserPayment(req, res, next) {
+  try {
+    const user = await User.findById(req.params.id);
+    if (!user || user.deletedAt) return res.status(404).json({ error: "User not found" });
+    user.isPaid = true;
+    await user.save();
+    try {
+      await sendPaymentConfirmationEmail(user.email, user.name);
+    } catch (mailErr) {
+      console.warn("Payment confirmation email send warning:", mailErr.message);
+    }
+    res.json({ ok: true, user: user.toJSON() });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function revokeUserPayment(req, res, next) {
+  try {
+    const user = await User.findById(req.params.id);
+    if (!user || user.deletedAt) return res.status(404).json({ error: "User not found" });
+    user.isPaid = false;
+    await user.save();
+    res.json({ ok: true, user: user.toJSON() });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function syncPaidSheets(req, res, next) {
+  try {
+    const summary = await syncGoogleSheetPayments({
+      actorUserId: req.auth ? req.auth.userId : null,
+    });
+    res.json({ ok: true, count: summary.newlyVerifiedCount || 0, summary });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function listUsersExtended(req, res, next) {
+  try {
+    const page = Math.max(1, Number(req.query.page || 1));
+    const limit = Math.min(100, Math.max(1, Number(req.query.limit || 20)));
+    const { search, role, isPaid, isEnrolledOnly } = req.query || {};
+
+    const filter = { deletedAt: null };
+    if (role) filter.role = role;
+    if (isPaid === "true" || isPaid === "1") filter.isPaid = true;
+    if (isPaid === "false" || isPaid === "0") filter.isPaid = false;
+
+    if (search) {
+      const q = String(search).trim().toLowerCase();
+      filter.$or = [
+        { name: { $regex: q, $options: "i" } },
+        { email: { $regex: q, $options: "i" } },
+        { normalizedEmail: { $regex: q, $options: "i" } },
+      ];
+    }
+
+    if (isEnrolledOnly === "true" || isEnrolledOnly === "1") {
+      const paidEmails = Array.from(paidSheetService._emails || []);
+      const verifiedPayments = await PaymentRecord.find({ status: "verified" }).distinct("normalizedEmail");
+      const activeEntitlements = await Entitlement.find({ status: "active" }).distinct("normalizedEmail");
+
+      const enrolledEmailSet = new Set([
+        ...paidEmails,
+        ...verifiedPayments,
+        ...activeEntitlements,
+      ]);
+
+      filter.$or = filter.$or
+        ? [{ $and: [{ $or: filter.$or }, { isPaid: true }] }, { normalizedEmail: { $in: Array.from(enrolledEmailSet) } }]
+        : [{ isPaid: true }, { normalizedEmail: { $in: Array.from(enrolledEmailSet) } }];
+    }
+
+    const total = await User.countDocuments(filter);
+    const users = await User.find(filter)
+      .sort({ createdAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit)
+      .lean();
+
+    const normEmails = users.map((u) => u.normalizedEmail || String(u.email || "").toLowerCase().trim());
+    const entitlements = await Entitlement.find({
+      normalizedEmail: { $in: normEmails },
+      status: "active",
+    }).populate("seasonId", "name year").lean();
+
+    const entMap = new Map();
+    for (const ent of entitlements) {
+      const list = entMap.get(ent.normalizedEmail) || [];
+      list.push(ent);
+      entMap.set(ent.normalizedEmail, list);
+    }
+
+    const mappedUsers = users.map((u) => {
+      const nEmail = u.normalizedEmail || String(u.email || "").toLowerCase().trim();
+      const userEnts = entMap.get(nEmail) || [];
+      return {
+        ...u,
+        id: String(u._id),
+        entitlements: userEnts.map((e) => ({
+          id: String(e._id),
+          seasonName: e.seasonId ? e.seasonId.name : "Active Season",
+          tier: e.tier,
+          status: e.status,
+          grantedAt: e.grantedAt,
+        })),
+      };
+    });
+
+    res.json({
+      users: mappedUsers,
+      pagination: {
+        page,
+        limit,
+        total,
+        pages: total ? Math.ceil(total / limit) : 1,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function getUserDetailExtended(req, res, next) {
+  try {
+    const user = await User.findById(req.params.id).lean();
+    if (!user || user.deletedAt) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const normEmail = user.normalizedEmail || String(user.email || "").toLowerCase().trim();
+
+    const [attempts, entitlements, payments] = await Promise.all([
+      Attempt.find({ userId: user._id })
+        .select("testId score accuracy rank percentile submittedAt timeTakenSeconds")
+        .sort({ submittedAt: -1 })
+        .limit(50)
+        .lean(),
+      Entitlement.find({ normalizedEmail: normEmail })
+        .populate("seasonId", "name year")
+        .sort({ createdAt: -1 })
+        .lean(),
+      PaymentRecord.find({ normalizedEmail: normEmail })
+        .populate("seasonId", "name year")
+        .sort({ createdAt: -1 })
+        .lean(),
+    ]);
+
+    res.json({
+      user: {
+        ...user,
+        id: String(user._id),
+      },
+      attempts: attempts.map((a) => ({ ...a, id: String(a._id) })),
+      entitlements: entitlements.map((e) => ({ ...e, id: String(e._id) })),
+      payments: payments.map((p) => ({ ...p, id: String(p._id) })),
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function publishTest(req, res, next) {
+  try {
+    const test = await Test.findById(req.params.id);
+    if (!test || test.deletedAt) {
+      return res.status(404).json({ error: "Test not found" });
+    }
+
+    // Validation checks prior to publishing
+    const validationErrors = [];
+    if (!test.title || test.title.trim().length < 3) {
+      validationErrors.push("Test title must be at least 3 characters long.");
+    }
+    if (!Array.isArray(test.questionIds) || test.questionIds.length === 0) {
+      validationErrors.push("Test must contain at least 1 question before publishing.");
+    }
+    if (!test.durationMinutes || test.durationMinutes <= 0) {
+      validationErrors.push("Test duration must be greater than 0 minutes.");
+    }
+
+    if (validationErrors.length > 0) {
+      return res.status(422).json({
+        error: "Test validation failed",
+        validationErrors,
+      });
+    }
+
+    const before = test.toJSON();
+    test.status = "live";
+    await test.save();
+
+    invalidateCatalogCache();
+    invalidateTestRuntimeCache(test.id);
+
+    await logAuditEvent({
+      actorUserId: req.auth ? req.auth.userId : null,
+      action: "TEST_PUBLISHED",
+      entityType: "Test",
+      entityId: test.id,
+      seasonId: test.seasonId,
+      before,
+      after: test.toJSON(),
+    });
+
+    res.json({ ok: true, test: test.toJSON() });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function getDashboardMetrics(req, res, next) {
+  try {
+    const activeSeason = await getActiveSeason();
+
+    const [
+      totalUsers,
+      paidUsers,
+      totalTests,
+      liveTests,
+      totalQuestions,
+      totalAttempts,
+      totalPayments,
+      verifiedPayments,
+    ] = await Promise.all([
+      User.countDocuments({ deletedAt: null, role: "student" }),
+      User.countDocuments({ deletedAt: null, role: "student", isPaid: true }),
+      Test.countDocuments({ deletedAt: null }),
+      Test.countDocuments({ deletedAt: null, status: "live" }),
+      Question.countDocuments({ deletedAt: null }),
+      Attempt.countDocuments(NON_ADMIN_ATTEMPT_FILTER),
+      PaymentRecord.countDocuments(activeSeason ? { seasonId: activeSeason._id } : {}),
+      PaymentRecord.countDocuments(activeSeason ? { seasonId: activeSeason._id, status: "verified" } : { status: "verified" }),
+    ]);
+
+    res.json({
+      metrics: {
+        activeSeason: activeSeason ? activeSeason.toJSON() : null,
+        totalUsers,
+        paidUsers,
+        totalTests,
+        liveTests,
+        totalQuestions,
+        totalAttempts,
+        totalPayments,
+        verifiedPayments,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function getAuditLogsController(req, res, next) {
+  try {
+    const page = Math.max(1, Number(req.query.page || 1));
+    const limit = Math.min(100, Math.max(1, Number(req.query.limit || 20)));
+    const { action, entityType, seasonId } = req.query || {};
+
+    const filter = {};
+    if (action) filter.action = action;
+    if (entityType) filter.entityType = entityType;
+    if (seasonId) filter.seasonId = seasonId;
+
+    const total = await AuditLog.countDocuments(filter);
+    const logs = await AuditLog.find(filter)
+      .populate("actorUserId", "name email role")
+      .populate("seasonId", "name year")
+      .sort({ createdAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit)
+      .lean();
+
+    res.json({
+      logs: logs.map((l) => ({ ...l, id: String(l._id) })),
+      pagination: {
+        page,
+        limit,
+        total,
+        pages: total ? Math.ceil(total / limit) : 1,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
 module.exports = {
   snapshot,
   trash,
@@ -641,8 +1114,21 @@ module.exports = {
   purgeTrashItem,
   attachQuestion,
   detachQuestion,
+  attachQuestionsBulk,
+  detachQuestionsBulk,
+  reorderTestQuestions,
+  duplicateTest,
+  generateQuestionsRandom,
   results,
   leaderboard,
   testAnalytics,
   updateAppConfig,
+  verifyUserPayment,
+  revokeUserPayment,
+  syncPaidSheets,
+  listUsersExtended,
+  getUserDetailExtended,
+  publishTest,
+  getDashboardMetrics,
+  getAuditLogsController,
 };

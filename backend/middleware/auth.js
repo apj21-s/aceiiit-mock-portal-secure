@@ -21,14 +21,32 @@ function touchUserPresence(userId) {
   ).catch(function () {});
 }
 
-function requireAuth(req, res, next) {
+function extractToken(req) {
   const header = String(req.headers.authorization || "");
   const match = header.match(/^Bearer\s+(.+)$/i);
-  if (!match) {
+  if (match && match[1]) {
+    return match[1].trim();
+  }
+  const cookieHeader = String(req.headers.cookie || "");
+  if (cookieHeader) {
+    const cookies = cookieHeader.split(";");
+    for (const cookie of cookies) {
+      const parts = cookie.trim().split("=");
+      if (parts[0] === "aceiiit_session" && parts[1]) {
+        return decodeURIComponent(parts[1]);
+      }
+    }
+  }
+  return null;
+}
+
+function requireAuth(req, res, next) {
+  const token = extractToken(req);
+  if (!token) {
     return res.status(401).json({ error: "Unauthorized" });
   }
   try {
-    const payload = jwt.verify(match[1], process.env.JWT_SECRET);
+    const payload = jwt.verify(token, process.env.JWT_SECRET);
     req.auth = payload;
     touchUserPresence(payload && payload.userId);
     return next();

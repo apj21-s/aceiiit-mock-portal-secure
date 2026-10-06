@@ -4,7 +4,7 @@ const { z } = require("zod");
 const Attempt = require("../models/Attempt");
 const { evaluateAttempt } = require("../services/evaluationService");
 const { computeRankAndPercentileForAttempt } = require("../services/rankService");
-const { paidSheetService } = require("../services/paidSheetService");
+const { canAccessTest } = require("../services/entitlementService");
 const { getTestRuntimeSnapshot } = require("../services/testDataService");
 const { buildAttemptAnalysis } = require("../services/attemptAnalysisService");
 
@@ -115,8 +115,8 @@ async function submitAttempt(req, res, next) {
     const test = runtimeSnapshot && runtimeSnapshot.test;
     if (!test || test.status !== "live") return res.status(404).json({ error: "Test not found" });
 
-    const paidOk = Boolean(req.auth.isPaid) || paidSheetService.isVerified(req.auth.email);
-    if (!test.isFree && !paidOk && req.auth.role !== "admin") {
+    const hasAccess = await canAccessTest(req.auth, test);
+    if (!hasAccess) {
       return res.status(402).json({ error: "Buy Test Series" });
     }
 

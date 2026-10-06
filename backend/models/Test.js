@@ -2,6 +2,7 @@ const mongoose = require("mongoose");
 
 const testSchema = new mongoose.Schema(
   {
+    seasonId: { type: mongoose.Schema.Types.ObjectId, ref: "Season", default: null, index: true },
     title: { type: String, required: true, trim: true, maxlength: 120 },
     subtitle: { type: String, default: "", trim: true, maxlength: 160 },
     series: { type: String, default: "UGEE 2026", index: true },
@@ -27,6 +28,7 @@ const testSchema = new mongoose.Schema(
 // TTL: deleted tests are permanently removed 30 days after being moved to trash.
 testSchema.index({ deletedAt: 1 }, { expireAfterSeconds: 60 * 60 * 24 * 30 });
 testSchema.index({ status: 1, deletedAt: 1, displayOrder: 1, createdAt: 1 });
+testSchema.index({ seasonId: 1, status: 1, deletedAt: 1 });
 
 testSchema.set("toJSON", {
   transform: (_doc, ret) => {

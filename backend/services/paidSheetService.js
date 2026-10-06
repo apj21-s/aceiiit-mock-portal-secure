@@ -3,39 +3,74 @@ const { fetchJson } = require("../utils/http");
 class PaidSheetService {
   constructor() {
     this._emails = new Set();
+    this._entries = [];
     this._timer = null;
     this._lastSyncAt = 0;
   }
 
-get lastSyncAt() {
+  get lastSyncAt() {
     return this._lastSyncAt;
   }
 
-  isVerified(email) {
-    return this._emails.has(String(email || "").trim().toLowerCase());
+  get entries() {
+    return this._entries;
   }
 
-  async syncOnce() {
+  isVerified(email) {
+    if (!email) return false;
+    return this._emails.has(String(email).trim().toLowerCase());
+  }
+
+  async syncOnce(options = {}) {
+    const { throwOnError = false } = options;
     const apiKey = String(process.env.PAID_SHEETS_API_KEY || "").trim();
     const sheetId = String(process.env.PAID_SHEETS_SHEET_ID || "").trim();
-    const range = String(process.env.PAID_SHEETS_RANGE || "Verified!A:A").trim();
+    const rawRange = String(process.env.PAID_SHEETS_RANGE || "Verified!A:A").trim();
     if (!apiKey || !sheetId) {
+      const msg = "PAID_SHEETS_API_KEY or PAID_SHEETS_SHEET_ID is missing from server environment.";
+      if (throwOnError) throw new Error(msg);
+      console.warn("[PaidSheetService]", msg);
       return;
     }
 
+    const range = rawRange.includes("!") ? rawRange : `${rawRange}!A:A`;
+
     const url = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
       sheetId
-    )}/values/${encodeURIComponent(range)}?majorDimension=COLUMNS&key=${encodeURIComponent(apiKey)}`;
+    )}/values/${encodeURIComponent(range)}?key=${encodeURIComponent(apiKey)}`;
 
-    const data = await fetchJson(url, { method: "GET" });
-    const values = (data && data.values && data.values[0]) || [];
-    const set = new Set(
-      values
-        .map((v) => String(v || "").trim().toLowerCase())
-        .filter((v) => v && v.includes("@"))
-    );
-    this._emails = set;
-    this._lastSyncAt = Date.now();
+    try {
+      const data = await fetchJson(url, { method: "GET" });
+      const rawRows = (data && data.values) || [];
+      const emailSet = new Set();
+      const entryList = [];
+
+      for (const row of rawRows) {
+        if (!Array.isArray(row) || !row.length) continue;
+        const rowStr = row.join(" ");
+        const emailMatches = rowStr.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g);
+        
+        if (emailMatches) {
+          emailMatches.forEach((e) => {
+            const clean = e.toLowerCase().trim();
+            emailSet.add(clean);
+            entryList.push({
+              email: clean,
+              rawRow: row.map((cell) => String(cell || "").trim()),
+            });
+          });
+        }
+      }
+
+      this._emails = emailSet;
+      this._entries = entryList;
+      this._lastSyncAt = Date.now();
+    } catch (err) {
+      console.warn("[PaidSheetService] Sync failed:", err.message);
+      if (throwOnError) {
+        throw new Error("Google Sheets Sync Failed: " + (err.message || String(err)));
+      }
+    }
   }
 
   start() {

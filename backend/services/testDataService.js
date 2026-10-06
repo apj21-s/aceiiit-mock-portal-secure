@@ -163,6 +163,50 @@ async function getTestRuntimeSnapshot(testId) {
   return cache.set(cacheKey, snapshot, TEST_RUNTIME_TTL_MS);
 }
 
+async function getQuestionOfTheDay() {
+  const todayStr = new Date().toDateString();
+  const cacheKey = `qotd:${todayStr}`;
+  const cached = cache.get(cacheKey);
+  if (cached) return cached;
+
+  const questions = await Question.find({ deletedAt: null })
+    .select(QUESTION_SCORING_FIELDS)
+    .lean();
+
+  const validQuestions = questions.filter((q) => {
+    return (
+      !(q.prompt && q.prompt.indexOf("<img") !== -1) &&
+      (!q.imageUrls || q.imageUrls.length === 0) &&
+      Array.isArray(q.options) && q.options.length > 0 &&
+      q.correctOption !== undefined && q.correctOption !== null
+    );
+  });
+
+  if (!validQuestions.length) {
+    return null;
+  }
+
+  let hash = 0;
+  for (let i = 0; i < todayStr.length; i++) {
+    hash = (hash << 5) - hash + todayStr.charCodeAt(i);
+    hash = hash & hash;
+  }
+  const index = Math.abs(hash) % validQuestions.length;
+  const qotd = validQuestions[index];
+
+  const mappedQotd = {
+    id: String(qotd._id),
+    section: qotd.section,
+    topic: qotd.topic,
+    prompt: qotd.prompt,
+    options: qotd.options,
+    correctOption: qotd.correctOption,
+    explanation: qotd.explanation || "",
+  };
+
+  return cache.set(cacheKey, mappedQotd, 24 * 60 * 60 * 1000);
+}
+
 function invalidateCatalogCache() {
   cache.deleteByPrefix("catalog:");
 }
@@ -185,4 +229,5 @@ module.exports = {
   invalidateCatalogCache,
   invalidateTestRuntimeCache,
   invalidateAllTestCaches,
+  getQuestionOfTheDay,
 };

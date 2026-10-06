@@ -5,28 +5,46 @@
   "type": "commonjs",
   "main": "server.js",
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   },
   "scripts": {
     "dev": "node server.js",
     "start": "node server.js",
-    "seed": "node scripts/seed-ugee-2026.js"
+    "seed": "node scripts/seed-ugee-2026.js",
+    "test": "jest --runInBand"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
     "cloudinary": "^2.7.0",
-    "compression": "^1.8.1",
+    "compression": "^1.8.2",
+    "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "dotenv": "^16.6.1",
-    "express": "^4.21.2",
+    "express": "^4.22.3",
     "express-rate-limit": "^7.5.0",
+    "googleapis": "^180.0.0",
     "helmet": "^7.2.0",
     "jsonwebtoken": "^9.0.2",
-    "multer": "^2.0.2",
-    "mongoose": "^8.18.0",
-    "morgan": "^1.10.0",
-    "nodemailer": "^6.10.1",
+    "mongoose": "^8.24.5",
+    "morgan": "^1.12.1",
+    "multer": "^2.4.0",
+    "nodemailer": "^10.0.15",
     "resend": "^4.8.0",
     "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "jest": "^30.5.2",
+    "mongodb-memory-server": "^10.4.3",
+    "supertest": "^7.3.1"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "testMatch": [
+      "<rootDir>/tests/**/*.test.js"
+    ],
+    "testTimeout": 60000,
+    "setupFiles": [
+      "<rootDir>/tests/helpers/env.js"
+    ]
   }
 }

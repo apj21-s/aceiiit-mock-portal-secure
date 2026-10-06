@@ -14,6 +14,7 @@ const reminderSchema = new mongoose.Schema(
     sentAt: { type: Date, default: null, index: true },
     cancelledAt: { type: Date, default: null, index: true },
     failureReason: { type: String, default: "" },
+    sequence: { type: Number, default: 0 },
   },
   { timestamps: true }
 );

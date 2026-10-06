@@ -21,9 +21,19 @@ function buildRecommendations({ accuracy, topicWise, weakSection, timePressure, 
     recommendations.push("Your average pace is slightly slow. Use a strict first pass to reserve end-game time for flagged questions.");
   }
 
-  const weakTopic = (topicWise || []).find((topic) => Number(topic.total || 0) > 1);
+  // Use the highest-priority, reliably-sampled weak topic
+  const weakTopic = (topicWise || []).find((t) => Number(t.total || 0) >= 2 && Number(t.attempted || 0) > 0);
   if (weakTopic) {
-    recommendations.push(`Revise ${weakTopic.topic} (${weakTopic.section}) next. It is the weakest topic block in this attempt.`);
+    const tag = weakTopic.tag || "";
+    if (tag === "no correct answers") {
+      recommendations.push(`You scored 0% on ${weakTopic.topic} (${weakTopic.section}) — zero correct answers from ${weakTopic.attempted} attempts. Revisit the fundamentals of this topic before attempting more questions.`);
+    } else if (tag === "fully skipped") {
+      recommendations.push(`${weakTopic.topic} (${weakTopic.section}) was completely skipped. Attempt at least the easiest questions here — unattempted questions guarantee zero marks.`);
+    } else if (tag === "weak accuracy" || tag === "below par") {
+      recommendations.push(`Revise ${weakTopic.topic} (${weakTopic.section}) next — ${weakTopic.accuracy}% accuracy with ${weakTopic.wrong} wrong answers. This is the highest-impact topic to fix.`);
+    } else {
+      recommendations.push(`Revise ${weakTopic.topic} (${weakTopic.section}) next. It is the weakest topic block in this attempt.`);
+    }
   }
 
   return recommendations.slice(0, 4);
@@ -55,10 +65,16 @@ function buildAttemptAnalysis({ test, questions, evalResult, answers, timeTakenS
     ? ((Number(test.durationMinutes || 0) * 60) || totalDurationSeconds || 0) / totalQuestions
     : 0;
   const sectionInsights = Object.values(evalResult.sectionWise || {});
-  const topicInsights = (evalResult.topicWise || []).slice(0, 8);
+  // Take top 10 topics; they're already sorted by priority (highest impact first)
+  const topicInsights = (evalResult.topicWise || []).slice(0, 10);
   const strongSection = sectionInsights.slice().sort((a, b) => b.accuracy - a.accuracy)[0] || null;
   const weakSection = sectionInsights.slice().sort((a, b) => a.accuracy - b.accuracy)[0] || null;
-  const weakTopic = topicInsights[0] || null;
+  // Best weak topic: reliable sample (>=2 questions), at least 1 attempted, highest priority
+  const weakTopic =
+    topicInsights.find((t) => Number(t.total || 0) >= 2 && Number(t.attempted || 0) > 0) ||
+    topicInsights.find((t) => Number(t.attempted || 0) > 0) ||
+    topicInsights[0] ||
+    null;
   const fastButErrorProne = avgSecondsPerAttempted > 0 && avgSecondsPerAttempted < targetSecondsPerQuestion * 0.85 && accuracy < 60;
   const timePressure = avgSecondsPerAttempted > targetSecondsPerQuestion * 1.15;
 

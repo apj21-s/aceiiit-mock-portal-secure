@@ -2,8 +2,10 @@ function notFound(_req, res, _next) {
   res.status(404).json({ error: "Not found" });
 }
 
-// eslint-disable-next-line no-unused-vars
-function errorHandler(err, _req, res, _next) {
+function errorHandler(err, _req, res, next) {
+  if (res.headersSent) {
+    return next(err);
+  }
   if (err && err.name === "MulterError") {
     const message = err.code === "LIMIT_FILE_SIZE"
       ? "Image is too large. Max allowed size is 4MB."

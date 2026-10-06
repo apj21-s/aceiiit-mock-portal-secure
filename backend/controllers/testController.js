@@ -2,27 +2,32 @@ const { z } = require("zod");
 
 const AppConfig = require("../models/AppConfig");
 const Test = require("../models/Test");
-const { paidSheetService } = require("../services/paidSheetService");
+const User = require("../models/User");
+const { canAccessTest } = require("../services/entitlementService");
 const {
   getCatalogPayload,
   getPublicQuestionsForTest,
   invalidateCatalogCache,
   invalidateTestRuntimeCache,
+  getQuestionOfTheDay,
 } = require("../services/testDataService");
 
-function canAccessPaid(req) {
+async function checkReqAccess(req, test = null) {
   if (!req || !req.auth) return false;
   if (req.auth.role === "admin") return true;
-  if (req.auth.isPaid) return true;
-  return paidSheetService.isVerified(req.auth.email);
+  if (!test) {
+    return req.auth.isPaid || Boolean(req.auth.role === "admin");
+  }
+  return canAccessTest(req.auth, test);
 }
 
 async function listTests(req, res, next) {
   try {
+    const paidOk = await checkReqAccess(req);
     const [payload, appConfig] = await Promise.all([
       getCatalogPayload({
-        paidOk: canAccessPaid(req),
-        isAdmin: req.auth.role === "admin",
+        paidOk,
+        isAdmin: req.auth && req.auth.role === "admin",
       }),
       AppConfig.findOne({ key: "global" }).lean(),
     ]);
@@ -32,6 +37,7 @@ async function listTests(req, res, next) {
       noticeTitle: appConfig && appConfig.noticeTitle ? appConfig.noticeTitle : "",
       noticeBody: appConfig && appConfig.noticeBody ? appConfig.noticeBody : "",
     };
+    payload.qotd = await getQuestionOfTheDay();
     res.json(payload);
   } catch (err) {
     next(err);
@@ -41,10 +47,13 @@ async function listTests(req, res, next) {
 async function getTestById(req, res, next) {
   try {
     const test = await Test.findOne({ _id: req.params.id, deletedAt: null })
-      .select("title subtitle series type isFree status displayOrder durationMinutes sectionDurations instructions benchmarkScores totalMarks negativeMarks questionIds updatedAt createdAt")
+      .select("title subtitle series type isFree status displayOrder durationMinutes sectionDurations instructions benchmarkScores totalMarks negativeMarks questionIds seasonId updatedAt createdAt")
       .lean();
-    if (!test || test.status !== "live") return res.status(404).json({ error: "Test not found" });
-    if (!test.isFree && req.auth.role !== "admin" && !canAccessPaid(req)) {
+    if (!test || (test.status !== "live" && req.auth.role !== "admin")) {
+      return res.status(404).json({ error: "Test not found" });
+    }
+    const hasAccess = await canAccessTest(req.auth, test);
+    if (!hasAccess) {
       return res.status(402).json({ error: "Buy Test Series" });
     }
     res.json({
@@ -53,6 +62,7 @@ async function getTestById(req, res, next) {
         title: test.title,
         subtitle: test.subtitle || "",
         series: test.series || "UGEE 2026",
+        seasonId: test.seasonId ? String(test.seasonId) : null,
         type: test.type || "practice",
         isFree: Boolean(test.isFree),
         status: test.status,
@@ -77,10 +87,13 @@ async function getTestById(req, res, next) {
 async function getTestQuestions(req, res, next) {
   try {
     const test = await Test.findOne({ _id: req.params.id, deletedAt: null })
-      .select("isFree status")
+      .select("isFree status seasonId")
       .lean();
-    if (!test || test.status !== "live") return res.status(404).json({ error: "Test not found" });
-    if (!test.isFree && req.auth.role !== "admin" && !canAccessPaid(req)) {
+    if (!test || (test.status !== "live" && req.auth.role !== "admin")) {
+      return res.status(404).json({ error: "Test not found" });
+    }
+    const hasAccess = await canAccessTest(req.auth, test);
+    if (!hasAccess) {
       return res.status(402).json({ error: "Buy Test Series" });
     }
 
@@ -111,6 +124,7 @@ const testInputSchema = z.object({
     .optional(),
   instructions: z.array(z.string().max(240)).optional(),
   benchmarkScores: z.array(z.number()).optional(),
+  questionIds: z.array(z.string()).optional(),
 });
 
 async function createTest(req, res, next) {
@@ -129,7 +143,7 @@ async function createTest(req, res, next) {
       durationMinutes: sectionDurations.SUPR + sectionDurations.REAP,
       instructions: input.instructions || [],
       benchmarkScores: input.benchmarkScores || [],
-      questionIds: [],
+      questionIds: input.questionIds || [],
     });
     invalidateCatalogCache();
     res.status(201).json({ test: test.toJSON() });
@@ -157,6 +171,7 @@ async function updateTest(req, res, next) {
     }
     if (input.instructions) test.instructions = input.instructions;
     if (input.benchmarkScores) test.benchmarkScores = input.benchmarkScores;
+    if (Array.isArray(input.questionIds)) test.questionIds = input.questionIds;
 
     await test.save();
     invalidateCatalogCache();
@@ -181,4 +196,25 @@ async function deleteTest(req, res, next) {
   }
 }
 
-module.exports = { listTests, getTestById, getTestQuestions, createTest, updateTest, deleteTest };
+async function submitQotdAttempt(req, res, next) {
+  try {
+    const { date, answeredOpt } = req.body || {};
+    if (!date || answeredOpt === undefined) {
+      return res.status(400).json({ error: "Missing date or answeredOpt" });
+    }
+    const user = await User.findById(req.auth.id);
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    user.lastQotdAttempt = {
+      date: String(date),
+      answeredOpt: String(answeredOpt)
+    };
+    await user.save();
+    
+    res.json({ ok: true, lastQotdAttempt: user.lastQotdAttempt });
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = { listTests, getTestById, getTestQuestions, createTest, updateTest, deleteTest, submitQotdAttempt };

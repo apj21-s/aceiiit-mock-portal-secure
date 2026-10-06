@@ -1,0 +1,116 @@
+<svg xmlns="http://www.w3.org/2000/svg"
+  width="512" height="512" viewBox="0 0 512 512"
+  role="img" aria-label="ACEIIIT loading animation">
+
+  <title>ACEIIIT Loading</title>
+
+  <defs>
+    <!-- Circle: exact reference thickness -->
+    <mask id="circle-reveal" maskUnits="userSpaceOnUse">
+      <rect width="512" height="512" fill="black"/>
+      <circle cx="181" cy="211" r="45"
+        fill="none" stroke="white" stroke-width="30"
+        stroke-linecap="round" pathLength="360"
+        stroke-dasharray="360" stroke-dashoffset="360">
+        <animate attributeName="stroke-dashoffset"
+          values="360;0;0;360"
+          keyTimes="0;.20;.68;1"
+          dur="4.8s" repeatCount="indefinite"/>
+      </circle>
+    </mask>
+
+    <!-- X: each solid diagonal is revealed separately -->
+    <mask id="x-reveal" maskUnits="userSpaceOnUse">
+      <rect width="512" height="512" fill="black"/>
+      <path d="M301 377 L346 422"
+        fill="none" stroke="white" stroke-width="30"
+        stroke-linecap="round" pathLength="100"
+        stroke-dasharray="100" stroke-dashoffset="100">
+        <animate attributeName="stroke-dashoffset"
+          values="100;100;0;0;100"
+          keyTimes="0;.25;.34;.46;1"
+          dur="4.8s" repeatCount="indefinite"/>
+      </path>
+      <path d="M346 377 L301 422"
+        fill="none" stroke="white" stroke-width="30"
+        stroke-linecap="round" pathLength="100"
+        stroke-dasharray="100" stroke-dashoffset="100">
+        <animate attributeName="stroke-dashoffset"
+          values="100;100;100;0;0;100"
+          keyTimes="0;.34;.37;.47;.57;1"
+          dur="4.8s" repeatCount="indefinite"/>
+      </path>
+    </mask>
+
+    <!-- Curved tail ONLY. -->
+    <mask id="arrow-tail-reveal" maskUnits="userSpaceOnUse">
+      <rect width="512" height="512" fill="black"/>
+      <path d="M173 390
+               C226 372 271 342 294 307
+               C312 279 320 246 321 215
+               C321 203 321 191 321 182"
+        fill="none" stroke="white" stroke-width="30"
+        stroke-linecap="round" pathLength="1000"
+        stroke-dasharray="1000" stroke-dashoffset="1000">
+        <animate attributeName="stroke-dashoffset"
+          values="1000;1000;0;0;1000"
+          keyTimes="0;.58;.80;.87;1"
+          dur="4.8s" repeatCount="indefinite"/>
+      </path>
+    </mask>
+
+    <!-- Arrowhead is an independent final stage. -->
+    <mask id="arrow-head-reveal" maskUnits="userSpaceOnUse">
+      <rect width="512" height="512" fill="black"/>
+      <path d="M309 181 L271 219 M309 181 L347 219"
+        fill="none" stroke="white" stroke-width="30"
+        stroke-linecap="round" pathLength="100"
+        stroke-dasharray="100" stroke-dashoffset="100">
+        <animate attributeName="stroke-dashoffset"
+          values="100;100;100;0;0;100"
+          keyTimes="0;.80;.86;.96;.985;1"
+          dur="4.8s" repeatCount="indefinite"/>
+      </path>
+    </mask>
+  </defs>
+
+  <!-- Exact clipboard silhouette from the supplied reference -->
+  <image href="data:image/png;base64,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"
+    x="0" y="0" width="512" height="512"/>
+
+  <!-- ACEIIIT solid fills -->
+  <g mask="url(#circle-reveal)">
+    <circle cx="181" cy="211" r="45"
+      fill="none" stroke="#F2BD3B" stroke-width="30"/>
+  </g>
+
+  <g mask="url(#x-reveal)">
+    <path d="M301 377 L346 422"
+      fill="none" stroke="#E04449" stroke-width="30" stroke-linecap="round"/>
+    <path d="M346 377 L301 422"
+      fill="none" stroke="#E04449" stroke-width="30" stroke-linecap="round"/>
+  </g>
+
+  <!-- Tail finishes completely before this group begins -->
+  <g mask="url(#arrow-tail-reveal)">
+    <path d="M173 390
+             C226 372 271 342 294 307
+             C312 279 320 246 321 215
+             C321 203 321 191 321 182"
+      fill="none" stroke="#2F80ED" stroke-width="30"
+      stroke-linecap="round"/>
+  </g>
+
+  <!-- Arrowhead: LAST -->
+  <g mask="url(#arrow-head-reveal)">
+    <path d="M309 181 L271 219 M309 181 L347 219"
+      fill="none" stroke="#2F80ED" stroke-width="30"
+      stroke-linecap="round"/>
+  </g>
+
+  <style>
+    @media (prefers-reduced-motion: reduce) {
+      * { animation: none !important; }
+    }
+  </style>
+</svg>

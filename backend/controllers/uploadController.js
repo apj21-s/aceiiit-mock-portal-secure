@@ -36,17 +36,23 @@ async function uploadImage(req, res, next) {
 
     const uploadedUrls = [];
     for (const file of files) {
-      const result = await uploadBufferToCloudinary(file.buffer, {
-        folder: "ugee-questions",
-        resource_type: "image",
-      });
-      if (result && result.secure_url) {
-        uploadedUrls.push(result.secure_url);
+      try {
+        const result = await uploadBufferToCloudinary(file.buffer, {
+          folder: "ugee-questions",
+          resource_type: "image",
+        });
+        if (result && result.secure_url) {
+          uploadedUrls.push(result.secure_url);
+        }
+      } catch (_cloudErr) {
+        const mime = file.mimetype || "image/jpeg";
+        const base64 = file.buffer.toString("base64");
+        uploadedUrls.push(`data:${mime};base64,${base64}`);
       }
     }
 
     if (!uploadedUrls.length) {
-      return res.status(502).json({ error: "Cloudinary did not return an image URL." });
+      return res.status(400).json({ error: "Could not process image upload." });
     }
 
     return res.json({
