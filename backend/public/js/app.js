@@ -149,6 +149,7 @@
     } else {
       feedback.setAttribute("role", "status");
     }
+    feedback.classList.remove("u-hidden"); // starts hidden via the !important utility
     feedback.style.display = "block";
     feedback.textContent = message;
     feedback.style.background = isError ? "rgba(239, 68, 68, 0.18)" : "rgba(16, 185, 129, 0.16)";
@@ -240,7 +241,345 @@
     }
   }
 
+  // ---- Virtual keyboard: keep the focused form field visible -----------------------------
+  // When the on-screen keyboard shrinks the visual viewport and covers the focused field,
+  // nudge it into view once (debounced; native scrolling is left alone otherwise).
+  (function keepFocusedFieldVisible() {
+    var viewport = window.visualViewport;
+    if (!viewport) return;
+    var timer = 0;
+    viewport.addEventListener("resize", function () {
+      var el = document.activeElement;
+      if (!el || !/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) || el.type === "radio" || el.type === "checkbox") return;
+      window.clearTimeout(timer);
+      timer = window.setTimeout(function () {
+        var rect = el.getBoundingClientRect();
+        if (rect.bottom > viewport.height || rect.top < 0) {
+          try { el.scrollIntoView({ block: "nearest" }); } catch (_e) { }
+        }
+      }, 150);
+    });
+  })();
+
+  // ---- Tables become labelled cards on phones -------------------------------------------
+  // Copies each header cell's text onto the matching row cell as data-label (CSS shows it at
+  // ≤640px). Defensive: never throws; skips rows whose cell count differs from the header,
+  // empty/loading rows and nested tables; idempotent across re-renders and pagination.
+  function labelTableCells(root) {
+    if (!root || !root.querySelectorAll) return;
+    var devHost = /^(localhost|127\.0\.0\.1)$/.test(window.location.hostname);
+    root.querySelectorAll(".table-like").forEach(function (table) {
+      try {
+        if (table.parentElement && table.parentElement.closest(".table-like")) return;
+        var rows = Array.prototype.filter.call(table.children, function (child) {
+          return child.classList && child.classList.contains("table-row");
+        });
+        var header = rows.filter(function (row) { return row.classList.contains("header"); })[0];
+        if (!header) return;
+        var labels = Array.prototype.map.call(header.children, function (cell) {
+          return String(cell.textContent || "").replace(/\s+/g, " ").trim();
+        });
+        if (!labels.length) return;
+        table.classList.add("has-cell-labels");
+        rows.forEach(function (row) {
+          if (row === header) return;
+          var cells = row.children;
+          if (!cells.length) return;
+          if (cells.length !== labels.length) {
+            if (devHost && window.console) console.debug("labelTableCells: row skipped (" + cells.length + " cells, " + labels.length + " headers)", row);
+            return;
+          }
+          Array.prototype.forEach.call(cells, function (cell, index) {
+            if (labels[index]) {
+              if (cell.getAttribute("data-label") !== labels[index]) cell.setAttribute("data-label", labels[index]);
+            } else {
+              cell.removeAttribute("data-label");
+            }
+          });
+        });
+      } catch (error) {
+        if (devHost && window.console) console.debug("labelTableCells: table skipped", error);
+      }
+    });
+    // Real <table>s (Progress): the same contract, labels from the <thead> cells.
+    root.querySelectorAll("table.comparison-table").forEach(function (table) {
+      try {
+        var headRow = table.tHead && table.tHead.rows[0];
+        if (!headRow) return;
+        var labels = Array.prototype.map.call(headRow.cells, function (cell) {
+          return String(cell.textContent || "").replace(/\s+/g, " ").trim();
+        });
+        if (!labels.length) return;
+        table.classList.add("has-cell-labels");
+        Array.prototype.forEach.call(table.tBodies, function (body) {
+          Array.prototype.forEach.call(body.rows, function (row) {
+            if (row.cells.length !== labels.length) return; // e.g. a colspan empty-state row
+            Array.prototype.forEach.call(row.cells, function (cell, index) {
+              if (labels[index] && cell.getAttribute("data-label") !== labels[index]) cell.setAttribute("data-label", labels[index]);
+            });
+          });
+        });
+      } catch (error) {
+        if (devHost && window.console) console.debug("labelTableCells: table skipped", error);
+      }
+    });
+  }
+
+  // One observer covers every renderer (and pagination re-renders): label new tables once
+  // per animation frame.
+  (function observeTables() {
+    if (typeof MutationObserver !== "function" || !app) return;
+    var scheduled = false;
+    new MutationObserver(function () {
+      if (scheduled) return;
+      scheduled = true;
+      window.requestAnimationFrame(function () {
+        scheduled = false;
+        labelTableCells(app);
+      });
+    }).observe(app, { childList: true, subtree: true });
+  })();
+
+  // ---- Overlay history: Back closes the topmost overlay instead of leaving the screen ------
+  // One authoritative stack. Each open overlay owns exactly one same-URL history entry
+  // (re-opening or re-rendering never adds another). Back (popstate) closes the top overlay;
+  // closing through the UI consumes its entry. Route changes clear the stack without
+  // touching history. Stale entries (after a reload, or reached via Forward) are neutralized.
+  var overlayHistory = (function () {
+    var stack = [];
+    var pendingBacks = 0;
+    var closingFromHistory = false;
+    // Overlay entries share the page URL. While they exist (or are being consumed), the
+    // browser must not restore the scroll it recorded for them; e.g. the drawer's scroll lock
+    // means its entry was recorded at scrollY 0. Route navigation keeps the browser default.
+    var savedScrollRestoration = null;
+
+    function holdScrollRestoration() {
+      if (savedScrollRestoration !== null || !("scrollRestoration" in history)) return;
+      savedScrollRestoration = history.scrollRestoration;
+      try { history.scrollRestoration = "manual"; } catch (_e) { savedScrollRestoration = null; }
+    }
+
+    function releaseScrollRestoration() {
+      window.setTimeout(function () {
+        if (savedScrollRestoration === null || stack.length || pendingBacks > 0) return;
+        try { history.scrollRestoration = savedScrollRestoration; } catch (_e) { }
+        savedScrollRestoration = null;
+      }, 50);
+    }
+
+    function indexOf(id) {
+      for (var i = 0; i < stack.length; i += 1) if (stack[i].id === id) return i;
+      return -1;
+    }
+
+    function push(id, close) {
+      var existing = indexOf(id);
+      if (existing !== -1) {
+        stack[existing].close = close;
+        return;
+      }
+      stack.push({ id: id, close: close });
+      holdScrollRestoration();
+      try { history.pushState({ aceOverlay: id, depth: stack.length }, "", window.location.href); } catch (_e) { }
+    }
+
+    /** The overlay was closed through the UI: drop it and consume its history entry. */
+    function dismiss(id) {
+      var index = indexOf(id);
+      if (index === -1) return;
+      stack.splice(index, 1);
+      if (closingFromHistory) return; // Back already consumed the entry.
+      pendingBacks += 1;
+      holdScrollRestoration();
+      try { history.back(); } catch (_e) { pendingBacks -= 1; }
+    }
+
+    /** Route change: overlays are gone with the old view; leave history alone. */
+    function clear() {
+      stack = [];
+      releaseScrollRestoration();
+    }
+
+    /** Navigate away from an open overlay, replacing its entry (no dead Back press left). */
+    function leaveTo(id, hash) {
+      var index = indexOf(id);
+      if (index === stack.length - 1 && index !== -1) {
+        stack.pop();
+        window.location.replace(window.location.pathname + window.location.search + hash);
+        return true;
+      }
+      return false;
+    }
+
+    window.addEventListener("popstate", function (event) {
+      if (pendingBacks > 0) {
+        pendingBacks -= 1;
+      } else if (stack.length) {
+        var top = stack.pop();
+        closingFromHistory = true;
+        try { top.close(); } catch (_e) { } finally { closingFromHistory = false; }
+      } else if (event.state && event.state.aceOverlay) {
+        try { history.replaceState(null, "", window.location.href); } catch (_e) { }
+      }
+      releaseScrollRestoration();
+    });
+
+    // A reload drops overlays; don't let the restored entry pretend one is open.
+    if (history.state && history.state.aceOverlay) {
+      try { history.replaceState(null, "", window.location.href); } catch (_e) { }
+    }
+
+    return {
+      push: push,
+      dismiss: dismiss,
+      clear: clear,
+      leaveTo: leaveTo,
+      has: function (id) { return indexOf(id) !== -1; },
+      size: function () { return stack.length; }
+    };
+  })();
+  window.overlayHistory = overlayHistory;
+
+  // ---- Mobile navigation drawer (modal dialog) ----------------------------------------
+  // Open: focus trap (activateModalFocus), inert + aria-hidden background, a backdrop that
+  // blocks background pointers, and a body scroll lock that restores the scroll position.
+  var navDrawer = { open: false, releaseFocus: null, scrollY: 0, returnFocus: null, isolated: [] };
+
+  function isolateBackground(keepEl) {
+    var isolated = [];
+    var node = keepEl;
+    while (node && node.parentElement && node !== document.body) {
+      Array.prototype.forEach.call(node.parentElement.children, function (sibling) {
+        if (sibling === node || sibling.classList.contains("mobile-drawer-backdrop")) return;
+        if (sibling.tagName === "SCRIPT" || sibling.hasAttribute("inert")) return;
+        sibling.setAttribute("inert", "");
+        if (!sibling.hasAttribute("aria-hidden")) {
+          sibling.setAttribute("aria-hidden", "true");
+          sibling.setAttribute("data-drawer-aria-hidden", "true");
+        }
+        isolated.push(sibling);
+      });
+      node = node.parentElement;
+    }
+    return isolated;
+  }
+
+  function restoreBackground(isolated) {
+    (isolated || []).forEach(function (el) {
+      el.removeAttribute("inert");
+      if (el.getAttribute("data-drawer-aria-hidden") === "true") {
+        el.removeAttribute("aria-hidden");
+        el.removeAttribute("data-drawer-aria-hidden");
+      }
+    });
+  }
+
+  function setDrawerToggles(expanded) {
+    document.querySelectorAll(".mobile-drawer-toggle").forEach(function (button) {
+      button.setAttribute("aria-expanded", expanded ? "true" : "false");
+    });
+  }
+
+  function lockBodyScroll() {
+    navDrawer.scrollY = window.scrollY || window.pageYOffset || 0;
+    document.body.style.top = "-" + navDrawer.scrollY + "px";
+    document.body.classList.add("is-scroll-locked");
+  }
+
+  function unlockBodyScroll(restoreScroll) {
+    if (!document.body.classList.contains("is-scroll-locked")) return;
+    document.body.classList.remove("is-scroll-locked");
+    document.body.style.top = "";
+    if (restoreScroll) window.scrollTo(0, navDrawer.scrollY);
+  }
+
+  function openNavDrawer(trigger) {
+    var drawer = document.getElementById("mobile-nav-drawer");
+    if (!drawer || navDrawer.open) return;
+    navDrawer.open = true;
+    navDrawer.returnFocus = trigger || document.activeElement;
+    lockBodyScroll();
+    var backdrop = document.createElement("div");
+    backdrop.className = "mobile-drawer-backdrop";
+    backdrop.addEventListener("click", function () { closeNavDrawer(); });
+    drawer.parentElement.insertBefore(backdrop, drawer);
+    drawer.removeAttribute("inert");
+    drawer.removeAttribute("aria-hidden");
+    drawer.classList.add("is-open");
+    setDrawerToggles(true);
+    navDrawer.isolated = isolateBackground(drawer);
+    navDrawer.releaseFocus = activateModalFocus(drawer, {
+      titleId: "mobile-drawer-title",
+      onEscape: function () { closeNavDrawer(); },
+      initialFocusEl: drawer.querySelector(".mobile-drawer-close")
+    });
+    if (window.overlayHistory) window.overlayHistory.push("nav-drawer", function () { closeNavDrawer({ fromHistory: true }); });
+  }
+
+  /**
+   * options.restoreFocus / restoreScroll default to true; route changes pass false (the
+   * page is being replaced). options.fromHistory: closing because Back was pressed.
+   */
+  function closeNavDrawer(options) {
+    options = options || {};
+    if (!navDrawer.open) return;
+    navDrawer.open = false;
+    var drawer = document.getElementById("mobile-nav-drawer");
+    if (drawer) {
+      drawer.classList.remove("is-open");
+      drawer.setAttribute("aria-hidden", "true");
+      drawer.setAttribute("inert", "");
+    }
+    document.querySelectorAll(".mobile-drawer-backdrop").forEach(function (el) { el.remove(); });
+    restoreBackground(navDrawer.isolated);
+    navDrawer.isolated = [];
+    setDrawerToggles(false);
+    if (navDrawer.releaseFocus) {
+      navDrawer.releaseFocus();
+      navDrawer.releaseFocus = null;
+    }
+    unlockBodyScroll(options.restoreScroll !== false);
+    if (options.restoreFocus !== false) {
+      var target = navDrawer.returnFocus && document.body.contains(navDrawer.returnFocus)
+        ? navDrawer.returnFocus
+        : document.querySelector(".dashboard-header .mobile-drawer-toggle");
+      if (target && typeof target.focus === "function") {
+        // The sticky header may be auto-hidden; don't let focus scroll the page to it.
+        try { target.focus({ preventScroll: true }); } catch (_e) { }
+      }
+    }
+    navDrawer.returnFocus = null;
+    if (!options.fromHistory && !options.fromRoute && window.overlayHistory) window.overlayHistory.dismiss("nav-drawer");
+  }
+
+  /** The view is about to be re-rendered: release locks and listeners tied to the old DOM. */
+  function resetNavDrawerState() {
+    if (!navDrawer.open) return;
+    closeNavDrawer({ restoreFocus: false, restoreScroll: false, fromRoute: true });
+  }
+
   document.addEventListener("click", async function (e) {
+    var drawerToggle = e.target && e.target.closest ? e.target.closest(".js-toggle-mobile-drawer") : null;
+    if (drawerToggle) {
+      e.preventDefault();
+      if (navDrawer.open) closeNavDrawer();
+      else openNavDrawer(drawerToggle);
+      return;
+    }
+    var drawerNavLink = navDrawer.open && e.target && e.target.closest ? e.target.closest(".mobile-nav-drawer a[href^='#']") : null;
+    if (drawerNavLink) {
+      // Navigate from the drawer, replacing the drawer's history entry with the destination.
+      e.preventDefault();
+      closeNavDrawer({ restoreFocus: false, restoreScroll: false, fromRoute: true });
+      if (!overlayHistory.leaveTo("nav-drawer", drawerNavLink.getAttribute("href"))) {
+        window.location.hash = drawerNavLink.getAttribute("href");
+      }
+      return;
+    }
+    if (navDrawer.open && e.target && e.target.closest && e.target.closest(".mobile-nav-drawer .js-logout-btn")) {
+      closeNavDrawer({ restoreFocus: false, restoreScroll: false });
+    }
     var logoutBtn = e.target ? e.target.closest("#logout-button, .js-logout-btn") : null;
     if (logoutBtn) {
       e.preventDefault();
@@ -913,7 +1252,9 @@
 
   function activateModalFocus(modalCard, options) {
     options = options || {};
-    var triggerEl = document.activeElement;
+    // Where focus returns on close: an explicit opener (touch taps don't always focus the
+    // button that was tapped), else whatever was focused when the dialog opened.
+    var triggerEl = options.returnFocusEl || document.activeElement;
 
     if (!modalCard) {
       return function () { };
@@ -2235,6 +2576,8 @@
     var status = saveState && saveState.status ? saveState.status : "saved";
     if (status === "saving" || status === "pending") return "Saving…";
     if (status === "offline") return "Offline: answers kept on this device, retrying";
+    if (status === "retrying") return "Save failed: retrying";
+    if (status === "signed-out") return "Signed out: log in again to keep saving";
     if (status === "elsewhere") return "Open in another window";
     if (status === "closed") return "Time over";
     return "Saved to server ✓";
@@ -3006,37 +3349,45 @@
     var feedback = document.getElementById("auth-feedback");
     var togglePrompt = document.getElementById("auth-toggle-prompt");
 
+    // The inactive headers/forms start with .u-hidden (display:none !important), so an inline
+    // display alone can never reveal them: toggle the class as well.
+    function setShown(el, display) {
+      if (!el) return;
+      el.classList.toggle("u-hidden", !display);
+      el.style.display = display || "none";
+    }
+
     function showMode(mode) {
       currentMode = mode;
       feedback.style.display = "none";
 
-      document.querySelectorAll(".auth-header-group").forEach(function (h) { h.style.display = "none"; });
+      document.querySelectorAll(".auth-header-group").forEach(function (h) { setShown(h, ""); });
 
-      loginForm.style.display = "none";
-      activateReqForm.style.display = "none";
-      forgotForm.style.display = "none";
-      completeActivationForm.style.display = "none";
-      completeResetForm.style.display = "none";
+      setShown(loginForm, "");
+      setShown(activateReqForm, "");
+      setShown(forgotForm, "");
+      setShown(completeActivationForm, "");
+      setShown(completeResetForm, "");
 
       if (mode === "activate") {
-        document.getElementById("auth-header-activate").style.display = "block";
-        activateReqForm.style.display = "flex";
+        setShown(document.getElementById("auth-header-activate"), "block");
+        setShown(activateReqForm, "flex");
         togglePrompt.innerHTML = 'Already have an account? <button type="button" class="aceiiit-link" data-auth-switch="login">Sign in</button>';
       } else if (mode === "forgot-password") {
-        document.getElementById("auth-header-forgot").style.display = "block";
-        forgotForm.style.display = "flex";
+        setShown(document.getElementById("auth-header-forgot"), "block");
+        setShown(forgotForm, "flex");
         togglePrompt.innerHTML = 'Remembered your password? <button type="button" class="aceiiit-link" data-auth-switch="login">Sign in</button>';
       } else if (mode === "complete-activation") {
-        document.getElementById("auth-header-complete-activation").style.display = "block";
-        completeActivationForm.style.display = "flex";
+        setShown(document.getElementById("auth-header-complete-activation"), "block");
+        setShown(completeActivationForm, "flex");
         togglePrompt.innerHTML = 'Want to log in with an existing password? <button type="button" class="aceiiit-link" data-auth-switch="login">Sign in</button>';
       } else if (mode === "complete-reset") {
-        document.getElementById("auth-header-complete-reset").style.display = "block";
-        completeResetForm.style.display = "flex";
+        setShown(document.getElementById("auth-header-complete-reset"), "block");
+        setShown(completeResetForm, "flex");
         togglePrompt.innerHTML = 'Want to log in? <button type="button" class="aceiiit-link" data-auth-switch="login">Sign in</button>';
       } else {
-        document.getElementById("auth-header-login").style.display = "block";
-        loginForm.style.display = "flex";
+        setShown(document.getElementById("auth-header-login"), "block");
+        setShown(loginForm, "flex");
         togglePrompt.innerHTML = 'First time here? <button type="button" class="aceiiit-link" data-auth-switch="activate">Create account</button>';
       }
 
@@ -3210,6 +3561,7 @@
     setTimeout(startEditorialTypewriter, 60);
 
     function showFeedback(message, isError) {
+      feedback.classList.remove("u-hidden"); // starts hidden via the !important utility
       feedback.style.display = "block";
       feedback.textContent = message;
       feedback.style.background = isError ? "rgba(239, 68, 68, 0.18)" : "rgba(16, 185, 129, 0.16)";
@@ -3451,8 +3803,11 @@
 
     var drawerLinksHtml = views.map(function (v) {
       var isActive = activeView === v.id;
-      return '<a href="' + v.hash + '" class="mobile-drawer-link' + (isActive ? ' is-active' : '') + '">' + v.label + '</a>';
+      return '<a href="' + v.hash + '" class="mobile-drawer-link' + (isActive ? ' is-active" aria-current="page' : '') + '">' + v.label + '</a>';
     }).join("");
+
+    // A re-render replaces the drawer's DOM; drop any open-drawer state that pointed at it.
+    resetNavDrawerState();
 
     return (
       '<header class="dashboard-header">' +
@@ -3464,22 +3819,30 @@
       navLinksHtml +
       '</nav>' +
       '<div class="button-row" style="align-items: center;">' +
-      (user ? '<span class="meta-chip user-chip" style="margin-right: 4px;">' + escapeHtml(name) + '</span>' : '') +
-      (user && auth.isAdmin(user) ? '<button class="button button-secondary button-compact" id="admin-link">Builder Mode</button>' : '') +
-      getThemeToggleMarkup() +
-      (user ? '<button class="button button-secondary button-compact" id="logout-button">Logout</button>' : '') +
-      '<button class="mobile-drawer-toggle js-toggle-mobile-drawer" type="button" aria-label="Toggle navigation menu">☰</button>' +
+      (user ? '<span class="meta-chip user-chip header-account-control" style="margin-right: 4px;">' + escapeHtml(name) + '</span>' : '') +
+      (user && auth.isAdmin(user) ? '<button class="button button-secondary button-compact header-account-control" id="admin-link">Builder Mode</button>' : '') +
+      '<span class="header-account-control">' + getThemeToggleMarkup() + '</span>' +
+      (user ? '<button class="button button-secondary button-compact header-account-control" id="logout-button">Logout</button>' : '') +
+      '<button class="mobile-drawer-toggle js-toggle-mobile-drawer" type="button" aria-label="Open navigation menu" aria-controls="mobile-nav-drawer" aria-expanded="false">☰</button>' +
       '</div>' +
       '</div>' +
       '</header>' +
-      '<div class="mobile-nav-drawer" id="mobile-nav-drawer">' +
+      '<div class="mobile-nav-drawer" id="mobile-nav-drawer" role="dialog" aria-modal="true" aria-labelledby="mobile-drawer-title" aria-hidden="true" inert>' +
       '<div class="mobile-drawer-head">' +
-      '<span class="brand-mark"><img src="assets/favicon-round.svg" alt="AceIIIT Logo" class="brand-logo" /> ACEIIIT</span>' +
-      '<button class="button button-secondary button-compact js-toggle-mobile-drawer" type="button">✕</button>' +
+      '<span class="brand-mark" id="mobile-drawer-title"><img src="assets/favicon-round.svg" alt="" class="brand-logo" /> ACEIIIT</span>' +
+      '<button class="button button-secondary button-compact mobile-drawer-close js-toggle-mobile-drawer" type="button" aria-label="Close navigation menu">✕</button>' +
       '</div>' +
-      '<nav class="mobile-drawer-nav">' +
+      '<nav class="mobile-drawer-nav" aria-label="Main navigation">' +
       drawerLinksHtml +
       '</nav>' +
+      (user
+        ? '<div class="mobile-drawer-footer">' +
+          '<span class="meta-chip user-chip">' + escapeHtml(name) + '</span>' +
+          getThemeToggleMarkup() +
+          (auth.isAdmin(user) ? '<a class="button button-secondary button-compact" href="#admin">Builder Mode</a>' : '') +
+          '<button class="button button-secondary button-compact js-logout-btn" type="button">Logout</button>' +
+          '</div>'
+        : '') +
       '</div>'
     );
   }
@@ -3616,7 +3979,7 @@
       '<form id="practice-gen-form" class="generator-form-grid">' +
       '<div class="field"><label>Subject Area</label><select id="prac-subject"><option value="all">ALL SUBJECTS</option><option value="SUPR">SUPR (Physics/Maths)</option><option value="REAP">REAP (Logical & Reading)</option><option value="Maths">Mathematics</option><option value="Physics">Physics</option><option value="Logical">Logical Reasoning</option></select></div>' +
       '<div class="field"><label>Difficulty Level</label><select id="prac-difficulty"><option value="all">ALL LEVELS</option><option value="easy">Easy</option><option value="medium" selected>Medium</option><option value="hard">Hard</option></select></div>' +
-      '<div class="field"><label>Questions Count</label><input type="number" id="prac-count" value="15" min="5" max="30"></div>' +
+      '<div class="field"><label>Questions Count</label><input type="number" inputmode="numeric" id="prac-count" value="15" min="5" max="30"></div>' +
       '<div class="field"><label>Timer Limit</label><select id="prac-timer"><option value="0">Untimed Mode</option><option value="15">15 Minutes</option><option value="30" selected>30 Minutes</option><option value="45">45 Minutes</option></select></div>' +
       '<div class="button-row" style="grid-column:1 / -1; margin-top:12px;">' +
       '<button type="button" class="button button-primary" id="start-practice-btn">Start Practice Session →</button>' +
@@ -4003,7 +4366,7 @@
       '<div style="background:var(--surface); border:1px solid rgba(20,17,15,0.08); border-radius:8px; padding:28px;">' +
       '<span class="section-label">STUDENT IDENTITY</span>' +
       '<h3 style="margin:4px 0 20px;">' + escapeHtml(user.name) + '</h3>' +
-      '<div style="display:grid; grid-template-columns:1fr 1fr; gap:20px; font-size:0.9rem;">' +
+      '<div class="account-identity-grid">' +
       '<div><strong style="display:block; color:var(--ink-soft);">Email Address</strong><span>' + escapeHtml(user.email) + '</span></div>' +
       '<div><strong style="display:block; color:var(--ink-soft);">Role</strong><span>' + escapeHtml(user.role.toUpperCase()) + '</span></div>' +
       '<div><strong style="display:block; color:var(--ink-soft);">Target Exam</strong><span>UGEE 2026</span></div>' +
@@ -4026,8 +4389,8 @@
       '<span class="section-label">SECURITY & PASSWORD</span>' +
       '<h3 style="margin:4px 0 16px;">Change Password</h3>' +
       '<form id="account-pwd-form" style="display:flex; flex-direction:column; gap:16px;">' +
-      (user.hasPassword ? '<div class="field"><label>Current Password</label><input type="password" id="pwd-current" required></div>' : '') +
-      '<div class="field"><label>New Password</label><input type="password" id="pwd-new" required minlength="8"></div>' +
+      (user.hasPassword ? '<div class="field"><label>Current Password</label><input type="password" id="pwd-current" required autocomplete="current-password"></div>' : '') +
+      '<div class="field"><label>New Password</label><input type="password" id="pwd-new" required minlength="8" autocomplete="new-password"></div>' +
       '<div class="button-row"><button type="submit" class="button button-primary" id="pwd-submit-btn">Update Password</button></div>' +
       '</form>' +
       '</div>' +
@@ -5343,12 +5706,14 @@
   function renderTest(user, attemptId) {
     var attempt = store.getAttemptById(attemptId);
     if (!attempt) {
+      stopRuntime(false);
       navigate("dashboard");
       return;
     }
     if (attempt.status === "in_progress" && !attempt.sessionId) {
       // Attempts from older builds weren't bound to a server session.
       window.alert("This unfinished attempt was started on an older version of the portal. Please start the test again.");
+      stopRuntime(false);
       store.discardAttempt(attempt.id);
       navigate("dashboard");
       return;
@@ -5562,18 +5927,21 @@
       '</div>' +
       '</div>' +
 
-      '<!-- Consolidated Mobile Sticky Exam Topbar -->' +
+      // Phone / landscape-phone exam bar: section · question · timer · save state · info · palette.
       '<div class="mobile-exam-topbar" id="mobile-exam-topbar">' +
-      '<div class="mobile-exam-left">' +
-      '<span class="mobile-exam-brand">AceIIIT</span>' +
       '<span class="mobile-section-badge">' + activeSection + '</span>' +
-      '</div>' +
-      '<div class="mobile-exam-center">' +
-      '<span class="mobile-q-indicator">Q' + sectionQuestionNumber + ' / ' + activeQuestions.length + '</span>' +
-      '<span class="mobile-timer-pill">⏱ <strong id="timer-display-mobile">' + formatTime(remainingSeconds) + '</strong></span>' +
-      '</div>' +
+      '<span class="mobile-q-indicator">Q' + sectionQuestionNumber + '<small>/' + activeQuestions.length + '</small></span>' +
+      (function () {
+        var save = store.getAutosaveStatus ? store.getAutosaveStatus(attempt.id) : null;
+        var label = describeAutosave(save);
+        return '<span class="mobile-timer-pill">' +
+          '<span class="mobile-save-state" id="autosave-chip-mobile" role="status" aria-live="polite" data-state="' + escapeAttribute(save ? save.status : "saved") + '" title="' + escapeAttribute(label) + '"><i aria-hidden="true"></i><span class="sr-only">' + escapeHtml(label) + '</span></span>' +
+          '<strong id="timer-display-mobile" role="timer" aria-label="Time left in ' + activeSection + '">' + formatTime(remainingSeconds) + '</strong>' +
+          '</span>';
+      })() +
+      '<button class="mobile-icon-btn js-open-instructions" type="button" data-test="' + escapeAttribute(test.id) + '" aria-label="Exam instructions">i</button>' +
       '<button class="mobile-palette-trigger" id="open-mobile-palette-top" type="button" aria-label="Open question palette, question ' + sectionQuestionNumber + ' of ' + activeQuestions.length + '">' +
-      '<span aria-hidden="true">☰</span> Palette' +
+      '<span aria-hidden="true">☰</span><span class="mobile-palette-label"> Palette</span>' +
       '</button>' +
       '</div>' +
 
@@ -5629,6 +5997,7 @@
       '<button class="button button-secondary action-btn-clear" id="clear-response">Clear</button>' +
       '<button class="button button-secondary action-btn-calc" data-calc-toggle>' + (runtime.calculatorVisible ? "Hide Calc" : "Calc") + '</button>' +
       '<button class="button button-primary action-btn-save" id="save-next">Save & Next</button>' +
+      '<button class="button button-danger action-btn-submit" id="actionbar-submit" type="button">Submit</button>' +
       '</div>' +
       '</div>' +
       '<aside class="question-sidebar exam-sidebar">' +
@@ -5694,6 +6063,7 @@
     var mobilePaletteCleanup = null;
 
     function closeMobilePalette() {
+      overlayHistory.dismiss("exam-palette");
       if (mobilePaletteCleanup) {
         mobilePaletteCleanup();
         mobilePaletteCleanup = null;
@@ -5704,15 +6074,17 @@
       }
     }
 
-    function openMobilePalette() {
+    function openMobilePalette(event) {
       if (!mobilePaletteOverlay || !mobilePaletteSheet) return;
+      var paletteOpener = event && event.currentTarget ? event.currentTarget : openMobilePaletteTopBtn;
       mobilePaletteOverlay.style.display = "block";
       mobilePaletteOverlay.removeAttribute("aria-hidden");
       mobilePaletteCleanup = activateModalFocus(mobilePaletteSheet, {
         titleId: "mobile-palette-title",
         onEscape: closeMobilePalette,
-        returnFocusEl: openMobilePaletteBtn
+        returnFocusEl: paletteOpener
       });
+      overlayHistory.push("exam-palette", closeMobilePalette);
     }
 
     var openMobilePaletteTopBtn = document.getElementById("open-mobile-palette-top");
@@ -5734,6 +6106,16 @@
     if (mobilePaletteBackdrop) {
       mobilePaletteBackdrop.addEventListener("click", closeMobilePalette);
     }
+    // Phone action bar Submit: same flow as the sidebar button (section transition / final
+    // confirmation; submitAndNavigate guards against repeated submits).
+    var actionbarSubmitBtn = document.getElementById("actionbar-submit");
+    if (actionbarSubmitBtn) {
+      actionbarSubmitBtn.addEventListener("click", function () {
+        var mainSubmit = document.getElementById("submit-test");
+        if (mainSubmit) mainSubmit.click();
+      });
+    }
+
     if (mobileSubmitBtn) {
       mobileSubmitBtn.addEventListener("click", function () {
         closeMobilePalette();
@@ -5745,6 +6127,31 @@
     renderLatexInElement(document.body);
     bindFigureLoadDiagnostics();
     restoreExamPaletteScroll();
+    syncExamOverlays();
+
+    // Back closes these overlays (see overlayHistory). The palette's DOM never survives a
+    // re-render, so its entry is dismissed here; the others follow runtime state.
+    function syncExamOverlays() {
+      if (overlayHistory.has("exam-palette")) overlayHistory.dismiss("exam-palette");
+      syncOverlay("exam-calculator", runtime.calculatorVisible, function () {
+        runtime.calculatorVisible = false;
+        renderTest(user, attempt.id);
+      });
+      syncOverlay("exam-instructions", !!runtime.instructionsPopupTestId, function () {
+        runtime.instructionsPopupTestId = null;
+        renderTest(user, attempt.id);
+      });
+      var transition = runtime.pendingSectionTransition;
+      syncOverlay("exam-transition", !!(transition && transition.canReview), function () {
+        var cancel = document.querySelector('[data-transition-action="cancel"]');
+        if (cancel) cancel.click();
+      });
+    }
+
+    function syncOverlay(id, isOpen, close) {
+      if (isOpen) overlayHistory.push(id, close);
+      else if (overlayHistory.has(id)) overlayHistory.dismiss(id);
+    }
 
     function rememberExamPaletteScroll() {
       var palette = app.querySelector(".exam-palettecard");
@@ -5944,6 +6351,8 @@
     });
 
     document.getElementById("submit-test").addEventListener("click", function () {
+      // Once the final submission is under way, extra taps (double-tap on a phone) do nothing.
+      if (runtime.submittingAttemptId === attempt.id) return;
       if (activeSection === "SUPR") {
         runtime.pendingSectionTransition = {
           title: "Submit SUPR",
@@ -5971,6 +6380,7 @@
 
     app.querySelectorAll("[data-transition-action]").forEach(function (button) {
       button.addEventListener("click", async function () {
+        if (runtime.submittingAttemptId === attempt.id) return;
         var action = button.dataset.transitionAction;
         if (action === "cancel") {
           runtime.pendingSectionTransition = null;
@@ -6063,6 +6473,14 @@
       if (autosaveChip) {
         autosaveChip.textContent = describeAutosave(saveState);
         autosaveChip.dataset.state = saveState ? saveState.status : "saved";
+      }
+      var autosaveChipMobile = document.getElementById("autosave-chip-mobile");
+      if (autosaveChipMobile) {
+        var saveLabel = describeAutosave(saveState);
+        autosaveChipMobile.dataset.state = saveState ? saveState.status : "saved";
+        autosaveChipMobile.title = saveLabel;
+        var saveText = autosaveChipMobile.querySelector(".sr-only");
+        if (saveText && saveText.textContent !== saveLabel) saveText.textContent = saveLabel;
       }
       if (saveState && saveState.closedAttemptId) {
         // The server closed this session (deadline reached); show the finalized result.
@@ -7102,7 +7520,7 @@
         '<div class="field"><label for="option-2">Option C</label><input id="option-2" name="option2" value="' + escapeAttribute(editingQuestion ? editingQuestion.options[2] : "") + '" required></div>' +
         '<div class="field"><label for="option-3">Option D</label><input id="option-3" name="option3" value="' + escapeAttribute(editingQuestion ? editingQuestion.options[3] : "") + '" required></div>' +
         '<div class="field"><label for="correct-option">Correct option</label><select id="correct-option" name="correctOption"><option value="0" ' + (editingQuestion && Number(editingQuestion.correctOption) === 0 ? 'selected' : '') + '>A</option><option value="1" ' + (editingQuestion && Number(editingQuestion.correctOption) === 1 ? 'selected' : '') + '>B</option><option value="2" ' + (editingQuestion && Number(editingQuestion.correctOption) === 2 ? 'selected' : '') + '>C</option><option value="3" ' + (editingQuestion && Number(editingQuestion.correctOption) === 3 ? 'selected' : '') + '>D</option></select></div>' +
-        '<div class="field"><label for="question-marks">Marks</label><input id="question-marks" name="marks" type="number" step="any" value="' + (editingQuestion ? editingQuestion.marks : questionMarkDefaults.marks) + '"></div>' +
+        '<div class="field"><label for="question-marks">Marks</label><input id="question-marks" name="marks" type="number" step="any" inputmode="decimal" value="' + (editingQuestion ? editingQuestion.marks : questionMarkDefaults.marks) + '"></div>' +
         '<div class="field"><label for="question-negative">Negative marks</label><input id="question-negative" name="negativeMarks" type="number" step="any" value="' + (editingQuestion ? Math.abs(editingQuestion.negativeMarks) : questionMarkDefaults.negativeMarks) + '"></div>' +
         '<div class="field" style="grid-column: 1 / -1;"><label for="question-explanation">Solution / Explanation</label><textarea id="question-explanation" name="explanation" rows="3" required>' + escapeHtml(editingQuestion ? editingQuestion.explanation : "") + '</textarea></div>' +
         '<div class="field" style="grid-column: 1 / -1;">' +
@@ -7197,8 +7615,8 @@
           '<button class="button button-secondary button-compact" type="button" id="close-random-modal">Close</button>' +
           '</div>' +
           '<div class="admin-modal-body">' +
-          '<div class="field"><label for="random-supr-count">SUPR Questions to Add</label><input id="random-supr-count" type="number" value="40" min="0" max="40"></div>' +
-          '<div class="field"><label for="random-reap-count">REAP Questions to Add</label><input id="random-reap-count" type="number" value="50" min="0" max="50"></div>' +
+          '<div class="field"><label for="random-supr-count">SUPR Questions to Add</label><input id="random-supr-count" type="number" inputmode="numeric" value="40" min="0" max="40"></div>' +
+          '<div class="field"><label for="random-reap-count">REAP Questions to Add</label><input id="random-reap-count" type="number" inputmode="numeric" value="50" min="0" max="50"></div>' +
           '<div class="button-row" style="margin-top: 18px; justify-content: space-between; align-items: center;">' +
           (runtime.lastRandomBatch && selectedTest && runtime.lastRandomBatch.testId === selectedTest.id ? '<button class="button button-secondary button-compact js-undo-random-batch" type="button" style="background:#fff2f2; border-color:#fca5a5; color:#991b1b;">↩ Undo Last Batch (' + runtime.lastRandomBatch.attachedCount + ' qns)</button>' : '<span></span>') +
           '<button class="button button-primary" type="button" id="confirm-random-generate">Generate & Attach Questions</button>' +
@@ -7261,8 +7679,8 @@
           '<div class="field"><label for="test-subtitle">Subtitle</label><input id="test-subtitle" name="subtitle" value="' + escapeAttribute(editingTest ? editingTest.subtitle : (selectedTest ? selectedTest.subtitle : "")) + '" required></div>' +
           '<div class="field"><label for="test-series">Series</label><input id="test-series" name="series" value="' + escapeAttribute(editingTest ? (editingTest.series || "UGEE 2026") : (selectedTest ? (selectedTest.series || "UGEE 2026") : "UGEE 2026")) + '" required></div>' +
           '<div class="field"><label for="test-access">Access Control</label><select id="test-access" name="isFree"><option value="true"' + ((editingTest ? editingTest.isFree : (selectedTest ? selectedTest.isFree : true)) ? ' selected' : '') + '>Free</option><option value="false"' + (!(editingTest ? editingTest.isFree : (selectedTest ? selectedTest.isFree : true)) ? ' selected' : '') + '>Paid</option></select></div>' +
-          '<div class="field"><label for="supr-duration">SUPR Duration (mins)</label><input id="supr-duration" name="suprDurationMinutes" type="number" value="' + (editingTest && editingTest.sectionDurations ? editingTest.sectionDurations.SUPR : (selectedTest && selectedTest.sectionDurations ? selectedTest.sectionDurations.SUPR : 60)) + '" required></div>' +
-          '<div class="field"><label for="reap-duration">REAP Duration (mins)</label><input id="reap-duration" name="reapDurationMinutes" type="number" value="' + (editingTest && editingTest.sectionDurations ? editingTest.sectionDurations.REAP : (selectedTest && selectedTest.sectionDurations ? selectedTest.sectionDurations.REAP : 120)) + '" required></div>' +
+          '<div class="field"><label for="supr-duration">SUPR Duration (mins)</label><input id="supr-duration" name="suprDurationMinutes" type="number" inputmode="numeric" value="' + (editingTest && editingTest.sectionDurations ? editingTest.sectionDurations.SUPR : (selectedTest && selectedTest.sectionDurations ? selectedTest.sectionDurations.SUPR : 60)) + '" required></div>' +
+          '<div class="field"><label for="reap-duration">REAP Duration (mins)</label><input id="reap-duration" name="reapDurationMinutes" type="number" inputmode="numeric" value="' + (editingTest && editingTest.sectionDurations ? editingTest.sectionDurations.REAP : (selectedTest && selectedTest.sectionDurations ? selectedTest.sectionDurations.REAP : 120)) + '" required></div>' +
           (function () {
             var policySource = editingTest || selectedTest || {};
             var policy = policySource.integrity || { mode: "warn", autoSubmitThreshold: 5 };
@@ -7271,7 +7689,7 @@
                 return '<option value="' + opt[0] + '"' + (policy.mode === opt[0] ? ' selected' : '') + '>' + opt[1] + '</option>';
               }).join("") +
               '</select></div>' +
-              '<div class="field"><label for="test-integrity-limit">Strict auto-submit after (recorded events)</label><input id="test-integrity-limit" name="integrityAutoSubmitThreshold" type="number" min="1" max="100" value="' + Number(policy.autoSubmitThreshold || 5) + '"></div>' +
+              '<div class="field"><label for="test-integrity-limit">Strict auto-submit after (recorded events)</label><input id="test-integrity-limit" name="integrityAutoSubmitThreshold" type="number" inputmode="numeric" min="1" max="100" value="' + Number(policy.autoSubmitThreshold || 5) + '"></div>' +
               '<div class="field"><label><input type="checkbox" name="shuffleQuestions"' + (policySource.shuffleQuestions ? ' checked' : '') + '> Shuffle question order per student</label></div>' +
               '<div class="field"><label><input type="checkbox" name="shuffleOptions"' + (policySource.shuffleOptions ? ' checked' : '') + '> Shuffle answer options per student</label></div>';
           })() +
@@ -7331,7 +7749,7 @@
           }).join("") : '<div class="helper-text">No questions attached yet. Click "+ Create Question" or "Select from Question Bank".</div>') +
           '</div>' +
           (selectedTestQuestions.length ? (
-            '<div class="question-bank compact-bank list-scroll-card" style="max-height: 520px;">' +
+            '<div class="question-bank compact-bank list-scroll-card bank-flow-list" style="--bank-max: 520px;">' +
             selectedTestQuestions.map(function (question, index) {
               var isEditing = editingQuestion && editingQuestion.id === question.id;
               var isChecked = runtime.adminCheckedTestQuestionIds.indexOf(question.id) !== -1 ? ' checked' : '';
@@ -7380,7 +7798,7 @@
           '<div class="field"><label for="bank-filter">Filter Section</label><select id="bank-filter"><option value="all"' + (runtime.adminBankSectionFilter === "all" ? ' selected' : '') + '>All</option><option value="SUPR"' + (runtime.adminBankSectionFilter === "SUPR" ? ' selected' : '') + '>SUPR</option><option value="REAP"' + (runtime.adminBankSectionFilter === "REAP" ? ' selected' : '') + '>REAP</option></select></div>' +
           '</div>' +
           (filteredBankQuestions.length ? (
-            '<div class="question-bank list-scroll-card" style="max-height: 540px;">' +
+            '<div class="question-bank list-scroll-card bank-flow-list">' +
             filteredBankQuestions.map(function (question) {
               var attachedTo = questionUsage[question.id] || [];
               return (
@@ -7480,7 +7898,7 @@
           '</div>' +
 
           '<form id="admin-add-payment-form" class="grid-three" style="margin-bottom: 20px; align-items: end;">' +
-          '<div class="field"><label for="add-payment-email">Student email</label><input id="add-payment-email" name="email" type="email" required placeholder="student@example.com"></div>' +
+          '<div class="field"><label for="add-payment-email">Student email</label><input id="add-payment-email" name="email" type="email" required autocomplete="off" inputmode="email" placeholder="student@example.com"></div>' +
           '<div class="field"><label for="add-payment-name">Name (optional)</label><input id="add-payment-name" name="name" maxlength="120"></div>' +
           '<div class="field"><label for="add-payment-note">Note (optional)</label><input id="add-payment-note" name="note" maxlength="500" placeholder="e.g. UPI ref / offline receipt"></div>' +
           '<div class="field"><label><input type="checkbox" name="verifyNow" checked> Verify now and grant access to the active season</label></div>' +
@@ -7696,11 +8114,18 @@
         '</section>',
         {
           fluid: true,
+          hideSupportChat: true,
           footerText: "ACEIIIT Mock Test Portal Studio 2.0",
           footerClass: "app-footer app-footer-inline"
         }
       );
       renderLatexInElement(document.body);
+      // Phone: the step bar scrolls horizontally; keep the active step visible.
+      var activeStep = app.querySelector(".studio-step-btn.is-active");
+      var stepBar = activeStep ? activeStep.parentElement : null;
+      if (stepBar && stepBar.scrollWidth > stepBar.clientWidth) {
+        stepBar.scrollLeft += activeStep.getBoundingClientRect().left - stepBar.getBoundingClientRect().left - 16;
+      }
 
       var testForm = document.getElementById("test-form");
       var questionForm = document.getElementById("question-form");
@@ -9592,7 +10017,7 @@
       '</div>' +
       '</div>' +
       '</section>'
-      , { fluid: true });
+      , { fluid: true, hideSupportChat: true });
     renderLatexInElement(document.body);
 
     document.getElementById("back-admin").addEventListener("click", function () {
@@ -9938,6 +10363,8 @@
   }
 
   function renderRoute() {
+    runtime.lastRouteView = routeParts()[0] || "";
+    runtime.lastRouteHash = window.location.hash;
     clearActiveRenderModal();
     var route = parseHashRoute();
     var parts = routeParts();
@@ -10030,6 +10457,18 @@
   }
 
   window.addEventListener("hashchange", function () {
+    var nextView = routeParts()[0] || "";
+    // Leaving an active exam (Back, or any hash change) needs confirmation. Leaving never
+    // abandons it: the server session, deadline and saved answers stay authoritative.
+    var activeAttempt = runtime.attemptId && store.getAttemptById ? store.getAttemptById(runtime.attemptId) : null;
+    if (activeAttempt && activeAttempt.status === "in_progress" && runtime.lastRouteView === "test" && nextView !== "test") {
+      if (!window.confirm("Leave the exam?\n\nYour answers are saved and the timer keeps running. You can resume from the dashboard.")) {
+        window.location.hash = runtime.lastRouteHash;
+        return;
+      }
+    }
+    resetNavDrawerState();
+    overlayHistory.clear();
     var currentView = routeParts()[0] || "";
     if (isExamLikeRoute(currentView)) {
       try {
@@ -10136,6 +10575,14 @@
       isHeaderHovered = true;
     }
   }, { passive: true });
+
+  // Restored from the back/forward cache: the page may be minutes old; re-sync from the server
+  // (the deadline is always derived from server state).
+  window.addEventListener("pageshow", function (event) {
+    if (event.persisted && (routeParts()[0] || "") === "test") {
+      syncAndRenderCurrentRoute({ silent: true });
+    }
+  });
 
   window.addEventListener("beforeunload", function () {
     clearKeepAliveTimer();

@@ -18,6 +18,21 @@
   --radius-sm: 12px;
   --font-display: "Archivo", sans-serif;
   --font-body: "Manrope", sans-serif;
+  /* Mobile foundations. Safe areas need viewport-fit=cover (index.html). */
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+  --tap: 44px;
+  /* Visible viewport height. A custom property re-declared with 100dvh would win even where
+     dvh is unsupported (custom properties accept any value), so the fallback uses @supports. */
+  --app-vh: 100vh;
+}
+
+@supports (height: 100dvh) {
+  :root {
+    --app-vh: 100dvh;
+  }
 }
 
 body[data-theme="dark"] {
@@ -785,6 +800,20 @@ a:focus-visible,
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 16px;
+}
+
+/* A checkbox inside a field label sits inline with its text. */
+.field label:has(> input[type="checkbox"]) {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+}
+
+.field label > input[type="checkbox"] {
+  flex: none;
+  width: 20px;
+  height: 20px;
 }
 
 .field {
@@ -3622,6 +3651,54 @@ body[data-theme="dark"] .katex-display {
   white-space: nowrap;
 }
 
+/* Phones: tables become labelled cards (labels come from the header via labelTableCells in
+   app.js). The first cell is the card title; action buttons wrap with full-size targets. */
+@media (max-width: 640px) {
+  .table-like.has-cell-labels .table-row.header {
+    display: none;
+  }
+
+  .table-like.has-cell-labels .table-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+    padding: 12px 14px;
+  }
+
+  .table-like.has-cell-labels .table-row > [data-label]::before {
+    content: attr(data-label);
+    display: block;
+    margin-bottom: 2px;
+    color: var(--ink-soft);
+    font-size: 0.68rem;
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  .table-like.has-cell-labels .table-row > :first-child {
+    font-size: 0.98rem;
+    font-weight: 800;
+  }
+
+  .table-like.has-cell-labels .table-row > :first-child::before {
+    display: none;
+  }
+
+  .table-like.has-cell-labels .table-row > :last-child {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .table-like.has-cell-labels .table-row > :last-child[data-label]::before {
+    flex-basis: 100%;
+  }
+
+  .table-like.has-cell-labels .table-row .button {
+    min-height: var(--tap);
+  }
+}
+
 .tests-table {
   width: 100%;
   overflow-x: auto;
@@ -4086,7 +4163,7 @@ body[data-theme="dark"] .katex-display {
 
 .planner-modal-card {
   width: min(1080px, calc(100vw - 28px));
-  max-height: min(88vh, 900px);
+  max-height: min(calc(var(--app-vh) * 0.88), 900px);
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   overflow: hidden;
@@ -4390,7 +4467,8 @@ body[data-theme="dark"] .support-chat-button {
   .analysis-mini-grid,
   .analysis-time-grid,
   .metric-grid,
-  .grid-two {
+  .grid-two,
+  .grid-three {
     grid-template-columns: 1fr;
   }
 
@@ -4420,12 +4498,17 @@ body[data-theme="dark"] .support-chat-button {
     height: 38px;
   }
 
+  /* Small phones: an icon-only circle so it covers less content (its aria-label names it). */
   .support-chat-button {
-    right: 14px;
-    bottom: 16px;
+    right: calc(12px + var(--safe-right));
+    bottom: calc(14px + var(--safe-bottom));
     min-height: 52px;
-    padding: 8px 12px 8px 8px;
-    gap: 10px;
+    padding: 8px;
+    gap: 0;
+  }
+
+  .support-chat-button .support-chat-copy {
+    display: none;
   }
 
   .support-chat-icon {
@@ -4462,7 +4545,7 @@ body[data-theme="dark"] .support-chat-button {
 
   .planner-modal-card {
     width: min(100vw, calc(100vw - 16px));
-    max-height: min(92vh, 900px);
+    max-height: min(calc(var(--app-vh) * 0.92), 900px);
     border-radius: 20px 20px 0 0;
     align-self: end;
   }
@@ -4772,6 +4855,8 @@ body[data-theme="dark"] .support-chat-button {
 }
 
 .autosave-chip[data-state="offline"],
+.autosave-chip[data-state="retrying"],
+.autosave-chip[data-state="signed-out"],
 .autosave-chip[data-state="elsewhere"],
 .autosave-chip[data-state="closed"] {
   color: #b42318;
@@ -4931,7 +5016,7 @@ body[data-theme="dark"] .support-chat-button {
 .image-lightbox-card {
   position: relative;
   width: min(1100px, 100%);
-  max-height: calc(100vh - 48px);
+  max-height: calc(var(--app-vh) - 48px);
   padding: 18px;
   border-radius: 22px;
   background: #fff9ef;
@@ -4947,7 +5032,7 @@ body[data-theme="dark"] .support-chat-button {
 .image-lightbox-image {
   display: block;
   width: 100%;
-  max-height: calc(100vh - 96px);
+  max-height: calc(var(--app-vh) - 96px);
   object-fit: contain;
   border-radius: 14px;
   background: #fff;
@@ -5343,7 +5428,7 @@ body:has(.admin-modal-overlay) {
 
 .admin-modal-card {
   width: min(860px, calc(100% - 24px));
-  max-height: min(90vh, 920px);
+  max-height: min(calc(var(--app-vh) * 0.9), 920px);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -5356,7 +5441,7 @@ body:has(.admin-modal-overlay) {
 
 .admin-modal-card.is-large {
   width: calc(100% - 24px);
-  max-height: calc(92vh - 24px);
+  max-height: calc(var(--app-vh) * 0.92 - 24px);
 }
 
 .question-editor-modal {
@@ -5484,6 +5569,11 @@ body:has(.admin-modal-overlay) {
 
 .transition-card {
   width: min(460px, calc(100% - 24px));
+  /* Never taller than the visible viewport: long content scrolls inside the dialog, so its
+     actions stay reachable (section transition, submit confirmation, instructions). */
+  max-height: calc(var(--app-vh) - 24px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 28px;
   border: 1px solid #d8c7ab;
   border-radius: 18px;
@@ -5513,6 +5603,18 @@ body:has(.admin-modal-overlay) {
   display: grid;
   gap: 18px;
   grid-template-columns: minmax(0, 1fr) 220px;
+}
+
+/* Phone / landscape phone: dialogs use the full width and a single column. */
+@media (max-width: 780px), (max-height: 500px) and (orientation: landscape) {
+  .transition-card {
+    width: calc(100% - 20px - var(--safe-left) - var(--safe-right));
+    padding: 20px;
+  }
+
+  .instructions-popup-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .hero-panel,
@@ -5657,219 +5759,290 @@ body:has(.admin-modal-overlay) {
   }
 }
 
-/* Mobile Question Palette & Command Bar (< 780px) */
-.mobile-exam-topbar {
+/* ===================== Exam: phone & landscape-phone layout =====================
+   PHONE = (max-width: 780px); LANDSCAPE PHONE = (max-height: 500px) and (orientation: landscape).
+   The desktop exam rules ("Floating Exam Layout") are scoped to the complementary condition,
+   so these rules don't have to out-shout them. The exam is a fixed-height shell: top bar,
+   scrolling question card, action bar (its own row, so content never hides beneath it). */
+.mobile-exam-topbar,
+.mobile-palette-trigger,
+.action-btn-submit {
   display: none;
 }
 
-.mobile-palette-trigger {
-  display: none !important;
+.calculator-modal-inline {
+  width: min(320px, calc(100vw - 24px));
 }
 
-.mobile-palette-overlay {
-  display: none;
-}
-
-@media (max-width: 780px) {
-  /* 1. Hide desktop-only multi-row chrome on mobile screens */
-  .exam-brandbar,
+@media (max-width: 780px), (max-height: 500px) and (orientation: landscape) {
+  /* Only redundant chrome is removed: brand/tabs (instructions → ⓘ), paper bar (timer → top
+     bar), section rows (section → badge, palette → top bar), title bar (Q n/N → top bar),
+     version footer. The sidebar's palette/submit live in the sheet and the action bar. */
+  .exam-topbar,
   .exam-paperbar,
   .exam-sectionheader,
+  .exam-sectionbar,
+  .exam-questioncard .question-titlebar,
+  .exam-footerbar,
   .exam-sidebar {
-    display: none !important;
+    display: none;
   }
 
-  /* 2. Consolidated Sticky Mobile Header */
+  .exam-layout .exam-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .mobile-exam-topbar {
-    display: flex !important;
+    display: flex;
+    flex: none;
     align-items: center;
-    justify-content: space-between;
-    position: sticky;
-    top: 0;
-    z-index: 90;
-    padding: 10px 14px;
-    background: var(--surface, #f8f2e6);
+    gap: 6px;
+    padding: calc(8px + var(--safe-top)) calc(8px + var(--safe-right)) 8px calc(8px + var(--safe-left));
     border-bottom: 1px solid rgba(20, 17, 15, 0.12);
+    background: var(--surface);
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
   }
 
-  body[data-theme="dark"] .mobile-exam-topbar {
-    background: #181513;
-    border-bottom-color: rgba(255, 255, 255, 0.12);
-  }
-
-  .mobile-exam-meta {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    flex-wrap: wrap;
-  }
-
-  .mobile-exam-chip {
-    display: inline-flex;
-    align-items: center;
-    padding: 4px 10px;
+  .mobile-section-badge {
+    flex: none;
+    padding: 4px 8px;
+    border: 1px solid rgba(197, 160, 40, 0.3);
     border-radius: 6px;
-    font-size: 0.82rem;
+    background: rgba(197, 160, 40, 0.18);
+    color: var(--gold-strong);
+    font-size: 0.74rem;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+  }
+
+  .mobile-q-indicator {
+    flex: none;
+    font-size: 0.92rem;
+    font-variant-numeric: tabular-nums;
+    font-weight: 800;
+    white-space: nowrap;
+  }
+
+  .mobile-q-indicator small {
+    color: var(--ink-soft);
+    font-size: 0.78em;
     font-weight: 700;
   }
 
-  .mobile-exam-chip.section-chip {
-    background: rgba(197, 160, 40, 0.18);
-    color: var(--gold-strong, #8c6d10);
-    border: 1px solid rgba(197, 160, 40, 0.3);
-  }
-
-  .mobile-exam-chip.q-chip {
-    background: rgba(20, 17, 15, 0.06);
-    color: var(--text, #2c2523);
-    border: 1px solid rgba(20, 17, 15, 0.12);
-  }
-
-  .mobile-exam-chip.timer-chip {
-    background: rgba(20, 17, 15, 0.08);
-    color: var(--text, #2c2523);
+  /* Timer: fixed width, tabular digits, never wraps (no layout shift as it ticks). */
+  .mobile-timer-pill {
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    gap: 6px;
+    margin-left: auto;
+    padding: 4px 10px 4px 8px;
     border: 1px solid rgba(20, 17, 15, 0.15);
+    border-radius: 999px;
+    background: rgba(20, 17, 15, 0.06);
+    font-size: 0.95rem;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
   }
 
-  body[data-theme="dark"] .mobile-exam-chip.q-chip,
-  body[data-theme="dark"] .mobile-exam-chip.timer-chip {
-    background: rgba(255, 255, 255, 0.08);
-    color: #f7f0e4;
-    border-color: rgba(255, 255, 255, 0.15);
+  .mobile-timer-pill strong {
+    min-width: 4.4ch;
+    font-weight: 800;
+    text-align: right;
+  }
+
+  .mobile-save-state {
+    display: inline-flex;
+    flex: none;
+  }
+
+  .mobile-save-state i {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: var(--rs-correct, #239442);
+  }
+
+  .mobile-save-state[data-state="saving"] i,
+  .mobile-save-state[data-state="pending"] i {
+    background: #d7a21c;
+  }
+
+  .mobile-save-state[data-state="offline"] i,
+  .mobile-save-state[data-state="retrying"] i {
+    background: #d9822b;
+  }
+
+  .mobile-save-state[data-state="elsewhere"] i,
+  .mobile-save-state[data-state="closed"] i,
+  .mobile-save-state[data-state="signed-out"] i {
+    background: #c4452f;
+  }
+
+  .mobile-icon-btn {
+    display: inline-grid;
+    flex: none;
+    place-items: center;
+    width: var(--tap);
+    height: var(--tap);
+    border: 1px solid rgba(20, 17, 15, 0.18);
+    border-radius: 50%;
+    background: transparent;
+    color: var(--ink);
+    font-family: Georgia, serif;
+    font-size: 1.05rem;
+    font-style: italic;
+    font-weight: 700;
+    cursor: pointer;
   }
 
   .mobile-palette-trigger {
-    display: inline-flex !important;
+    display: inline-flex;
+    flex: none;
     align-items: center;
     justify-content: center;
-    gap: 6px;
-    padding: 6px 12px;
+    gap: 4px;
+    min-width: var(--tap);
+    min-height: var(--tap);
+    padding: 0 12px;
+    border: 1px solid var(--gold-strong);
     border-radius: 999px;
-    background: var(--gold-subtle, rgba(197, 160, 40, 0.15));
-    color: var(--text, #2c2523);
-    border: 1px solid var(--gold-strong, #c5a028);
+    background: rgba(197, 160, 40, 0.15);
+    color: var(--ink);
     font-size: 0.82rem;
-    font-weight: 700;
+    font-weight: 800;
     cursor: pointer;
-    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
-    transition: background-color 150ms ease, border-color 150ms ease;
   }
 
-  .mobile-palette-trigger:hover,
-  .mobile-palette-trigger:focus-visible {
-    background: var(--gold, #c5a028);
-    color: #ffffff;
+  .exam-questioncard {
+    padding-bottom: 16px;
   }
 
-  /* 3. Thumb-Friendly Sticky Bottom Action Bar */
+  /* Action bar: row 1 Previous · Mark & Next · Save & Next; row 2 Clear · Calculator · Submit. */
   .exam-actionbar {
-    position: sticky !important;
-    bottom: 0 !important;
-    z-index: 90 !important;
-    background: var(--surface, #f8f2e6) !important;
-    border-top: 1px solid rgba(20, 17, 15, 0.12) !important;
-    padding: 10px 12px !important;
-    display: grid !important;
-    grid-template-columns: 1fr 1.2fr 1fr !important;
-    gap: 6px !important;
-    margin-top: 16px !important;
-    box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.08) !important;
+    display: grid;
+    flex: none;
+    grid-template-areas:
+      "prev mark save"
+      "clear calc submit";
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+    margin: 0;
+    padding: 8px calc(10px + var(--safe-right)) calc(8px + var(--safe-bottom)) calc(10px + var(--safe-left));
+    overflow: visible;
+    border-top: 1px solid rgba(20, 17, 15, 0.12);
+    border-right: 0;
+    background: var(--surface);
   }
 
-  body[data-theme="dark"] .exam-actionbar {
-    background: #181513 !important;
-    border-top-color: rgba(255, 255, 255, 0.12) !important;
-  }
-
-  .exam-actionbar .action-btn-prev,
-  .exam-actionbar .action-btn-mark,
-  .exam-actionbar .action-btn-save {
-    width: 100% !important;
-    min-height: 44px !important;
-    font-size: 0.85rem !important;
-    font-weight: 700 !important;
-    padding: 8px 6px !important;
-    display: inline-flex !important;
-    align-items: center !important;
-    justify-content: center !important;
-    text-align: center !important;
-  }
-
-  .exam-actionbar .action-btn-clear,
-  .exam-actionbar .action-btn-calc {
-    display: none !important;
-  }
-
-  .exam-sectionbar {
-    flex-direction: row !important;
-    align-items: center !important;
-    justify-content: space-between !important;
-    gap: 12px;
-    flex-wrap: wrap;
-  }
-
-  .exam-submeta-group {
-    display: flex;
+  .exam-actionbar .button {
+    display: inline-flex;
     align-items: center;
-    gap: 10px;
-    flex-wrap: wrap;
+    justify-content: center;
+    width: 100%;
+    min-width: 0;
+    min-height: var(--tap);
+    padding: 6px;
+    font-size: 0.85rem;
+    font-weight: 700;
+    text-align: center;
+    white-space: normal;
   }
 
-  .mobile-palette-overlay[aria-hidden="false"],
-  .mobile-palette-overlay[style*="display: block"] {
-    display: block !important;
-    position: fixed !important;
-    inset: 0 !important;
-    z-index: 9999 !important;
+  .exam-actionbar .action-btn-prev { grid-area: prev; }
+  .exam-actionbar .action-btn-mark { grid-area: mark; }
+  .exam-actionbar .action-btn-save { grid-area: save; }
+  .exam-actionbar .action-btn-clear { grid-area: clear; }
+  .exam-actionbar .action-btn-calc { grid-area: calc; }
+
+  .exam-actionbar .action-btn-submit {
+    display: inline-flex;
+    grid-area: submit;
+  }
+
+  /* Palette bottom sheet (opened by JS; the overlay's inline style toggles display). */
+  .mobile-palette-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
   }
 
   .mobile-palette-backdrop {
-    position: fixed !important;
-    inset: 0 !important;
-    background: rgba(14, 11, 10, 0.65) !important;
-    backdrop-filter: blur(3px) !important;
-    z-index: 9999 !important;
+    position: absolute;
+    inset: 0;
+    background: rgba(14, 11, 10, 0.6);
   }
 
   .mobile-palette-sheet {
-    position: fixed !important;
-    bottom: 0 !important;
-    left: 0 !important;
-    right: 0 !important;
-    z-index: 10000 !important;
-    max-height: 75vh !important;
-    background: var(--surface, #f8f2e6) !important;
-    color: var(--text, #2c2523) !important;
-    border-top-left-radius: 16px !important;
-    border-top-right-radius: 16px !important;
-    box-shadow: 0 -10px 30px rgba(0, 0, 0, 0.35) !important;
-    display: flex !important;
-    flex-direction: column !important;
-    overflow: hidden !important;
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    display: flex;
+    flex-direction: column;
+    max-height: calc(var(--app-vh) * 0.85);
+    overflow: hidden;
+    padding: 0 var(--safe-right) var(--safe-bottom) var(--safe-left);
+    border-radius: 16px 16px 0 0;
+    background: var(--surface);
+    color: var(--ink);
+    box-shadow: 0 -10px 30px rgba(0, 0, 0, 0.35);
+    touch-action: manipulation;
   }
 
-  body[data-theme="dark"] .mobile-palette-sheet {
-    background: #181513 !important;
-    color: #f7f0e4 !important;
+  .mobile-palette-header {
+    display: flex;
+    flex: none;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 16px;
+    border-bottom: 1px solid rgba(20, 17, 15, 0.12);
+  }
+
+  .mobile-palette-title {
+    margin: 0;
+    font-size: 1.02rem;
+    font-weight: 800;
+  }
+
+  .mobile-palette-subtitle {
+    display: block;
+    margin-top: 2px;
+    color: var(--ink-soft);
+    font-size: 0.78rem;
+  }
+
+  .mobile-palette-close {
+    display: inline-grid;
+    place-items: center;
+    width: var(--tap);
+    height: var(--tap);
+    border: 1px solid rgba(20, 17, 15, 0.15);
+    border-radius: 50%;
+    background: transparent;
+    color: var(--ink);
+    font-size: 1rem;
+    font-weight: 700;
+    cursor: pointer;
+  }
+
+  .mobile-palette-body {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: 14px;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 14px 16px 0;
   }
 
   .mobile-status-strip {
     display: flex;
-    align-items: center;
-    justify-content: space-between;
+    flex-wrap: wrap;
     gap: 6px;
-    padding: 8px 12px;
-    background: var(--surface-card, #fff);
-    border-radius: 8px;
-    border: 1px solid rgba(20, 17, 15, 0.08);
     font-size: 0.78rem;
     font-weight: 700;
-  }
-
-  body[data-theme="dark"] .mobile-status-strip {
-    background: #1c1917;
-    border-color: rgba(255, 255, 255, 0.1);
   }
 
   .mobile-status-strip .status-pill {
@@ -5881,138 +6054,122 @@ body:has(.admin-modal-overlay) {
   }
 
   .mobile-status-strip .status-pill.answered {
-    background: rgba(21, 115, 71, 0.12);
-    color: #157347;
     border: 1px solid rgba(21, 115, 71, 0.3);
+    background: rgba(21, 115, 71, 0.12);
+    color: var(--green);
   }
 
   .mobile-status-strip .status-pill.marked {
-    background: rgba(92, 43, 151, 0.12);
-    color: #5c2b97;
     border: 1px solid rgba(92, 43, 151, 0.3);
+    background: rgba(92, 43, 151, 0.12);
+    color: #7a44cc;
   }
 
   .mobile-status-strip .status-pill.not-visited {
-    background: rgba(20, 17, 15, 0.06);
-    color: var(--text-muted, #786d65);
     border: 1px solid rgba(20, 17, 15, 0.12);
+    background: rgba(20, 17, 15, 0.06);
+    color: var(--ink-soft);
   }
 
   .mobile-palette-grid {
-    display: grid !important;
-    grid-template-columns: repeat(5, 1fr) !important;
-    gap: 8px !important;
-    max-height: 45vh !important;
-    overflow-y: auto !important;
-    padding: 4px !important;
-  }
-
-  .mobile-palette-grid .palette-button {
-    min-width: 44px !important;
-    min-height: 44px !important;
-    font-size: 0.95rem !important;
-    font-weight: 800 !important;
-    border-radius: 8px !important;
-    display: inline-flex !important;
-    align-items: center !important;
-    justify-content: center !important;
-    transition: transform 0.15s ease, box-shadow 0.15s ease;
-  }
-
-  .mobile-palette-grid .palette-button.is-current {
-    outline: 3px solid var(--gold-strong, #c5a028) !important;
-    outline-offset: 2px !important;
-    transform: scale(1.06) !important;
-    box-shadow: 0 0 0 4px rgba(197, 160, 40, 0.3) !important;
-    z-index: 2 !important;
-  }
-
-  .mobile-palette-header {
-    padding: 14px 18px;
-    border-bottom: 1px solid rgba(20, 17, 15, 0.12);
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    background: var(--surface-card, #fff);
-    flex-shrink: 0;
-  }
-
-  body[data-theme="dark"] .mobile-palette-header {
-    border-bottom-color: rgba(255, 255, 255, 0.12);
-    background: #1c1917;
-  }
-
-  .mobile-palette-title {
-    margin: 0;
-    font-size: 1.05rem;
-    font-weight: 800;
-    color: var(--text, #2c2523);
-  }
-
-  .mobile-palette-subtitle {
-    display: block;
-    font-size: 0.78rem;
-    color: var(--text-muted, #786d65);
-    margin-top: 2px;
-  }
-
-  .mobile-palette-close {
-    width: 32px;
-    height: 32px;
-    border-radius: 50%;
-    border: 1px solid rgba(20, 17, 15, 0.15);
-    background: transparent;
-    color: var(--text, #2c2523);
-    font-size: 1rem;
-    font-weight: bold;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    cursor: pointer;
-  }
-
-  body[data-theme="dark"] .mobile-palette-close {
-    border-color: rgba(255, 255, 255, 0.2);
-    color: #f7f0e4;
-  }
-
-  .mobile-palette-body {
-    padding: 16px;
-    overflow-y: auto;
-    flex: 1;
-    min-height: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
-  }
-
-  .mobile-palette-sheet .status-grid {
-    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)) !important;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(48px, 1fr));
     gap: 8px;
   }
 
-  .mobile-palette-sheet .palette-grid {
-    display: grid !important;
-    grid-template-columns: repeat(auto-fill, minmax(40px, 1fr)) !important;
-    gap: 8px !important;
-    max-height: none !important;
-    padding-right: 0 !important;
+  .mobile-palette-grid .palette-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: var(--tap);
+    min-height: 48px;
+    border-radius: 8px;
+    font-size: 0.95rem;
+    font-weight: 800;
   }
 
-  .mobile-palette-sheet .palette-button {
-    min-width: 40px !important;
-    min-height: 40px !important;
-    font-size: 0.92rem !important;
-    border-radius: 8px !important;
+  .mobile-palette-grid .palette-button.is-current {
+    outline: 3px solid var(--gold-strong);
+    outline-offset: 2px;
   }
 
   .mobile-palette-actions {
-    padding-top: 8px;
-    flex-shrink: 0;
+    position: sticky;
+    bottom: 0;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    margin-top: auto;
+    padding: 10px 0 12px;
+    background: var(--surface);
   }
 
   .mobile-palette-actions .button {
     width: 100%;
+    min-height: var(--tap);
+  }
+
+  /* Calculator: a bottom sheet that fits the smallest phones. */
+  .calculator-popout {
+    position: fixed;
+    inset: auto 0 0 0;
+    z-index: 9000;
+    display: flex;
+    justify-content: center;
+    padding: 0 var(--safe-right) var(--safe-bottom) var(--safe-left);
+    pointer-events: none;
+  }
+
+  .calculator-popout .calculator-modal {
+    width: min(340px, calc(100vw - 24px));
+    max-height: calc(var(--app-vh) - 16px);
+    margin-bottom: 8px;
+    overflow-y: auto;
+    pointer-events: auto;
+  }
+
+  .calculator-key {
+    min-height: var(--tap);
+  }
+}
+
+/* Small phone: the Palette button shows its icon only (accessible name is on the button). */
+@media (max-width: 360px) {
+  .mobile-palette-label {
+    display: none;
+  }
+}
+
+/* Landscape phone: single-row bars and a calculator that fits ~375px of height. */
+@media (max-height: 500px) and (orientation: landscape) {
+  .mobile-exam-topbar {
+    padding-top: calc(4px + var(--safe-top));
+    padding-bottom: 4px;
+  }
+
+  .exam-actionbar {
+    grid-template-areas: "prev mark clear calc save submit";
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    padding-top: 6px;
+  }
+
+  .calculator-popout {
+    inset: 0 0 auto auto;
+    align-items: flex-start;
+    height: var(--app-vh);
+  }
+
+  .calculator-popout .calculator-modal {
+    margin: 8px;
+  }
+
+  .calculator-popout .calculator-grid {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .calculator-popout .calculator-key-wide {
+    grid-column: span 5;
   }
 }
 
@@ -6066,15 +6223,14 @@ body[data-theme="dark"] optgroup {
 .exam-layout {
   display: flex !important;
   flex-direction: column !important;
-  height: 100vh !important;
-  max-height: 100vh !important;
+  height: var(--app-vh) !important;
+  max-height: var(--app-vh) !important;
   overflow: hidden !important;
   margin: 0 !important;
 }
 
 .exam-layout .exam-grid {
   display: grid !important;
-  grid-template-columns: minmax(0, 1fr) 280px !important;
   flex: 1 !important;
   min-height: 0 !important;
   overflow: hidden !important;
@@ -6103,18 +6259,20 @@ body[data-theme="dark"] optgroup {
   box-shadow: 0 -8px 20px rgba(0, 0, 0, 0.12) !important;
 }
 
-.exam-sidebar {
-  display: flex !important;
-  flex-direction: column !important;
-  height: 100% !important;
-  min-height: 0 !important;
-  overflow-y: auto !important;
-}
+/* Desktop exam (the complement of the phone / landscape-phone conditions): question card +
+   280px sidebar. */
+@media (min-width: 781px) and (min-height: 501px), (min-width: 781px) and (orientation: portrait) {
+  .exam-layout .exam-grid {
+    grid-template-columns: minmax(0, 1fr) 280px;
+  }
 
-.exam-palettecard .palette-grid {
-  max-height: 260px !important;
-  overflow-y: auto !important;
-  padding-right: 4px;
+  .exam-sidebar {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0;
+    overflow-y: auto;
+  }
 }
 
 /* 5. Image Delete Thumbnail Button UI */
@@ -8382,14 +8540,31 @@ body[data-theme="dark"] .dashboard-header.is-pinned {
   background: var(--gold-strong, #C8963E);
 }
 
+/* Touch devices: compact controls get a 44px hit area (desktop mouse users see no change). */
+@media (pointer: coarse) {
+  .button-compact,
+  .palette-button {
+    min-height: var(--tap);
+  }
+
+  .theme-nav-button {
+    min-width: var(--tap);
+    min-height: var(--tap);
+  }
+}
+
+/* Mobile navigation drawer (phone/tablet nav: max-width 860px). A modal dialog: JS in
+   app.js (openNavDrawer/closeNavDrawer) handles focus trap, inert background, scroll lock. */
 .mobile-drawer-toggle {
   display: none;
-  background: none;
+  min-width: var(--tap, 44px);
+  min-height: var(--tap, 44px);
+  padding: 0 10px;
   border: 1px solid rgba(20, 17, 15, 0.12);
-  border-radius: 4px;
-  padding: 4px 10px;
-  font-size: 1.2rem;
+  border-radius: 8px;
+  background: none;
   color: var(--ink);
+  font-size: 1.2rem;
   cursor: pointer;
 }
 
@@ -8399,58 +8574,123 @@ body[data-theme="dark"] .dashboard-header.is-pinned {
   top: 0;
   right: 0;
   bottom: 0;
-  width: 280px;
-  background: var(--surface);
-  border-left: 1px solid rgba(20, 17, 15, 0.12);
   z-index: 200;
-  padding: 24px;
+  width: min(300px, 86vw);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: calc(20px + var(--safe-top, 0px)) calc(22px + var(--safe-right, 0px)) calc(20px + var(--safe-bottom, 0px)) 22px;
+  border-left: 1px solid rgba(20, 17, 15, 0.12);
+  background: var(--surface);
   box-shadow: -4px 0 24px rgba(0, 0, 0, 0.15);
   transform: translateX(100%);
-  transition: transform 240ms cubic-bezier(0.16, 1, 0.3, 1);
+  /* Closed: off-screen and out of the accessibility tree once the slide finishes. */
+  visibility: hidden;
+  transition: transform 240ms cubic-bezier(0.16, 1, 0.3, 1), visibility 0s linear 240ms;
 }
 
 .mobile-nav-drawer.is-open {
+  visibility: visible;
   transform: translateX(0);
+  transition: transform 240ms cubic-bezier(0.16, 1, 0.3, 1), visibility 0s;
+}
+
+.mobile-drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 199;
+  background: rgba(14, 11, 10, 0.45);
+}
+
+body.is-scroll-locked {
+  position: fixed;
+  right: 0;
+  left: 0;
+  overflow: hidden;
 }
 
 .mobile-drawer-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding-bottom: 16px;
+  margin-bottom: 12px;
+  padding-bottom: 12px;
   border-bottom: 1px solid rgba(20, 17, 15, 0.08);
-  margin-bottom: 20px;
+}
+
+.mobile-drawer-close {
+  min-width: var(--tap, 44px);
+  min-height: var(--tap, 44px);
 }
 
 .mobile-drawer-nav {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 2px;
 }
 
 .mobile-drawer-link {
+  display: flex;
+  align-items: center;
+  min-height: var(--tap, 44px);
+  padding: 4px 0;
+  color: var(--ink-soft);
   font-family: var(--font-display);
   font-size: 1rem;
   font-weight: 700;
   letter-spacing: 0.04em;
-  color: var(--ink-soft);
   text-decoration: none;
-  padding: 8px 0;
 }
 
 .mobile-drawer-link.is-active {
   color: var(--gold-strong, #C8963E);
 }
 
+/* Account controls: shown in the drawer only where the header hides them (small phone). */
+.mobile-drawer-footer {
+  display: none;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid rgba(20, 17, 15, 0.08);
+}
+
+.mobile-drawer-footer .button {
+  min-height: var(--tap, 44px);
+}
+
 @media (max-width: 860px) {
   .primary-nav-links {
     display: none;
   }
+
   .mobile-drawer-toggle {
-    display: block;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
   }
+
   .mobile-nav-drawer {
     display: block;
+  }
+}
+
+/* Small phone: compact header (logo · menu); account controls move into the drawer. */
+@media (max-width: 480px) {
+  .dashboard-header .header-account-control {
+    display: none;
+  }
+
+  .mobile-drawer-footer {
+    display: flex;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mobile-nav-drawer,
+  .mobile-nav-drawer.is-open {
+    transition: none;
   }
 }
 
@@ -8739,6 +8979,58 @@ body[data-theme="dark"] .dashboard-header.is-pinned {
 
 .comparison-table tr.highlight-you {
   background: rgba(200, 150, 62, 0.06);
+}
+
+/* Phones: four to six columns don't fit, and a sideways scroller hides them without a cue.
+   Each row becomes a labelled card (labels from labelTableCells); the first cell is its title. */
+@media (max-width: 640px) {
+  .comparison-table.has-cell-labels thead {
+    display: none;
+  }
+
+  .comparison-table.has-cell-labels,
+  .comparison-table.has-cell-labels tbody {
+    display: block;
+  }
+
+  .comparison-table.has-cell-labels tr {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px 16px;
+    padding: 14px 12px;
+    border-bottom: 1px solid rgba(20, 17, 15, 0.08);
+  }
+
+  .comparison-table.has-cell-labels td {
+    display: block;
+    padding: 0;
+    border: 0;
+    min-width: 0;
+  }
+
+  .comparison-table.has-cell-labels td:first-child {
+    grid-column: 1 / -1;
+    font-weight: 700;
+  }
+
+  .comparison-table.has-cell-labels td[data-label]:not(:first-child)::before {
+    content: attr(data-label);
+    display: block;
+    margin-bottom: 2px;
+    font-family: var(--font-display);
+    font-size: 0.68rem;
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    color: var(--ink-soft);
+  }
+
+  .comparison-table.has-cell-labels td:has(> .button) {
+    grid-column: 1 / -1;
+  }
+
+  .comparison-table.has-cell-labels td:has(> .button)::before {
+    content: none;
+  }
 }
 
 /* Topic Bar */
@@ -10429,19 +10721,6 @@ body.exam-integrity-active textarea {
   color: #b42318;
 }
 
-/* Mobile exam fix: the unconditional "Floating Exam Layout" rules above use !important and
-   appear later in the file than the mobile media query, so they re-showed the desktop
-   sidebar and kept a fixed 280px column on phones. Re-assert the mobile layout last. */
-@media (max-width: 780px) {
-  .exam-layout .exam-grid {
-    grid-template-columns: minmax(0, 1fr) !important;
-  }
-
-  .exam-sidebar {
-    display: none !important;
-  }
-}
-
 .qotd-explanation {
   margin-top: 10px;
   padding: 10px 12px;
@@ -10608,6 +10887,36 @@ body.exam-integrity-active textarea {
   }
 }
 
+/* Phone: the Studio header actions and the 9-step tab bar become horizontal scroll strips
+   (a tab strip is intentionally scrollable) instead of ~600px of wrapped rows; app.js keeps
+   the active step in view. */
+@media (max-width: 640px) {
+  .studio-actions-wrapper {
+    flex-wrap: nowrap;
+    width: 100%;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .studio-action-group {
+    flex-wrap: nowrap;
+    flex-shrink: 0;
+  }
+
+  .studio-stepper {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scroll-snap-type: x proximity;
+    scrollbar-width: none;
+  }
+
+  .studio-step-btn {
+    flex: none;
+    min-height: var(--tap);
+    scroll-snap-align: start;
+  }
+}
+
 /* M8 responsive audit (320px): grid children default to min-width:auto, so the filter tabs'
    own overflow-x:auto never engaged; the Studio title row couldn't shrink. */
 .dashboard-grid > *,
@@ -10642,7 +10951,14 @@ body.exam-integrity-active textarea {
 }
 
 .dashboard-greeting-hero .hero-title {
-  overflow-wrap: anywhere;
+  /* break-word only splits a word that cannot fit; "anywhere" stranded the final "." */
+  overflow-wrap: break-word;
+}
+
+@media (max-width: 480px) {
+  .dashboard-greeting-hero .hero-title {
+    font-size: clamp(1.9rem, 9vw, 2.6rem);
+  }
 }
 
 @media (max-width: 480px) {
@@ -10680,6 +10996,46 @@ body.exam-integrity-active textarea {
    so rows (and their Edit/Copy/Del buttons) were clipped by the scroll card. */
 .question-bank {
   grid-template-columns: minmax(0, 1fr);
+}
+
+/* Account > Profile identity fields. */
+.account-identity-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+  font-size: 0.9rem;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 480px) {
+  .account-identity-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 14px;
+  }
+}
+
+/* Phones: the floating support chat button must not cover the end of the page (footer links,
+   last card), so whatever precedes it (normally the footer) leaves room for it.
+   (main.page-shell's own padding is pinned to 0 !important elsewhere.) */
+@media (max-width: 780px) {
+  .page-shell > :has(+ .support-chat-button) {
+    padding-bottom: calc(76px + var(--safe-bottom));
+  }
+}
+
+/* Question Bank Workspace and attached-questions lists: bounded scrollers on desktop; on
+   phones a 520-540px inner scroller inside a scrolling page traps the swipe, so these
+   lists flow with the page. */
+.question-bank.bank-flow-list {
+  max-height: var(--bank-max, 540px);
+}
+
+@media (max-width: 640px) {
+  .question-bank.bank-flow-list {
+    max-height: none;
+    overflow: visible;
+    padding-right: 0;
+  }
 }
 
 /* ===================== Exam sidebar: give the question palette the space =====================

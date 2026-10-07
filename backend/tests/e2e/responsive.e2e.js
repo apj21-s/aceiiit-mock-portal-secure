@@ -8,9 +8,23 @@ const puppeteer = require("puppeteer-core");
 const { BACKEND, CHROME_PATH, SHOTS_DIR, serverEnv, newHermeticPage } = require("./helpers");
 
 const ONLY = process.argv[2] ? process.argv[2].split(",") : null;
+// FULL=1 captures full-page screenshots of the student routes (for manual review).
+const FULL = !!process.env.FULL;
 const PORT = 4979;
 const BASE = `http://127.0.0.1:${PORT}`;
-const WIDTHS = [320, 360, 390, 430, 768, 1024, 1280, 1440];
+// Phones get mobile + touch emulation; landscape phones are their own viewports.
+const VIEWPORTS = [
+  ...[320, 360, 375, 390, 412, 430, 480].map((w) => ({ name: String(w), width: w, height: 800, isMobile: true, hasTouch: true })),
+  { name: "768", width: 768, height: 1024, isMobile: true, hasTouch: true },
+  { name: "1024", width: 1024, height: 900 },
+  { name: "1280", width: 1280, height: 900 },
+  { name: "1440", width: 1440, height: 900 },
+  { name: "landscape-667x375", width: 667, height: 375, isMobile: true, hasTouch: true },
+  { name: "landscape-812x375", width: 812, height: 375, isMobile: true, hasTouch: true },
+  { name: "landscape-844x390", width: 844, height: 390, isMobile: true, hasTouch: true },
+];
+const LANDSCAPE = (vp) => vp.name.startsWith("landscape");
+let crashed = false;
 const req = (m) => require(path.join(BACKEND, m));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const SHOTS = path.join(SHOTS_DIR, "responsive");
@@ -58,7 +72,7 @@ async function measure(page) {
     document.querySelectorAll("body *").forEach((el) => {
       const cs = getComputedStyle(el);
       if (/(auto|scroll)/.test(cs.overflowY) && el.scrollHeight > el.clientHeight + 4 && el.clientHeight > window.innerHeight * 0.6) {
-        nested.push(`${el.tagName.toLowerCase()}${el.id ? "#" + el.id : ""}.${String(el.className).split(/\s+/)[0]}`);
+        nested.push(`${el.tagName.toLowerCase()}${el.id ? "#" + el.id : ""}.${String(el.className).trim().split(/\s+/).slice(0, 3).join(".")} h=${el.clientHeight}/${window.innerHeight}`);
       }
     });
     return { vw, scrollW, offenders: offenders.sort((a, b) => b.right - a.right).slice(0, 5).map((o) => o.text), doubleScroll: pageScrolls && nested.length ? nested.slice(0, 4) : [] };
@@ -124,17 +138,22 @@ async function measure(page) {
       ["exams", "#/exams"],
       ["progress", "#/progress"],
       ["account", "#/account"],
+      ["resources", "#/resources"],
+      ["updates", "#/updates"],
       ["instructions", `#/instructions/${test._id}`],
       ["results", `#/results/${attemptId}`],
     ];
-    for (const width of WIDTHS) {
-      await page.setViewport({ width, height: width < 768 ? 800 : 900 });
+    for (const vp of VIEWPORTS) {
+      const width = vp.name;
+      await page.setViewport(vp);
       for (const [name, hash] of studentRoutes) {
         if (ONLY && !ONLY.includes(name)) continue;
+        // Landscape phones matter for the exam flow (instructions/exam); other pages are portrait.
+        if (LANDSCAPE(vp) && name !== "instructions") continue;
         await page.goto(`${BASE}/${hash}`, { waitUntil: "networkidle2" });
         await sleep(900);
         const m = await measure(page);
-        await page.screenshot({ path: path.join(SHOTS, `${name}-${width}.png`) });
+        await page.screenshot({ path: path.join(SHOTS, `${name}-${width}.png`), fullPage: FULL });
         if (m.offenders.length || m.doubleScroll.length) problems.push({ name, width, ...m });
       }
       // Exam screen
@@ -167,18 +186,24 @@ async function measure(page) {
       const actx = await browser.createBrowserContext();
       const apage = await newHermeticPage(actx);
       apage.on("dialog", (d) => d.accept());
-      for (const width of WIDTHS) {
-        await apage.setViewport({ width, height: 900 });
-        await apage.goto(`${BASE}/#/login`, { waitUntil: "networkidle2" });
-        await sleep(600);
-        let m = await measure(apage);
-        await apage.screenshot({ path: path.join(SHOTS, `login-${width}.png`) });
-        if (m.offenders.length || m.doubleScroll.length) problems.push({ name: "login", width, ...m });
+      for (const vp of VIEWPORTS) {
+        const width = vp.name;
+        await apage.setViewport(vp);
+        for (const [name, hash] of [["login", "#/login"], ["forgot-password", "#/forgot-password"]]) {
+          if (LANDSCAPE(vp) && name !== "login") continue;
+          await apage.goto(`${BASE}/${hash}`, { waitUntil: "networkidle2" });
+          await sleep(600);
+          const m = await measure(apage);
+          await apage.screenshot({ path: path.join(SHOTS, `${name}-${width}.png`) });
+          if (m.offenders.length || m.doubleScroll.length) problems.push({ name, width, ...m });
+        }
       }
       await apage.setViewport({ width: 1280, height: 900 });
       await login(apage, "admin@test.local");
-      for (const width of WIDTHS) {
-        await apage.setViewport({ width, height: 900 });
+      for (const vp of VIEWPORTS) {
+        if (LANDSCAPE(vp)) continue;
+        const width = vp.name;
+        await apage.setViewport(vp);
         await apage.goto(`${BASE}/#/admin`, { waitUntil: "networkidle2" });
         await sleep(1200);
         const m = await measure(apage);
@@ -187,6 +212,7 @@ async function measure(page) {
       }
     }
   } catch (err) {
+    crashed = true;
     console.error("audit error", err);
     console.error(serverLog.slice(-3000));
   } finally {
@@ -198,5 +224,6 @@ async function measure(page) {
   }
   console.log(JSON.stringify(problems, null, 1));
   console.log(`${problems.length} route/width combinations with issues`);
-  process.exit(problems.length ? 1 : 0);
+  if (crashed) console.log("the audit crashed before finishing (see 'audit error' above)");
+  process.exit(problems.length || crashed ? 1 : 0);
 })();

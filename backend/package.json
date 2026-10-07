@@ -16,7 +16,7 @@
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "test:e2e": "node tests/e2e/production.e2e.js && node tests/e2e/exam.e2e.js && node tests/e2e/admin.e2e.js && node tests/e2e/responsive.e2e.js",
+    "test:e2e": "node tests/e2e/production.e2e.js && node tests/e2e/exam.e2e.js && node tests/e2e/admin.e2e.js && node tests/e2e/responsive.e2e.js && node tests/e2e/mobile-flows.e2e.js",
     "load-test": "node scripts/load-test.js"
   },
   "dependencies": {

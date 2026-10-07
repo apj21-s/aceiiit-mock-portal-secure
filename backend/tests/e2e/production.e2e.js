@@ -83,6 +83,15 @@ function boot(env) {
   for (const p of ["/privacy.html", "/terms.html", "/vendor/katex/katex.min.js"]) {
     check((await fetch(BASE + p)).status === 200, `${p} served`);
   }
+  // A deploy must reach phones immediately: the shell, the SPA script and the stylesheet
+  // (including the versioned URLs index.html references) are never cached.
+  const shellHtml = await (await fetch(BASE + "/")).text();
+  const versioned = ["js/app.js", "css/portal.css"].map((f) => (shellHtml.match(new RegExp(`/?${f.replace(".", "\\.")}\\?v=[\\w.]+`)) || [`/${f}`])[0].replace(/^\/?/, "/"));
+  for (const p of ["/", "/dashboard", "/index.html", "/js/app.js", "/css/portal.css", ...versioned]) {
+    const r = await fetch(BASE + p);
+    const cc = r.headers.get("cache-control") || "";
+    check(r.status === 200 && /no-store/.test(cc), `${p} is served with Cache-Control: no-store`, `(${r.status}, ${cc || "no header"})`);
+  }
 
   // CSRF + login cookie flags
   const noCsrf = await fetch(BASE + "/api/auth/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: "smoke@test.local", password: "Passw0rd!long" }) });

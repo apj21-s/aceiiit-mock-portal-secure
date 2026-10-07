@@ -33,7 +33,17 @@ async function newHermeticPage(browserOrContext, { allowFonts = false } = {}) {
   const page = await browserOrContext.newPage();
   page.setDefaultNavigationTimeout(60000);
   await page.setRequestInterception(true);
-  page.on("request", (request) => {
+  // Tests may set page.interceptHook = async (request) => true to take over a request
+  // (delay, fail, respond); returning false falls through to the hermetic policy.
+  page.interceptHook = null;
+  page.on("request", async (request) => {
+    if (page.interceptHook) {
+      try {
+        if (await page.interceptHook(request)) return;
+      } catch (_err) {
+        // fall through
+      }
+    }
     const url = request.url();
     if (/^(data|blob|about):/.test(url)) return request.continue();
     let host = "";

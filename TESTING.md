@@ -9,8 +9,8 @@ loaded.
 | Command | What it runs |
 |---|---|
 | `npm run lint` | ESLint flat config (`eslint.config.js`): correctness rules; `no-console` in server code |
-| `npm test` | Jest, 24 suites / 237 tests (unit + HTTP integration via supertest) |
-| `npm run test:e2e` | Puppeteer: student exam flow, Admin Studio, responsive audit |
+| `npm test` | Jest, 26 suites / 239 tests (unit + HTTP integration via supertest) |
+| `npm run test:e2e` | Puppeteer: production boot, student exam flow, Admin Studio, responsive audit, mobile flows |
 | `npm run load-test` | Concurrent students through the full HTTP flow (20 → 150) |
 | `npm audit --omit=dev` | Production dependency advisories (CI fails on high/critical) |
 
@@ -22,7 +22,7 @@ The first test run downloads a MongoDB binary (needs network once).
 |---|---|---|
 | Characterization | `characterization/core`, `known-issues` | Baseline login → catalog → access → submit → result behaviour |
 | Security | `security/env`, `static`, `oauth`, `session`, `csrf`, `abuse`, `password`, `authz-validation-audit` | Boot env validation; only `public/` served; OAuth audience/issuer/expiry with a local JWKS; immediate session revocation; CSRF on POST/PUT/PATCH/DELETE (missing, mismatched, cookie-less); lockout and enumeration safety (including login timing); cross-user IDOR matrix; input validation and operator/regex injection; audit coverage and redaction |
-| Exam integrity | `integrity/exam-session`, `integrity-telemetry` | Server deadlines and clock skew; SUPR lock; one active session (index-enforced), resume/409/takeover; abandoned-session finalize; idempotent submit; scoring and negative marking; ranks on read and tie-breaks; practice; shuffling maps back; telemetry rate limits and server-owned counts; strict auto-submit only past the server threshold; no auto-invalidation |
+| Exam integrity | `integrity/exam-session`, `integrity-telemetry`, `repeated-submit` | Server deadlines and clock skew; SUPR lock; one active session (index-enforced), resume/409/takeover; abandoned-session finalize; idempotent submit; scoring and negative marking; ranks on read and tie-breaks; practice; shuffling maps back; telemetry rate limits and server-owned counts; strict auto-submit only past the server threshold; no auto-invalidation; concurrent submits with different idempotency keys finalize one Attempt and one interpretation job |
 | Payments | `payments/entitlements`, `data-integrity` | Free / no entitlement / right season / wrong season / revoked / expired / admin; internal provisioning (secret, schema, 422 unmapped, idempotent replay, revoke); catalog leaks no questions; live-question delete → 409; purge cascade |
 | Features | `features/qotd`, `email-reminders`, `email-providers`, `uploads-calendar` | QOTD (no answer leak, free/live only, once per day); HTML/ICS escaping, RFC 5545 UID/SEQUENCE/CANCEL; reminder isolation and backoff; Resend → Brevo → SMTP fallback with a controlled 503; uploads (4 MB, magic bytes, no base64 fallback); calendar token encryption and revoke |
 | AI | `ai/performance-intelligence` | Deterministic analytics; payload has no PII; schema and typed-number validation; timeout/retry/breaker behaviour; one job per attempt; cache hits make no calls; Attempt never modified; API key never logged; dependency scan for the AI rule |
@@ -37,11 +37,13 @@ Uses `puppeteer-core` with a locally installed Chrome (`CHROME_PATH`, default
 `/usr/bin/google-chrome`). Screenshots go to `node_modules/.cache/e2e-shots/`
 (`SHOTS=1` for the exam suite).
 
-- **`production.e2e.js`** (36 checks): the real `server.js` with `NODE_ENV=production`.
+- **`production.e2e.js`** (43 checks): the real `server.js` with `NODE_ENV=production`.
   - Boot is refused for weak config: a short JWT secret, an http base URL, dev auth
     enabled, or no email provider.
   - Security headers are present: CSP, HSTS and nosniff, with no `X-Powered-By`.
   - Nothing outside `public/` is served (`.env`, source and `node_modules` all return 404).
+  - `index.html`, SPA routes, `js/app.js` and `css/portal.css` (plain and `?v=` URLs) are
+    sent with `Cache-Control: no-store`, so a deploy reaches phones immediately.
   - CSRF is required, and the session cookie is `HttpOnly; Secure; SameSite=Lax`.
   - Mock Google logins, bearer tokens, and internal API calls without the secret are rejected.
   - SIGTERM exits gracefully.
@@ -55,10 +57,40 @@ Uses `puppeteer-core` with a locally installed Chrome (`CHROME_PATH`, default
 - **`admin.e2e.js`** (19 checks): all nine Studio tabs render without errors; question bank
   pagination, server search with focus kept, drawer excludes attached questions and
   attaches; integrity settings; Add Payment grants an entitlement.
-- **`responsive.e2e.js`**: dashboard, exams, progress, account, instructions, exam,
-  results, login and Admin Studio at 320, 360, 390, 430, 768, 1024, 1280 and 1440 px.
-  It fails on horizontal page overflow (it reports the elements causing it) or on
-  nested scrollers that double-scroll. The current result is 0 issues.
+- **`responsive.e2e.js`**: login, forgot-password, dashboard, exams, progress, resources,
+  updates, account, instructions, exam, results and Admin Studio at 320, 360, 375, 390, 412,
+  430, 480, 768 (phones and tablet with mobile + touch emulation), 1024, 1280 and 1440 px, plus
+  landscape phones 667×375, 812×375 and 844×390 (login, instructions, exam). It fails on
+  horizontal page overflow (it reports the elements causing it) or on nested scrollers that
+  double-scroll. `node tests/e2e/responsive.e2e.js progress,account` limits the routes;
+  `FULL=1` takes full-page screenshots for manual review. The current result is 0 issues.
+- **`mobile-flows.e2e.js`** (~170 checks, 390×844 touch emulation unless stated; run one flow
+  with `node tests/e2e/mobile-flows.e2e.js <flow>[,<flow>]`, `SHOTS=1` for screenshots):
+  - `drawer`: ☰ opens a modal drawer (aria-expanded, inert background, scroll lock, focus
+    trap); ESC, outside tap, link tap and route change close it; focus and scroll restored.
+  - `exam-layout`: 320–768, three landscape phones, 1366×657 and 1440. Timer, all eight exam
+    capabilities reachable, last option clears the action bar, ≥44 px targets, no overflow;
+    desktop keeps the sidebar layout.
+  - `exam-full`: login → drawer → instructions → answer, clear, calculator, mark, palette
+    jump, section transition, submit → results.
+  - `back`: Back closes palette → calculator → … in order, no duplicate history entries,
+    no ghost overlays after reload, leaving an active exam asks first.
+  - `persistence`: reload, rotation and background keep answer, mark, current question and
+    the exact server deadline; in-app overlays record no counted integrity events.
+  - `network`: offline, Slow 3G, 5xx, a hung save (15 s timeout), 401, and stale or
+    out-of-order save responses (the newer answer and mark always win).
+  - `submit`: rapid repeated taps finalize exactly one attempt.
+  - `no-fullscreen-api`: a browser without the Fullscreen API (iPhone Safari) is not
+    blocked by the full-screen prompt.
+  - `auth-forms`: Create account, Forgot password (via the link and a direct URL) and the
+    feedback banner actually become visible.
+  - `admin`: Admin Studio at 390 px: bank, editor with LaTeX preview and save, tables
+    as labelled cards, no overflow.
+- **`ui-shots.e2e.js`**: screenshots (not assertions) of dashboard, exam, results and Admin
+  Studio at 1280, 1366, 1440, 1024 and 390 px, with animations off and fonts loaded.
+  `UI_PUBLIC=<dir>` serves another frontend copy against the same server and data, for a
+  before/after comparison:
+  `git archive HEAD backend/public | tar -x -C /tmp/head && UI_PUBLIC=/tmp/head/backend/public node tests/e2e/ui-shots.e2e.js /tmp/before`.
 
 ## Load test (`backend/scripts/load-test.js`)
 

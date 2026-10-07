@@ -55,6 +55,13 @@
     return !!(document.fullscreenElement || document.webkitFullscreenElement);
   }
 
+  /** iPhone Safari (and some webviews) have no element Fullscreen API. */
+  function fullscreenSupported() {
+    var el = document.documentElement;
+    var enabled = document.fullscreenEnabled || document.webkitFullscreenEnabled;
+    return !!(enabled && (el.requestFullscreen || el.webkitRequestFullscreen));
+  }
+
   function requestFullscreen() {
     var el = document.documentElement;
     var request = el.requestFullscreen || el.webkitRequestFullscreen;
@@ -84,7 +91,11 @@
     var button = document.getElementById("integrity-fullscreen-return");
     if (button) {
       button.addEventListener("click", function () {
-        requestFullscreen();
+        // A real tap was refused (browser policy, webview): don't trap the student behind the
+        // prompt. Leaving full screen was already recorded; thresholds are unchanged.
+        requestFullscreen().then(function (ok) {
+          if (!ok) hideFullscreenPrompt();
+        });
       });
     }
   }
@@ -303,7 +314,9 @@
       renderWatermark(opts.watermark);
       bind(active);
       active.timer = window.setInterval(flush, FLUSH_INTERVAL_MS);
-      if (active.fullscreenWanted && !isFullscreen()) {
+      // Without a Fullscreen API (iPhone Safari) there is nothing to request: never show a
+      // prompt the student could not dismiss.
+      if (active.fullscreenWanted && !isFullscreen() && fullscreenSupported()) {
         // Outside a user gesture this may be refused; the prompt offers a one-click return.
         requestFullscreen().then(function (ok) {
           if (!ok && active) showFullscreenPrompt();

@@ -854,6 +854,8 @@
   var EXAM_TOKEN_PREFIX = "aceiiit.exam.";
   var AUTOSAVE_DEBOUNCE_MS = 3000;
   var AUTOSAVE_RETRY_MS = [3000, 6000, 15000, 30000];
+  // A hung request must not block later saves (they are serialized behind it).
+  var AUTOSAVE_TIMEOUT_MS = 15000;
   var serverClock = { serverMs: 0, perfMs: 0 };
   var autosaveState = {};
 
@@ -1065,7 +1067,9 @@
   // ---------------------------------------------------------------- autosave
   function getAutosave(sessionId) {
     if (!autosaveState[sessionId]) {
-      autosaveState[sessionId] = { dirtyAnswers: {}, dirtyMeta: false, timer: null, inFlight: null, failures: 0, status: "saved", closedAttemptId: null, bindingLost: false };
+      // version: bumped on every local change that feeds the payload (patchAttempt). A save
+      // only clears what it actually sent, so changes made while it was in flight stay dirty.
+      autosaveState[sessionId] = { dirtyAnswers: {}, dirtyMeta: false, version: 0, ackedVersion: 0, backoffUntil: 0, timer: null, inFlight: null, failures: 0, status: "saved", closedAttemptId: null, bindingLost: false };
     }
     return autosaveState[sessionId];
   }
@@ -1079,17 +1083,23 @@
   function scheduleAutosave(sessionId, delayMs) {
     var entry = getAutosave(sessionId);
     if (entry.timer) window.clearTimeout(entry.timer);
+    var delay = typeof delayMs === "number" ? delayMs : AUTOSAVE_DEBOUNCE_MS;
+    // After a failure, routine saves wait out the backoff instead of shortening it.
+    delay = Math.max(delay, entry.backoffUntil - Date.now());
     entry.timer = window.setTimeout(function () {
       entry.timer = null;
-      flushAutosave(sessionId).catch(function () {});
-    }, typeof delayMs === "number" ? delayMs : AUTOSAVE_DEBOUNCE_MS);
+      flushAutosave(sessionId, { scheduled: true }).catch(function () {});
+    }, Math.max(0, delay));
+  }
+
+  function normalizeAnswerValue(value) {
+    return value === undefined || value === null || value === "" ? null : Number(value);
   }
 
   function buildProgressPayload(attempt, entry) {
     var answers = {};
     Object.keys(entry.dirtyAnswers).forEach(function (questionId) {
-      var value = attempt.answers ? attempt.answers[questionId] : undefined;
-      answers[questionId] = value === undefined || value === null || value === "" ? null : Number(value);
+      answers[questionId] = normalizeAnswerValue(attempt.answers ? attempt.answers[questionId] : undefined);
     });
     var timeSpent = {};
     Object.keys(attempt.timeSpent || {}).forEach(function (questionId) {
@@ -1111,33 +1121,55 @@
     entry.closedAttemptId = attemptId || entry.closedAttemptId || "pending";
   }
 
-  async function flushAutosave(sessionId) {
+  /**
+   * options.scheduled: a routine (timer) save; it respects the failure backoff. Explicit
+   * flushes (submit, section advance, tab hidden) always send.
+   */
+  async function flushAutosave(sessionId, options) {
     var entry = getAutosave(sessionId);
     if (entry.inFlight) {
       await entry.inFlight.catch(function () {});
+    }
+    if (options && options.scheduled && entry.backoffUntil > Date.now()) {
+      scheduleAutosave(sessionId);
+      return null;
     }
     var attempt = (state.db.attempts || []).find(function (a) { return a.id === sessionId; }) || null;
     if (!attempt || attempt.status !== "in_progress" || !attempt.sessionId) return null;
     if (!Object.keys(entry.dirtyAnswers).length && !entry.dirtyMeta) return null;
 
-    var sentAnswers = Object.assign({}, entry.dirtyAnswers);
     var payload = buildProgressPayload(attempt, entry);
+    // Snapshot exactly what this request carries.
+    var sentAnswers = Object.assign({}, payload.answers);
+    var sentVersion = entry.version;
     var seq = Number(attempt.lastSeq || 0) + 1;
     payload.seq = seq;
     entry.status = "saving";
     entry.inFlight = (async function () {
+      var controller = typeof AbortController === "function" ? new AbortController() : null;
+      var timeoutId = controller ? window.setTimeout(function () { controller.abort(); }, AUTOSAVE_TIMEOUT_MS) : null;
       try {
         var data = await examRequest(sessionId, "/api/attempt/session/" + encodeURIComponent(sessionId) + "/answers", {
           method: "PUT",
           body: JSON.stringify(payload),
+          signal: controller ? controller.signal : undefined,
         });
+        if (sentVersion < entry.ackedVersion) return data; // an older response; newer state already acknowledged
+        entry.ackedVersion = sentVersion;
+        var latest = (state.db.attempts || []).find(function (a) { return a.id === sessionId; }) || attempt;
         Object.keys(sentAnswers).forEach(function (questionId) {
-          delete entry.dirtyAnswers[questionId];
+          // Clear only if the answer is still what we sent; a newer change stays dirty.
+          if (normalizeAnswerValue(latest.answers ? latest.answers[questionId] : undefined) === sentAnswers[questionId]) {
+            delete entry.dirtyAnswers[questionId];
+          }
         });
-        entry.dirtyMeta = Object.keys(entry.dirtyAnswers).length > 0 ? entry.dirtyMeta : false;
+        if (entry.version === sentVersion) entry.dirtyMeta = false;
+        var stillDirty = Object.keys(entry.dirtyAnswers).length > 0 || entry.dirtyMeta;
         entry.failures = 0;
-        entry.status = "saved";
+        entry.backoffUntil = 0;
+        entry.status = stillDirty ? "pending" : "saved";
         entry.bindingLost = false;
+        if (stillDirty) scheduleAutosave(sessionId, 0);
         var current = (state.db.attempts || []).find(function (a) { return a.id === sessionId; }) || null;
         if (current) {
           current.lastSeq = Math.max(seq, Number(data && data.session && data.session.lastSeq || 0));
@@ -1166,15 +1198,19 @@
           return null;
         }
         if (error && error.status === 401) {
-          entry.status = "offline";
+          entry.status = "signed-out"; // the session expired: retrying can't help until login
           return null;
         }
         entry.failures += 1;
-        entry.status = "offline";
+        var networkDown = (typeof navigator !== "undefined" && navigator.onLine === false) || !(error && error.status) && !(error && error.name === "AbortError");
+        // offline: no network; retrying: the server answered with an error or timed out.
+        entry.status = networkDown ? "offline" : "retrying";
         var delay = AUTOSAVE_RETRY_MS[Math.min(entry.failures - 1, AUTOSAVE_RETRY_MS.length - 1)];
+        entry.backoffUntil = Date.now() + delay;
         scheduleAutosave(sessionId, delay);
         throw error;
       } finally {
+        if (timeoutId) window.clearTimeout(timeoutId);
         entry.inFlight = null;
       }
     })();
@@ -1204,7 +1240,10 @@
     if (!entry || !attempt || attempt.status !== "in_progress") return;
     if (!Object.keys(entry.dirtyAnswers).length && !entry.dirtyMeta) return;
     var payload = buildProgressPayload(attempt, entry);
-    payload.seq = Number(attempt.lastSeq || 0) + 1;
+    // If a save is in flight it holds seq lastSeq+1 with older values. This batch carries every
+    // unacknowledged change (dirty keys stay dirty until acknowledged), so it takes lastSeq+2
+    // and supersedes it whichever arrives first (the server applies only seq > lastSeq).
+    payload.seq = Number(attempt.lastSeq || 0) + (entry.inFlight ? 2 : 1);
     try {
       fetch("/api/attempt/session/" + encodeURIComponent(sessionId) + "/answers", {
         method: "PUT",
@@ -1249,6 +1288,7 @@
         entry.dirtyMeta = true;
       }
       if (Object.keys(entry.dirtyAnswers).length || entry.dirtyMeta) {
+        entry.version += 1;
         if (entry.status === "saved") entry.status = "pending";
         scheduleAutosave(draft.sessionId);
       }
