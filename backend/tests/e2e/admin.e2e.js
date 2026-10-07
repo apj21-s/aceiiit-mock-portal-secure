@@ -34,7 +34,7 @@ const log = (...a) => console.log("[admin-e2e]", ...a);
   const qs = await Question.insertMany([{ section: "SUPR", topic: "t", prompt: "Q1 $x^2$", options: ["a", "b"], correctOption: 0 }]);
   // An unattached bank larger than one page (50) for the pagination checks.
   await Question.insertMany(Array.from({ length: 64 }, (_, i) => ({ section: i % 2 ? "REAP" : "SUPR", topic: i < 3 ? "needle" : "bank", prompt: `Bank Q${i}`, options: ["a", "b"], correctOption: 0, createdAt: new Date(Date.UTC(2026, 0, 2, 0, i)) })));
-  const test = await Test.create({ title: "Admin E2E Test", isFree: false, status: "live", seasonId: season._id, questionIds: qs.map((q) => q._id) });
+  await Test.create({ title: "Admin E2E Test", isFree: false, status: "live", seasonId: season._id, questionIds: qs.map((q) => q._id) });
   await mongoose.disconnect();
 
   const server = spawn(process.execPath, ["server.js"], { cwd: BACKEND, env: serverEnv({ MONGODB_URI: uri, PORT: String(PORT), ADMIN_EMAILS: "admin@test.local" }) });

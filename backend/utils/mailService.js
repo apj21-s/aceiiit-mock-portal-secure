@@ -44,7 +44,7 @@ function buildEmailPayload(input) {
 
 function parseFromAddress(from) {
   const raw = String(from || "").trim();
-  const match = raw.match(/^(.*)<([^>]+)>$/);
+  const match = raw.match(/^([\s\S]*)<([^>]+)>$/);
   if (!match) return { email: raw };
   return { name: String(match[1] || "").replace(/"/g, "").trim(), email: String(match[2] || "").trim() };
 }
@@ -254,8 +254,13 @@ function buildReminderIcs(reminder, testLink, method = "REQUEST", status = "CONF
   if (reminder.notes) description += `\n\nNotes: ${reminder.notes}`;
   const sender = parseFromAddress(reminderFromEmail());
   const organizer = sender.email || "no-reply@aceiiit.in";
-  // RFC 5545 parameter value: quoted, without quotes or control characters.
-  const organizerName = String(sender.name || "ACEIIIT Mock Portal").replace(/["\r\n\x00-\x1f]/g, "").trim() || "ACEIIIT Mock Portal";
+  // RFC 5545 parameter value: quoted, so drop double quotes and control characters
+  // (code points below 0x20, which include CR/LF, plus DEL).
+  const organizerName =
+    Array.from(String(sender.name || ""))
+      .filter((ch) => ch !== '"' && ch.charCodeAt(0) >= 0x20 && ch.charCodeAt(0) !== 0x7f)
+      .join("")
+      .trim() || "ACEIIIT Mock Portal";
   const lines = [
     "BEGIN:VCALENDAR",
     "VERSION:2.0",
