@@ -3,67 +3,64 @@ const PaymentRecord = require("../models/PaymentRecord");
 const User = require("../models/User");
 const { getActiveSeason } = require("./seasonService");
 const { normalizeEmail } = require("../utils/normalize");
-const { paidSheetService } = require("./paidSheetService");
 
+/**
+ * The single access rule for paid content:
+ *   free test  OR  admin  OR  an active, unexpired Entitlement for the test's season
+ *   (tests without a season belong to the active season).
+ * Read-only: no grants happen here. `User.isPaid` is a display cache and never decides access.
+ */
 async function canAccessTest(reqUser, test) {
-  if (!test) {
-    if (!reqUser) return false;
-    if (reqUser.role === "admin") return true;
-    if (reqUser.isPaid) return true;
-    const normEmail = normalizeEmail(reqUser.email);
-    if (!normEmail) return false;
-    const activeEntitlement = await Entitlement.findOne({
-      normalizedEmail: normEmail,
-      status: "active",
-    }).lean();
-    return Boolean(activeEntitlement);
-  }
-
+  if (!test || !reqUser) return false;
   if (test.isFree) return true;
-  if (!reqUser) return false;
   if (reqUser.role === "admin") return true;
 
   const userEmail = normalizeEmail(reqUser.email);
   if (!userEmail) return false;
 
-  // Determine seasonId for the test
   let targetSeasonId = test.seasonId;
   if (!targetSeasonId) {
     const activeSeason = await getActiveSeason();
     targetSeasonId = activeSeason ? activeSeason._id : null;
   }
+  if (!targetSeasonId) return false;
 
-  if (targetSeasonId) {
-    const entitlementDoc = await Entitlement.findOne({
-      seasonId: targetSeasonId,
-      normalizedEmail: userEmail,
-    }).lean();
+  const now = new Date();
+  const entitlement = await Entitlement.findOne({
+    seasonId: targetSeasonId,
+    normalizedEmail: userEmail,
+    status: "active",
+    $or: [{ expiresAt: null }, { expiresAt: { $gt: now } }],
+  })
+    .select("_id")
+    .lean();
+  return Boolean(entitlement);
+}
 
-    if (entitlementDoc) {
-      return entitlementDoc.status === "active";
-    }
+/**
+ * Season ids the user holds an active, unexpired entitlement for. Used to evaluate many
+ * tests at once (catalog, practice pools) with the same rule as canAccessTest.
+ */
+async function getEntitledSeasonIds(reqUser) {
+  const email = normalizeEmail(reqUser && reqUser.email);
+  if (!email) return new Set();
+  const now = new Date();
+  const rows = await Entitlement.find({
+    normalizedEmail: email,
+    status: "active",
+    $or: [{ expiresAt: null }, { expiresAt: { $gt: now } }],
+  })
+    .select("seasonId")
+    .lean();
+  return new Set(rows.map((row) => String(row.seasonId)));
+}
 
-    // Check if a verified payment record exists for this season
-    const verifiedPayment = await PaymentRecord.findOne({
-      seasonId: targetSeasonId,
-      normalizedEmail: userEmail,
-      status: "verified",
-    }).lean();
-
-    if (verifiedPayment) {
-      await grantEntitlement({
-        email: userEmail,
-        userId: reqUser._id || reqUser.id,
-        seasonId: targetSeasonId,
-        tier: "paid",
-        source: "payment",
-        paymentId: verifiedPayment._id,
-      });
-      return true;
-    }
-  }
-
-  return false;
+function isTestAccessible(test, { isAdmin, entitledSeasonIds, activeSeasonId }) {
+  if (!test) return false;
+  if (test.isFree) return true;
+  if (isAdmin) return true;
+  const seasonId = test.seasonId ? String(test.seasonId) : activeSeasonId ? String(activeSeasonId) : null;
+  return Boolean(seasonId && entitledSeasonIds.has(seasonId));
 }
 
 async function grantEntitlement({ email, userId = null, seasonId, tier = "paid", source = "payment", paymentId = null }) {
@@ -139,31 +136,55 @@ async function revokeEntitlement({ email, seasonId }) {
   return entitlement;
 }
 
+/**
+ * On login: attach the user to entitlements already granted for their email (e.g. paid
+ * before the account existed) and create entitlements for verified payments that don't
+ * have one yet. Never reactivates an entitlement an admin or the commerce system revoked.
+ */
 async function linkPendingPaymentToUser(user) {
   if (!user || !user.email) return;
   const normEmail = normalizeEmail(user.email);
   if (!normEmail) return;
+  const userId = user._id || user.id;
 
-  const verifiedPayments = await PaymentRecord.find({
-    normalizedEmail: normEmail,
-    status: "verified",
-  }).lean();
+  await Entitlement.updateMany({ normalizedEmail: normEmail, userId: null }, { $set: { userId } });
 
+  const verifiedPayments = await PaymentRecord.find({ normalizedEmail: normEmail, status: "verified" }).lean();
   for (const payment of verifiedPayments) {
+    const existing = await Entitlement.findOne({ seasonId: payment.seasonId, normalizedEmail: normEmail }).select("_id").lean();
+    if (existing) continue;
     await grantEntitlement({
       email: normEmail,
-      userId: user._id || user.id,
+      userId,
       seasonId: payment.seasonId,
       tier: "paid",
-      source: payment.source || "payment",
+      source: "payment",
       paymentId: payment._id,
     });
   }
 }
 
+/** True when the user holds any active, unexpired entitlement (display cache for User.isPaid). */
+async function hasAnyActiveEntitlement(email) {
+  const normEmail = normalizeEmail(email);
+  if (!normEmail) return false;
+  const now = new Date();
+  const found = await Entitlement.findOne({
+    normalizedEmail: normEmail,
+    status: "active",
+    $or: [{ expiresAt: null }, { expiresAt: { $gt: now } }],
+  })
+    .select("_id")
+    .lean();
+  return Boolean(found);
+}
+
 module.exports = {
   canAccessTest,
+  getEntitledSeasonIds,
+  isTestAccessible,
   grantEntitlement,
   revokeEntitlement,
   linkPendingPaymentToUser,
+  hasAnyActiveEntitlement,
 };

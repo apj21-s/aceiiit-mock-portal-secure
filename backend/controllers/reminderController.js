@@ -4,6 +4,8 @@ const { sendCalendarInviteEmail } = require("../utils/mailService");
 const { syncReminderToCalendar } = require("../services/googleCalendarService");
 const Reminder = require("../models/Reminder");
 const Test = require("../models/Test");
+const { testLinkFor } = require("../services/reminderService");
+const { logger, errorSummary } = require("../utils/logger");
 const DEFAULT_REMINDER_MINUTES = 5 * 60;
 const ALLOWED_REMINDER_MINUTES = [10, 30, 60, 24 * 60];
 const ALLOWED_SUBJECTS = ["Physics", "Maths", "Logical"];
@@ -16,6 +18,23 @@ const reminderSchema = z.object({
   subjectFocus: z.array(z.string().trim()).max(3).optional(),
   notes: z.string().trim().max(500).optional(),
 });
+
+function resetDelivery(reminder) {
+  reminder.deliveryState = "pending";
+  reminder.attempts = 0;
+  reminder.nextAttemptAt = null;
+  reminder.sentAt = null;
+  reminder.failedAt = null;
+  reminder.failureReason = "";
+}
+
+async function recordInviteResult(reminderId, result) {
+  const ok = Boolean(result && result.success);
+  await Reminder.updateOne(
+    { _id: reminderId },
+    { $set: ok ? { inviteSentAt: new Date(), inviteError: "" } : { inviteError: String((result && result.error) || "Invite email failed").slice(0, 300) } }
+  );
+}
 
 function normalizeReminderMinutes(value) {
   return ALLOWED_REMINDER_MINUTES.includes(Number(value))
@@ -42,7 +61,9 @@ function toReminderResponse(item) {
     subjectFocus: Array.isArray(item.subjectFocus) ? item.subjectFocus : [],
     notes: item.notes || "",
     sentAt: item.sentAt,
+    deliveryState: item.deliveryState || (item.sentAt ? "sent" : "pending"),
     failureReason: item.failureReason || "",
+    inviteSentAt: item.inviteSentAt || null,
   };
 }
 
@@ -101,11 +122,12 @@ async function createReminder(req, res, next) {
     });
 
     // Automatically send the calendar invite asynchronously
-    const origin = process.env.CLIENT_ORIGIN || "http://localhost:10000";
-    const testLink = test._id ? `${origin}/#instructions/${test._id}` : `${origin}/#dashboard`;
-    sendCalendarInviteEmail(reminder, testLink).catch((err) => {
-      console.error("Email calendar invite dispatch failed:", err);
-    });
+    const testLink = testLinkFor(reminder);
+    sendCalendarInviteEmail(reminder, testLink)
+      .then((result) => recordInviteResult(reminder._id, result))
+      .catch((err) => {
+        logger.error({ err: errorSummary(err) }, "email calendar invite dispatch failed");
+      });
     syncReminderToCalendar(reminder, "CREATE").catch(() => {});
   } catch (err) {
     next(err);
@@ -145,26 +167,18 @@ async function updateReminder(req, res, next) {
     reminder.reminderMinutes = reminderMinutes;
     reminder.subjectFocus = subjectFocus;
     reminder.notes = notes;
-    reminder.sentAt = null;
-    reminder.failureReason = "";
+    resetDelivery(reminder);
     reminder.sequence = (reminder.sequence || 0) + 1;
     await reminder.save();
     res.json({
       reminder: toReminderResponse(reminder),
     });
 
-    const origin = process.env.CLIENT_ORIGIN || "http://localhost:10000";
-    const testLink = test._id ? `${origin}/#instructions/${test._id}` : `${origin}/#dashboard`;
+    const testLink = testLinkFor(reminder);
     sendCalendarInviteEmail(reminder, testLink, "REQUEST", "CONFIRMED").then(async (result) => {
-      if (result.success) {
-        reminder.sentAt = new Date();
-        reminder.failureReason = "";
-      } else {
-        reminder.failureReason = result.error || "Email delivery failed";
-      }
-      await reminder.save();
+      await recordInviteResult(reminder._id, result);
     }).catch((err) => {
-      console.error("Email calendar invite dispatch failed:", err);
+      logger.error({ err: errorSummary(err) }, "email calendar invite dispatch failed");
     });
     syncReminderToCalendar(reminder, "UPDATE").catch(() => {});
   } catch (err) {
@@ -183,22 +197,16 @@ async function deleteReminder(req, res, next) {
       return res.status(404).json({ error: "Reminder not found." });
     }
     reminder.cancelledAt = new Date();
+    reminder.deliveryState = "cancelled";
     reminder.sequence = (reminder.sequence || 0) + 1;
     await reminder.save();
     res.json({ success: true });
 
-    const origin = process.env.CLIENT_ORIGIN || "http://localhost:10000";
-    const testLink = reminder.testId ? `${origin}/#instructions/${reminder.testId}` : `${origin}/#dashboard`;
+    const testLink = testLinkFor(reminder);
     sendCalendarInviteEmail(reminder, testLink, "CANCEL", "CANCELLED").then(async (result) => {
-      if (result.success) {
-        reminder.sentAt = new Date();
-        reminder.failureReason = "";
-      } else {
-        reminder.failureReason = result.error || "Email delivery failed";
-      }
-      await reminder.save();
+      await recordInviteResult(reminder._id, result);
     }).catch((err) => {
-      console.error("Email calendar invite dispatch failed:", err);
+      logger.error({ err: errorSummary(err) }, "email calendar invite dispatch failed");
     });
     syncReminderToCalendar(reminder, "DELETE").catch(() => {});
   } catch (err) {
@@ -217,25 +225,18 @@ async function resendReminder(req, res, next) {
       return res.status(404).json({ error: "Reminder not found." });
     }
     
-    // Do not increment sequence on resend
-    reminder.sentAt = null;
-    reminder.failureReason = "";
+    // Resend only re-sends the calendar invite; it doesn't change the event (same SEQUENCE)
+    // and doesn't touch the scheduled reminder's delivery state.
+    reminder.inviteError = "";
     await reminder.save();
     
     res.json({ success: true, reminder: toReminderResponse(reminder) });
 
-    const origin = process.env.CLIENT_ORIGIN || "http://localhost:10000";
-    const testLink = reminder.testId ? `${origin}/#instructions/${reminder.testId}` : `${origin}/#dashboard`;
+    const testLink = testLinkFor(reminder);
     sendCalendarInviteEmail(reminder, testLink, "REQUEST", "CONFIRMED").then(async (result) => {
-      if (result.success) {
-        reminder.sentAt = new Date();
-        reminder.failureReason = "";
-      } else {
-        reminder.failureReason = result.error || "Email delivery failed";
-      }
-      await reminder.save();
+      await recordInviteResult(reminder._id, result);
     }).catch((err) => {
-      console.error("Email calendar invite dispatch failed:", err);
+      logger.error({ err: errorSummary(err) }, "email calendar invite dispatch failed");
     });
     syncReminderToCalendar(reminder, "UPDATE").catch(() => {});
   } catch (err) {

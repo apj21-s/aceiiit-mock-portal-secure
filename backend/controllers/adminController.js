@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { isValidObjectId } = mongoose;
 const { z } = require("zod");
 
 const Attempt = require("../models/Attempt");
@@ -11,18 +12,20 @@ const PaymentRecord = require("../models/PaymentRecord");
 const AuditLog = require("../models/AuditLog");
 const Season = require("../models/Season");
 const { invalidateAllTestCaches, invalidateCatalogCache, invalidateTestRuntimeCache } = require("../services/testDataService");
-const { uploadBufferToCloudinary } = require("../utils/uploadToCloudinary");
-const { paidSheetService } = require("../services/paidSheetService");
+const { extractUploadedFiles, uploadImages } = require("../services/imageUploadService");
 const { sendPaymentConfirmationEmail } = require("../utils/mailService");
 const { logAuditEvent } = require("../services/auditLogService");
+const { revokeAllSessions } = require("../services/sessionService");
+const { getRanksForAttempts, invalidateRankCache } = require("../services/rankService");
+const { escapeRegex } = require("../utils/escapeRegex");
+const IntegrityEvent = require("../models/IntegrityEvent");
 const { getActiveSeason } = require("../services/seasonService");
-const { syncGoogleSheetPayments } = require("../services/paymentSyncService");
+const { logger, errorSummary } = require("../utils/logger");
 
+// Student exam attempts only: excludes admin test runs and private practice papers.
 const NON_ADMIN_ATTEMPT_FILTER = {
-  $or: [
-    { userRole: { $exists: false } },
-    { userRole: { $ne: "admin" } },
-  ],
+  userRole: { $ne: "admin" },
+  isPractice: { $ne: true },
 };
 
 const questionInputSchema = z.object({
@@ -142,51 +145,10 @@ function getSectionDefaultMarking(section) {
     : { marks: 1, negativeMarks: -0.25 };
 }
 
-function extractUploadedQuestionFiles(req) {
-  const files = [];
-  if (req && req.file && req.file.buffer) {
-    files.push(req.file);
-  }
-  if (req && req.files) {
-    if (Array.isArray(req.files)) {
-      req.files.forEach((file) => {
-        if (file && file.buffer) files.push(file);
-      });
-    } else {
-      ["image", "images"].forEach((fieldName) => {
-        const fieldFiles = req.files[fieldName];
-        if (Array.isArray(fieldFiles)) {
-          fieldFiles.forEach((file) => {
-            if (file && file.buffer) files.push(file);
-          });
-        }
-      });
-    }
-  }
-  return files;
-}
-
 async function uploadQuestionImages(req) {
-  const files = extractUploadedQuestionFiles(req);
+  const files = extractUploadedFiles(req);
   if (!files.length) return [];
-
-  const uploadedUrls = [];
-  for (const file of files) {
-    try {
-      const uploaded = await uploadBufferToCloudinary(file.buffer, {
-        folder: "ugee-questions",
-        resource_type: "image",
-      });
-      if (uploaded && uploaded.secure_url) {
-        uploadedUrls.push(uploaded.secure_url);
-      }
-    } catch (_cloudErr) {
-      const mime = file.mimetype || "image/jpeg";
-      const base64 = file.buffer.toString("base64");
-      uploadedUrls.push(`data:${mime};base64,${base64}`);
-    }
-  }
-  return uploadedUrls;
+  return uploadImages(files);
 }
 
 async function recalculateTestsMetadata(testIds) {
@@ -226,19 +188,79 @@ async function recalculateTestsMetadata(testIds) {
   );
 }
 
+const ADMIN_QUESTION_FIELDS = "section topic difficulty prompt passage imageUrls options marks negativeMarks correctOption explanation createdAt updatedAt";
+
+function serializeAdminQuestion(q) {
+  return {
+    id: String(q._id),
+    section: q.section,
+    topic: q.topic,
+    difficulty: q.difficulty,
+    prompt: q.prompt,
+    passage: q.passage || "",
+    imageUrls: Array.isArray(q.imageUrls) ? q.imageUrls : [],
+    imageUrl: (Array.isArray(q.imageUrls) && q.imageUrls[0]) || "",
+    options: Array.isArray(q.options) ? q.options : [],
+    marks: q.marks,
+    negativeMarks: q.negativeMarks,
+    correctOption: q.correctOption,
+    explanation: q.explanation || "",
+    createdAt: q.createdAt,
+    updatedAt: q.updatedAt,
+  };
+}
+
+/**
+ * GET /admin/questions: the question bank, paginated and filtered on the server (the
+ * snapshot only carries questions attached to tests). Query is validated by the route.
+ */
+async function listQuestions(req, res, next) {
+  try {
+    const { page, limit, section, difficulty, search, excludeTestId } = req.query;
+    const filter = { deletedAt: null };
+    if (section) filter.section = section;
+    if (difficulty) filter.difficulty = difficulty;
+    if (search) {
+      const q = escapeRegex(search);
+      const or = [{ prompt: { $regex: q, $options: "i" } }, { topic: { $regex: q, $options: "i" } }];
+      if (/^[a-f0-9]{24}$/i.test(search)) or.push({ _id: search });
+      filter.$or = or;
+    }
+    if (excludeTestId) {
+      const test = await Test.findById(excludeTestId).select("questionIds").lean();
+      if (test && Array.isArray(test.questionIds) && test.questionIds.length) {
+        filter._id = Object.assign({}, filter._id, { $nin: test.questionIds });
+      }
+    }
+    const [questions, total] = await Promise.all([
+      Question.find(filter).select(ADMIN_QUESTION_FIELDS).sort({ createdAt: 1, _id: 1 }).skip((page - 1) * limit).limit(limit).lean(),
+      Question.countDocuments(filter),
+    ]);
+    return res.json({
+      questions: questions.map(serializeAdminQuestion),
+      total,
+      page,
+      limit,
+      pages: Math.max(1, Math.ceil(total / limit)),
+    });
+  } catch (err) {
+    return next(err);
+  }
+}
+
 async function snapshot(req, res, next) {
   try {
     const [tests, questions, attempts, users, userCount, appConfig] = await Promise.all([
-      Test.find({ deletedAt: null })
-        .select("title subtitle series type isFree status displayOrder durationMinutes sectionDurations instructions benchmarkScores questionIds createdAt updatedAt")
+      Test.find({ deletedAt: null, status: { $ne: "practice" } })
+        .select("title subtitle series type isFree status displayOrder durationMinutes sectionDurations instructions benchmarkScores questionIds shuffleQuestions shuffleOptions integrity seasonId createdAt updatedAt")
         .sort({ displayOrder: 1, createdAt: 1 })
         .lean(),
-      Question.find({ deletedAt: null })
-        .select("section topic difficulty prompt passage imageUrls options marks negativeMarks correctOption explanation createdAt updatedAt")
-        .sort({ createdAt: 1 })
-        .lean(),
+      // Only questions attached to a test; the full bank is paginated via GET /admin/questions.
+      Test.distinct("questionIds", { deletedAt: null, status: { $ne: "practice" } }).then((ids) =>
+        Question.find({ _id: { $in: ids }, deletedAt: null }).select(ADMIN_QUESTION_FIELDS).sort({ createdAt: 1 }).lean()
+      ),
       Attempt.find(NON_ADMIN_ATTEMPT_FILTER)
-        .select("userId testId attemptNumber score accuracy rank percentile submittedAt timeTakenSeconds correctCount wrongCount skippedCount")
+        .select("userId testId attemptNumber score accuracy submittedAt timeTakenSeconds correctCount wrongCount skippedCount userRole isPractice invalidatedAt")
         .sort({ submittedAt: -1 })
         .limit(500)
         .lean(),
@@ -250,7 +272,9 @@ async function snapshot(req, res, next) {
       User.countDocuments({ deletedAt: null }),
       AppConfig.findOne({ key: "global" }).lean(),
     ]);
+    const questionBankTotal = await Question.countDocuments({ deletedAt: null });
 
+    const snapshotRanks = await getRanksForAttempts(attempts);
     res.json({
       tests: tests.map((t) => ({
         id: String(t._id),
@@ -266,26 +290,18 @@ async function snapshot(req, res, next) {
         instructions: Array.isArray(t.instructions) ? t.instructions : [],
         benchmarkScores: Array.isArray(t.benchmarkScores) ? t.benchmarkScores : [],
         questionIds: (t.questionIds || []).map((id) => String(id)),
+        shuffleQuestions: Boolean(t.shuffleQuestions),
+        shuffleOptions: Boolean(t.shuffleOptions),
+        integrity: {
+          mode: (t.integrity && t.integrity.mode) || "warn",
+          warnThreshold: Number((t.integrity && t.integrity.warnThreshold) || 1),
+          autoSubmitThreshold: Number((t.integrity && t.integrity.autoSubmitThreshold) || 5),
+        },
         createdAt: t.createdAt,
         updatedAt: t.updatedAt,
       })),
-      questions: questions.map((q) => ({
-        id: String(q._id),
-        section: q.section,
-        topic: q.topic,
-        difficulty: q.difficulty,
-        prompt: q.prompt,
-        passage: q.passage || "",
-        imageUrls: Array.isArray(q.imageUrls) ? q.imageUrls : [],
-        imageUrl: (Array.isArray(q.imageUrls) && q.imageUrls[0]) || "",
-        options: Array.isArray(q.options) ? q.options : [],
-        marks: q.marks,
-        negativeMarks: q.negativeMarks,
-        correctOption: q.correctOption,
-        explanation: q.explanation || "",
-        createdAt: q.createdAt,
-        updatedAt: q.updatedAt,
-      })),
+      questions: questions.map(serializeAdminQuestion),
+      questionBankTotal,
       attempts: attempts.map((a) => ({
         id: String(a._id),
         userId: String(a.userId),
@@ -293,8 +309,9 @@ async function snapshot(req, res, next) {
         attemptNumber: a.attemptNumber,
         score: a.score,
         accuracy: a.accuracy,
-        rank: a.rank,
-        percentile: a.percentile,
+        rank: (snapshotRanks.get(String(a._id)) || {}).rank || 0,
+        percentile: (snapshotRanks.get(String(a._id)) || {}).percentile || 0,
+        invalidated: Boolean(a.invalidatedAt),
         submittedAt: a.submittedAt,
         timeTakenSeconds: a.timeTakenSeconds,
         correctCount: a.correctCount,
@@ -306,8 +323,7 @@ async function snapshot(req, res, next) {
         name: u.name,
         email: u.email,
         role: u.role,
-        isPaid: Boolean(u.isPaid || paidSheetService.isVerified(u.email)),
-        isSheetVerified: paidSheetService.isVerified(u.email),
+        isPaid: Boolean(u.isPaid),
         createdAt: u.createdAt,
         lastSeenAt: u.lastSeenAt || null,
         isOnline: Boolean(u.lastSeenAt && (Date.now() - new Date(u.lastSeenAt).getTime() < 5 * 60 * 1000)),
@@ -371,7 +387,7 @@ async function updateAppConfig(req, res, next) {
 async function trash(req, res, next) {
   try {
     const [tests, questions, users] = await Promise.all([
-      Test.find({ deletedAt: { $ne: null } }).select("title subtitle series isFree status sectionDurations deletedAt").sort({ deletedAt: -1 }).limit(500).lean(),
+      Test.find({ deletedAt: { $ne: null }, status: { $ne: "practice" } }).select("title subtitle series isFree status sectionDurations deletedAt").sort({ deletedAt: -1 }).limit(500).lean(),
       Question.find({ deletedAt: { $ne: null } }).select("section topic prompt deletedAt").sort({ deletedAt: -1 }).limit(500).lean(),
       User.find({ deletedAt: { $ne: null } }).select("name email role isPaid deletedAt createdAt").sort({ deletedAt: -1 }).limit(500).lean(),
     ]);
@@ -430,6 +446,7 @@ async function createQuestion(req, res, next) {
       negativeMarks: Number.isFinite(Number(input.negativeMarks)) ? Number(input.negativeMarks) : sectionDefaults.negativeMarks,
     });
     invalidateAllTestCaches();
+    res.locals.auditEntityId = question.id;
     res.status(201).json({ question: question.toJSON() });
   } catch (err) {
     next(err);
@@ -463,10 +480,51 @@ async function updateQuestion(req, res, next) {
   }
 }
 
+// A question in a live test must never be destroyed: students may be mid-exam and
+// historical attempts reference it.
+function liveTestsUsingQuestion(questionId) {
+  return Test.find({ questionIds: questionId, status: "live", deletedAt: null }).select("_id title").lean();
+}
+
+/**
+ * Explicit, audited user purge. Instead of a silent TTL delete, personal data is removed or
+ * anonymized and dependent records are cleaned up so nothing is left orphaned.
+ */
+async function purgeUserCascade(user, actorUserId) {
+  const userId = user._id;
+  const AttemptSession = require("../models/AttemptSession");
+  const Reminder = require("../models/Reminder");
+  const GoogleCalendarConnection = require("../models/GoogleCalendarConnection");
+  const GoogleCalendarEvent = require("../models/GoogleCalendarEvent");
+  await Promise.all([
+    Attempt.updateMany({ userId }, { $set: { userEmail: "" } }),
+    Entitlement.updateMany({ userId }, { $set: { userId: null } }),
+    AttemptSession.deleteMany({ userId }),
+    Reminder.deleteMany({ userId }),
+    GoogleCalendarConnection.deleteMany({ userId }),
+    GoogleCalendarEvent.deleteMany({ userId }),
+  ]);
+  await User.deleteOne({ _id: userId });
+  await logAuditEvent({
+    actorUserId,
+    action: "USER_PURGED",
+    entityType: "User",
+    entityId: String(userId),
+    metadata: { anonymizedAttempts: true },
+  });
+}
+
 async function deleteQuestion(req, res, next) {
   try {
     const question = await Question.findById(req.params.id);
     if (!question) return res.status(404).json({ error: "Question not found" });
+    const liveTests = await liveTestsUsingQuestion(question._id);
+    if (liveTests.length) {
+      return res.status(409).json({
+        error: `This question is part of live test(s): ${liveTests.map((t) => t.title).join(", ")}. Unpublish the test or detach the question first.`,
+        code: "QUESTION_IN_LIVE_TEST",
+      });
+    }
     const attachedTests = await Test.find({ questionIds: question._id, deletedAt: null }).select("_id").lean();
     question.deletedAt = new Date();
     await question.save();
@@ -485,7 +543,28 @@ async function deleteUser(req, res, next) {
     if (!user) return res.status(404).json({ error: "User not found" });
     if (user.role === "admin") return res.status(400).json({ error: "Admin users cannot be deleted." });
     user.deletedAt = new Date();
+    user.tokenVersion = Number(user.tokenVersion || 0) + 1;
     await user.save();
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function revokeUserSessions(req, res, next) {
+  try {
+    if (!isValidObjectId(req.params.id)) {
+      return res.status(400).json({ error: "Invalid user id" });
+    }
+    const tokenVersion = await revokeAllSessions(req.params.id);
+    if (tokenVersion === null) return res.status(404).json({ error: "User not found" });
+    await logAuditEvent({
+      actorUserId: req.auth.userId,
+      action: "USER_SESSIONS_REVOKED",
+      entityType: "User",
+      entityId: req.params.id,
+      metadata: { tokenVersion },
+    });
     res.json({ ok: true });
   } catch (err) {
     next(err);
@@ -521,12 +600,24 @@ async function purgeTrashItem(req, res, next) {
     if (!["tests", "questions", "users"].includes(kind)) {
       return res.status(400).json({ error: "Invalid kind" });
     }
+    if (!isValidObjectId(id)) return res.status(400).json({ error: "Invalid id" });
     let affectedTests = [];
     if (kind === "questions") {
+      const liveTests = await liveTestsUsingQuestion(id);
+      if (liveTests.length) {
+        return res.status(409).json({ error: "This question is part of a live test and can't be purged.", code: "QUESTION_IN_LIVE_TEST" });
+      }
       affectedTests = await Test.find({ questionIds: id, deletedAt: null }).select("_id").lean();
       await Test.updateMany({ questionIds: id }, { $pull: { questionIds: id } });
     }
-    const model = kind === "tests" ? Test : kind === "questions" ? Question : User;
+    if (kind === "users") {
+      const user = await User.findById(id);
+      if (!user) return res.status(404).json({ error: "Not found" });
+      if (!user.deletedAt) return res.status(409).json({ error: "Move the user to trash before purging.", code: "NOT_IN_TRASH" });
+      await purgeUserCascade(user, req.auth.userId);
+      return res.json({ ok: true });
+    }
+    const model = kind === "tests" ? Test : Question;
     await model.deleteOne({ _id: id });
     if (kind === "tests" || kind === "questions") {
       if (kind === "questions" && affectedTests.length) {
@@ -579,20 +670,31 @@ async function detachQuestion(req, res, next) {
 async function results(req, res, next) {
   try {
     const attempts = await Attempt.find(NON_ADMIN_ATTEMPT_FILTER)
-      .select("submittedAt score accuracy rank percentile attemptNumber timeTakenSeconds userId testId")
+      .select("submittedAt score accuracy attemptNumber timeTakenSeconds userId testId userRole isPractice invalidatedAt submittedReason integrity sessionId")
       .sort({ submittedAt: -1 })
       .limit(500)
       .populate("userId", "name email")
       .populate("testId", "title series")
       .lean();
+    const ranks = await getRanksForAttempts(
+      attempts.map((a) => ({ ...a, testId: a.testId && a.testId._id ? a.testId._id : a.testId }))
+    );
     res.json({
       results: attempts.map((a) => ({
         id: String(a._id),
         submittedAt: a.submittedAt,
         score: a.score,
         accuracy: a.accuracy,
-        rank: a.rank,
-        percentile: a.percentile,
+        rank: (ranks.get(String(a._id)) || {}).rank || 0,
+        percentile: (ranks.get(String(a._id)) || {}).percentile || 0,
+        invalidated: Boolean(a.invalidatedAt),
+        submittedReason: a.submittedReason || "submitted",
+        integrity: {
+          mode: (a.integrity && a.integrity.mode) || "warn",
+          violations: Number((a.integrity && a.integrity.violations) || 0),
+          takeovers: Number((a.integrity && a.integrity.takeovers) || 0),
+          byType: (a.integrity && a.integrity.byType) || {},
+        },
         attemptNumber: a.attemptNumber,
         timeTakenSeconds: a.timeTakenSeconds,
         user: a.userId ? { id: String(a.userId._id), name: a.userId.name, email: a.userId.email } : null,
@@ -608,8 +710,12 @@ async function leaderboard(req, res, next) {
   try {
     const testId = String(req.query.testId || "").trim();
     if (!testId) return res.status(400).json({ error: "testId is required" });
-    const attempts = await Attempt.find({ testId, attemptNumber: 1, ...NON_ADMIN_ATTEMPT_FILTER })
-      .select("score timeTakenSeconds submittedAt userId")
+    const filter = { testId, attemptNumber: 1, invalidatedAt: null, ...NON_ADMIN_ATTEMPT_FILTER };
+    if (String(req.query.excludeFlagged || "") === "1") {
+      filter["integrity.violations"] = { $in: [0, null] };
+    }
+    const attempts = await Attempt.find(filter)
+      .select("score timeTakenSeconds submittedAt userId integrity")
       .sort({ score: -1, timeTakenSeconds: 1, submittedAt: 1 })
       .limit(50)
       .populate("userId", "name email")
@@ -620,6 +726,7 @@ async function leaderboard(req, res, next) {
         score: a.score,
         timeTakenSeconds: a.timeTakenSeconds,
         submittedAt: a.submittedAt,
+        integrityViolations: Number((a.integrity && a.integrity.violations) || 0),
         user: a.userId ? { id: String(a.userId._id), name: a.userId.name, email: a.userId.email } : null,
       })),
     });
@@ -822,7 +929,7 @@ async function verifyUserPayment(req, res, next) {
     try {
       await sendPaymentConfirmationEmail(user.email, user.name);
     } catch (mailErr) {
-      console.warn("Payment confirmation email send warning:", mailErr.message);
+      logger.warn({ err: errorSummary(mailErr) }, "payment confirmation email failed");
     }
     res.json({ ok: true, user: user.toJSON() });
   } catch (err) {
@@ -842,17 +949,6 @@ async function revokeUserPayment(req, res, next) {
   }
 }
 
-async function syncPaidSheets(req, res, next) {
-  try {
-    const summary = await syncGoogleSheetPayments({
-      actorUserId: req.auth ? req.auth.userId : null,
-    });
-    res.json({ ok: true, count: summary.newlyVerifiedCount || 0, summary });
-  } catch (err) {
-    next(err);
-  }
-}
-
 async function listUsersExtended(req, res, next) {
   try {
     const page = Math.max(1, Number(req.query.page || 1));
@@ -865,7 +961,7 @@ async function listUsersExtended(req, res, next) {
     if (isPaid === "false" || isPaid === "0") filter.isPaid = false;
 
     if (search) {
-      const q = String(search).trim().toLowerCase();
+      const q = escapeRegex(String(search).trim().toLowerCase());
       filter.$or = [
         { name: { $regex: q, $options: "i" } },
         { email: { $regex: q, $options: "i" } },
@@ -874,19 +970,22 @@ async function listUsersExtended(req, res, next) {
     }
 
     if (isEnrolledOnly === "true" || isEnrolledOnly === "1") {
-      const paidEmails = Array.from(paidSheetService._emails || []);
       const verifiedPayments = await PaymentRecord.find({ status: "verified" }).distinct("normalizedEmail");
       const activeEntitlements = await Entitlement.find({ status: "active" }).distinct("normalizedEmail");
 
       const enrolledEmailSet = new Set([
-        ...paidEmails,
         ...verifiedPayments,
         ...activeEntitlements,
       ]);
 
-      filter.$or = filter.$or
-        ? [{ $and: [{ $or: filter.$or }, { isPaid: true }] }, { normalizedEmail: { $in: Array.from(enrolledEmailSet) } }]
-        : [{ isPaid: true }, { normalizedEmail: { $in: Array.from(enrolledEmailSet) } }];
+      // Enrolled = paid flag or a verified payment/active entitlement; the search (if any) still applies.
+      const enrolledClause = { $or: [{ isPaid: true }, { normalizedEmail: { $in: Array.from(enrolledEmailSet) } }] };
+      if (filter.$or) {
+        filter.$and = [{ $or: filter.$or }, enrolledClause];
+        delete filter.$or;
+      } else {
+        filter.$or = enrolledClause.$or;
+      }
     }
 
     const total = await User.countDocuments(filter);
@@ -950,7 +1049,7 @@ async function getUserDetailExtended(req, res, next) {
 
     const [attempts, entitlements, payments] = await Promise.all([
       Attempt.find({ userId: user._id })
-        .select("testId score accuracy rank percentile submittedAt timeTakenSeconds")
+        .select("testId attemptNumber score accuracy submittedAt timeTakenSeconds userRole isPractice invalidatedAt submittedReason")
         .sort({ submittedAt: -1 })
         .limit(50)
         .lean(),
@@ -969,7 +1068,10 @@ async function getUserDetailExtended(req, res, next) {
         ...user,
         id: String(user._id),
       },
-      attempts: attempts.map((a) => ({ ...a, id: String(a._id) })),
+      attempts: await (async () => {
+        const ranks = await getRanksForAttempts(attempts);
+        return attempts.map((a) => ({ ...a, id: String(a._id), ...(ranks.get(String(a._id)) || { rank: 0, percentile: 0 }) }));
+      })(),
       entitlements: entitlements.map((e) => ({ ...e, id: String(e._id) })),
       payments: payments.map((p) => ({ ...p, id: String(p._id) })),
     });
@@ -1043,7 +1145,7 @@ async function getDashboardMetrics(req, res, next) {
     ] = await Promise.all([
       User.countDocuments({ deletedAt: null, role: "student" }),
       User.countDocuments({ deletedAt: null, role: "student", isPaid: true }),
-      Test.countDocuments({ deletedAt: null }),
+      Test.countDocuments({ deletedAt: null, status: { $ne: "practice" } }),
       Test.countDocuments({ deletedAt: null, status: "live" }),
       Question.countDocuments({ deletedAt: null }),
       Attempt.countDocuments(NON_ADMIN_ATTEMPT_FILTER),
@@ -1103,13 +1205,94 @@ async function getAuditLogsController(req, res, next) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Exam integrity review. Browser telemetry is evidence, never proof: invalidation is
+// always an explicit, audited admin decision.
+// ---------------------------------------------------------------------------
+async function getAttemptIntegrity(req, res, next) {
+  try {
+    if (!isValidObjectId(req.params.id)) return res.status(400).json({ error: "Invalid attempt id" });
+    const attempt = await Attempt.findById(req.params.id)
+      .select("userId testId sessionId integrity invalidatedAt invalidatedReason submittedReason submittedAt")
+      .populate("userId", "name email")
+      .lean();
+    if (!attempt) return res.status(404).json({ error: "Attempt not found" });
+    const events = attempt.sessionId
+      ? await IntegrityEvent.find({ sessionId: attempt.sessionId }).sort({ receivedAt: 1 }).limit(500).lean()
+      : [];
+    res.json({
+      attempt: {
+        id: String(attempt._id),
+        user: attempt.userId ? { id: String(attempt.userId._id), name: attempt.userId.name, email: attempt.userId.email } : null,
+        submittedReason: attempt.submittedReason,
+        submittedAt: attempt.submittedAt,
+        integrity: attempt.integrity || { violations: 0 },
+        invalidated: Boolean(attempt.invalidatedAt),
+        invalidatedReason: attempt.invalidatedReason || "",
+      },
+      events: events.map((event) => ({
+        type: event.type,
+        counted: event.counted,
+        clientAt: event.clientAt,
+        receivedAt: event.receivedAt,
+        durationMs: event.durationMs,
+        detail: event.detail,
+      })),
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+const invalidateSchema = z.object({
+  reason: z.string().trim().min(3, "A reason is required").max(500),
+  restore: z.boolean().optional(),
+});
+
+async function invalidateAttempt(req, res, next) {
+  try {
+    if (!isValidObjectId(req.params.id)) return res.status(400).json({ error: "Invalid attempt id" });
+    const { reason, restore } = invalidateSchema.parse(req.body || {});
+    const attempt = await Attempt.findById(req.params.id);
+    if (!attempt) return res.status(404).json({ error: "Attempt not found" });
+    const before = { invalidatedAt: attempt.invalidatedAt, invalidatedReason: attempt.invalidatedReason };
+    if (restore) {
+      attempt.invalidatedAt = null;
+      attempt.invalidatedReason = "";
+      attempt.invalidatedBy = null;
+    } else {
+      attempt.invalidatedAt = new Date();
+      attempt.invalidatedReason = reason;
+      attempt.invalidatedBy = req.auth.userId;
+    }
+    await attempt.save();
+    invalidateRankCache(attempt.testId);
+    await logAuditEvent({
+      actorUserId: req.auth.userId,
+      action: restore ? "ATTEMPT_RESTORED" : "ATTEMPT_INVALIDATED",
+      entityType: "Attempt",
+      entityId: String(attempt._id),
+      before,
+      after: { invalidatedAt: attempt.invalidatedAt, invalidatedReason: attempt.invalidatedReason },
+      metadata: { reason, testId: String(attempt.testId), userId: String(attempt.userId) },
+    });
+    res.json({ ok: true, invalidated: Boolean(attempt.invalidatedAt) });
+  } catch (err) {
+    next(err);
+  }
+}
+
 module.exports = {
+  getAttemptIntegrity,
+  invalidateAttempt,
   snapshot,
+  listQuestions,
   trash,
   createQuestion,
   updateQuestion,
   deleteQuestion,
   deleteUser,
+  revokeUserSessions,
   restoreTrashItem,
   purgeTrashItem,
   attachQuestion,
@@ -1125,7 +1308,6 @@ module.exports = {
   updateAppConfig,
   verifyUserPayment,
   revokeUserPayment,
-  syncPaidSheets,
   listUsersExtended,
   getUserDetailExtended,
   publishTest,

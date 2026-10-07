@@ -1,7 +1,10 @@
 const PaymentRecord = require("../models/PaymentRecord");
 const User = require("../models/User");
+const { z } = require("zod");
+const { escapeRegex } = require("../utils/escapeRegex");
+
 const {
-  syncGoogleSheetPayments,
+  createManualPayment,
   verifyPaymentManually,
   revokePaymentManually,
   resendConfirmationEmail,
@@ -17,7 +20,7 @@ async function listPayments(req, res, next) {
     if (status) filter.status = status;
     if (seasonId) filter.seasonId = seasonId;
     if (search) {
-      const q = String(search).trim().toLowerCase();
+      const q = escapeRegex(String(search).trim().toLowerCase());
       filter.$or = [
         { email: { $regex: q, $options: "i" } },
         { normalizedEmail: { $regex: q, $options: "i" } },
@@ -77,13 +80,18 @@ async function listPayments(req, res, next) {
   }
 }
 
-async function syncPaymentsController(req, res, next) {
+const createPaymentSchema = z.object({
+  email: z.string().trim().email(),
+  name: z.string().trim().max(120).optional(),
+  seasonId: z.string().regex(/^[a-f0-9]{24}$/i).optional(),
+  note: z.string().trim().max(500).optional(),
+});
+
+async function createPaymentController(req, res, next) {
   try {
-    const summary = await syncGoogleSheetPayments({
-      targetSeasonId: req.body ? req.body.seasonId : null,
-      actorUserId: req.auth ? req.auth.userId : null,
-    });
-    res.json({ ok: true, summary });
+    const input = createPaymentSchema.parse(req.body || {});
+    const payment = await createManualPayment({ ...input, actorUserId: req.auth.userId });
+    res.status(201).json({ ok: true, payment });
   } catch (err) {
     next(err);
   }
@@ -128,7 +136,7 @@ async function resendPaymentEmailController(req, res, next) {
 
 module.exports = {
   listPayments,
-  syncPaymentsController,
+  createPaymentController,
   verifyPaymentController,
   revokePaymentController,
   resendPaymentEmailController,

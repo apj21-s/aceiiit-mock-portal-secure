@@ -11,15 +11,30 @@ const reminderSchema = new mongoose.Schema(
     reminderMinutes: { type: Number, default: 300, min: 10, max: 7 * 24 * 60 },
     subjectFocus: [{ type: String, trim: true, maxlength: 40 }],
     notes: { type: String, trim: true, maxlength: 500, default: "" },
+    // Scheduled reminder email delivery (the "starts in X" email before the plan).
+    deliveryState: {
+      type: String,
+      enum: ["pending", "sending", "sent", "failed", "cancelled"],
+      default: "pending",
+      index: true,
+    },
+    attempts: { type: Number, default: 0 },
+    nextAttemptAt: { type: Date, default: null },
+    claimedAt: { type: Date, default: null },
     sentAt: { type: Date, default: null, index: true },
-    cancelledAt: { type: Date, default: null, index: true },
+    failedAt: { type: Date, default: null },
     failureReason: { type: String, default: "" },
+    cancelledAt: { type: Date, default: null, index: true },
+    // Calendar invite (ICS) email: tracked separately so it never marks the reminder as sent.
+    inviteSentAt: { type: Date, default: null },
+    inviteError: { type: String, default: "" },
     sequence: { type: Number, default: 0 },
   },
   { timestamps: true }
 );
 
 reminderSchema.index({ remindAt: 1, sentAt: 1, cancelledAt: 1 });
+reminderSchema.index({ deliveryState: 1, remindAt: 1, nextAttemptAt: 1 });
 
 reminderSchema.set("toJSON", {
   transform: (_doc, ret) => {

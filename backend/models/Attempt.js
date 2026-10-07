@@ -6,6 +6,21 @@ const attemptSchema = new mongoose.Schema(
     userEmail: { type: String, default: "", index: true },
     userRole: { type: String, default: "student", index: true },
     testId: { type: mongoose.Schema.Types.ObjectId, ref: "Test", required: true, index: true },
+    // One attempt per exam session (idempotent finalization).
+    sessionId: { type: mongoose.Schema.Types.ObjectId, ref: "AttemptSession", default: undefined },
+    isPractice: { type: Boolean, default: false },
+    submittedReason: { type: String, default: "submitted" },
+    // Set by an admin after reviewing integrity evidence; excluded from ranks.
+    invalidatedAt: { type: Date, default: null },
+    invalidatedReason: { type: String, default: "" },
+    invalidatedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+    // Snapshot of the session's integrity telemetry at finalization (for admin review).
+    integrity: {
+      mode: { type: String, default: "warn" },
+      violations: { type: Number, default: 0 },
+      byType: { type: mongoose.Schema.Types.Mixed, default: {} },
+      takeovers: { type: Number, default: 0 },
+    },
     attemptNumber: { type: Number, required: true, index: true },
     answers: { type: Map, of: Number, default: {} },
     answerDetails: { type: [mongoose.Schema.Types.Mixed], default: [] },
@@ -42,6 +57,7 @@ const attemptSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+attemptSchema.index({ sessionId: 1 }, { unique: true, sparse: true });
 attemptSchema.index({ userId: 1, submittedAt: -1 });
 attemptSchema.index({ userId: 1, testId: 1, submittedAt: -1 });
 attemptSchema.index({ userId: 1, testId: 1, attemptNumber: 1 }, { unique: true });

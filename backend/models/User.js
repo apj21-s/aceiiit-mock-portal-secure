@@ -16,9 +16,17 @@ const userSchema = new mongoose.Schema(
     appleSubject: { type: String, default: null, index: true, sparse: true },
     lastSeenAt: { type: Date, default: null, index: true },
     deletedAt: { type: Date, default: null },
+    // Incremented on any security event (password change, role change, revoke, delete) to
+    // invalidate every outstanding session JWT for this user.
+    tokenVersion: { type: Number, default: 0 },
+    failedLoginCount: { type: Number, default: 0 },
+    lockedUntil: { type: Date, default: null },
+    // Today's Question of the Day attempt (one per IST day).
     lastQotdAttempt: {
-      date: { type: String, default: "" }, // "YYYY-MM-DD"
-      answeredOpt: { type: String, default: "" }
+      date: { type: String, default: "" }, // "YYYY-MM-DD" in Asia/Kolkata
+      questionId: { type: String, default: "" },
+      answeredOpt: { type: String, default: "" },
+      correct: { type: Boolean, default: false },
     },
   },
   { timestamps: true }
@@ -31,11 +39,11 @@ userSchema.pre("save", function (next) {
   next();
 });
 
-// TTL: deleted users are permanently removed 30 days after being moved to trash.
-userSchema.index({ deletedAt: 1 }, { expireAfterSeconds: 60 * 60 * 24 * 30 });
+// No TTL on deletedAt: auto-deleting users orphaned their attempts, entitlements and
+// reminders. Trashed users are removed only by an explicit admin purge (which anonymizes
+// and cascades). Drop the old TTL index with scripts/migrations/2026-10-drop-user-ttl.js.
 userSchema.index({ deletedAt: 1, createdAt: -1 });
 userSchema.index({ email: 1, status: 1 });
-userSchema.index({ normalizedEmail: 1 });
 
 userSchema.set("toJSON", {
   transform: (_doc, ret) => {
@@ -44,6 +52,12 @@ userSchema.set("toJSON", {
     delete ret._id;
     delete ret.__v;
     delete ret.passwordHash;
+    // Internal security state never leaves the server.
+    delete ret.tokenVersion;
+    delete ret.failedLoginCount;
+    delete ret.lockedUntil;
+    delete ret.googleSubject;
+    delete ret.appleSubject;
     return ret;
   },
 });

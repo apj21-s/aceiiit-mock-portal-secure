@@ -57,12 +57,4 @@ async function grantEntitlementFor(user, seasonId, status = "active") {
   });
 }
 
-async function loginAs(request, app, email, password = DEFAULT_PASSWORD) {
-  const res = await request(app).post("/api/auth/login").send({ email, password });
-  if (res.status !== 200) {
-    throw new Error(`login failed for ${email}: ${res.status} ${JSON.stringify(res.body)}`);
-  }
-  return res.body.token;
-}
-
-module.exports = { DEFAULT_PASSWORD, createUser, createQuestions, createTest, grantEntitlementFor, loginAs };
+module.exports = { DEFAULT_PASSWORD, createUser, createQuestions, createTest, grantEntitlementFor };

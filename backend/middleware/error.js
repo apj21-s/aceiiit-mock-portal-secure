@@ -1,8 +1,10 @@
+const { captureException } = require("../utils/sentry");
+
 function notFound(_req, res, _next) {
   res.status(404).json({ error: "Not found" });
 }
 
-function errorHandler(err, _req, res, next) {
+function errorHandler(err, req, res, next) {
   if (res.headersSent) {
     return next(err);
   }
@@ -23,10 +25,14 @@ function errorHandler(err, _req, res, next) {
   const status = Number(err.status || err.statusCode || 500);
   const message = err.expose ? err.message : "Internal server error";
   if (status >= 500) {
-    // eslint-disable-next-line no-console
-    console.error(err);
+    if (req.log) req.log.error({ err }, "request failed");
+    captureException(err, { requestId: req.id });
   }
-  res.status(status).json({ error: message });
+  const body = { error: message };
+  if (status >= 500 && req.id) body.requestId = req.id;
+  if (err.expose && err.code && typeof err.code === "string") body.code = err.code;
+  if (err.expose && err.extra && typeof err.extra === "object") Object.assign(body, err.extra);
+  res.status(status).json(body);
 }
 
 module.exports = { notFound, errorHandler };

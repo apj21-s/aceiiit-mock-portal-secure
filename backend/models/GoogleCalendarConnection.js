@@ -3,8 +3,9 @@ const mongoose = require("mongoose");
 const googleCalendarConnectionSchema = new mongoose.Schema(
   {
     userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true, unique: true, index: true },
-    googleAccountId: { type: String, required: true }, // The Google 'sub' claim
-    refreshToken: { type: String, required: true }, // Encrypting this at rest would be ideal
+    googleAccountId: { type: String, default: "" }, // The Google 'sub' claim
+    // AES-256-GCM encrypted ("v1:iv:tag:ciphertext"); see utils/crypto.js. Cleared on disconnect.
+    refreshToken: { type: String, default: "" },
     tokenExpiry: { type: Date, default: null }, // Optional cache for access token expiry
     autoAddEnabled: { type: Boolean, default: true },
     status: { type: String, enum: ["connected", "revoked", "error", "disconnected"], default: "connected", index: true },

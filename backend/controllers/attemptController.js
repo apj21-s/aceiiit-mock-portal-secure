@@ -2,33 +2,50 @@ const { isValidObjectId } = require("mongoose");
 const { z } = require("zod");
 
 const Attempt = require("../models/Attempt");
-const { evaluateAttempt } = require("../services/evaluationService");
-const { computeRankAndPercentileForAttempt } = require("../services/rankService");
-const { canAccessTest } = require("../services/entitlementService");
-const { getTestRuntimeSnapshot } = require("../services/testDataService");
-const { buildAttemptAnalysis } = require("../services/attemptAnalysisService");
+const { getRankFor, getRanksForAttempts } = require("../services/rankService");
+const {
+  sessionView,
+  startSession,
+  takeoverSession,
+  getPaper,
+  saveProgress,
+  advanceSection,
+  submitSession,
+  listActiveSessions,
+  recordIntegrityEvents,
+  sessionOptionCounts,
+} = require("../services/attemptSessionService");
 
-const submitSchema = z.object({
-  testId: z.string().min(1),
-  answers: z.record(z.union([z.number(), z.null()])).optional(),
-  timeSpent: z.record(z.number().int().min(0).max(60 * 60 * 8)).optional(),
-  timeTakenSeconds: z.number().int().min(0).max(60 * 60 * 8).optional(),
-});
+const EXAM_TOKEN_HEADER = "X-Exam-Token";
 
 const analysisQuestionsQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(50).default(20),
 });
 
-function toAttemptResponse(attempt) {
+const ATTEMPT_SUMMARY_FIELDS =
+  "testId sessionId attemptNumber score accuracy correctCount wrongCount skippedCount unattemptedCount timeTakenSeconds totalTime submittedAt sectionScores analysis userRole isPractice invalidatedAt submittedReason";
+
+/** Session view with answers expressed in the student's (possibly shuffled) option order. */
+async function viewOf(session) {
+  return sessionView(session, Date.now(), await sessionOptionCounts(session));
+}
+
+function examToken(req) {
+  return req.get(EXAM_TOKEN_HEADER) || "";
+}
+
+function toAttemptResponse(attempt, rankInfo) {
+  const ranking = rankInfo || { rank: 0, percentile: 0 };
   return {
     id: String(attempt._id || attempt.id),
     testId: String(attempt.testId),
+    sessionId: attempt.sessionId ? String(attempt.sessionId) : null,
     attemptNumber: attempt.attemptNumber,
     score: attempt.score,
     accuracy: attempt.accuracy,
-    rank: attempt.rank,
-    percentile: attempt.percentile,
+    rank: ranking.rank,
+    percentile: ranking.percentile,
     correctCount: attempt.correctCount,
     wrongCount: attempt.wrongCount,
     skippedCount: attempt.skippedCount,
@@ -36,24 +53,191 @@ function toAttemptResponse(attempt) {
     timeTakenSeconds: attempt.timeTakenSeconds,
     totalTime: attempt.totalTime || attempt.timeTakenSeconds,
     submittedAt: attempt.submittedAt,
+    submittedReason: attempt.submittedReason || "submitted",
+    isPractice: Boolean(attempt.isPractice),
+    invalidated: Boolean(attempt.invalidatedAt),
     sectionScores: attempt.sectionScores,
     analysis: attempt.analysis || null,
   };
 }
 
+async function respondWithAttempt(res, status, attempt) {
+  const rankInfo = await getRankFor(attempt);
+  return res.status(status).json({ attempt: toAttemptResponse(attempt, rankInfo) });
+}
+
+// ---------------------------------------------------------------------------
+// Exam session lifecycle (server-authoritative)
+// ---------------------------------------------------------------------------
+const startSchema = z.object({ testId: z.string().min(1).max(64) });
+
+async function startAttempt(req, res, next) {
+  try {
+    const { testId } = startSchema.parse(req.body || {});
+    const result = await startSession({ auth: req.auth, testId, examToken: examToken(req), req });
+    const body = { session: await viewOf(result.session) };
+    if (result.examToken) body.examToken = result.examToken;
+    return res.status(result.status).json(body);
+  } catch (err) {
+    return next(err);
+  }
+}
+
+async function takeover(req, res, next) {
+  try {
+    const result = await takeoverSession({ auth: req.auth, sessionId: req.params.id, req });
+    return res.json({ session: await viewOf(result.session), examToken: result.examToken });
+  } catch (err) {
+    return next(err);
+  }
+}
+
+async function getSessionPaper(req, res, next) {
+  try {
+    const { session, questions, optionCounts } = await getPaper({ auth: req.auth, sessionId: req.params.id, examToken: examToken(req) });
+    return res.json({ session: sessionView(session, Date.now(), session.shuffleOptions ? optionCounts : null), questions });
+  } catch (err) {
+    return next(err);
+  }
+}
+
+async function saveSessionProgress(req, res, next) {
+  try {
+    const { session, stale } = await saveProgress({
+      auth: req.auth,
+      sessionId: req.params.id,
+      examToken: examToken(req),
+      payload: req.body,
+    });
+    return res.json({ session: await viewOf(session), stale });
+  } catch (err) {
+    return next(err);
+  }
+}
+
+async function advance(req, res, next) {
+  try {
+    const { session } = await advanceSection({
+      auth: req.auth,
+      sessionId: req.params.id,
+      examToken: examToken(req),
+      payload: req.body,
+    });
+    return res.json({ session: await viewOf(session) });
+  } catch (err) {
+    return next(err);
+  }
+}
+
+async function postIntegrityEvents(req, res, next) {
+  try {
+    const result = await recordIntegrityEvents({
+      auth: req.auth,
+      sessionId: req.params.id,
+      examToken: examToken(req),
+      payload: req.body,
+    });
+    const integrity = result.session && result.session.integrity ? result.session.integrity : {};
+    return res.json({
+      integrity: {
+        mode: integrity.mode || "warn",
+        warnThreshold: Number(integrity.warnThreshold || 1),
+        autoSubmitThreshold: Number(integrity.autoSubmitThreshold || 5),
+        violations: Number(integrity.violations || 0),
+      },
+      autoSubmitted: result.autoSubmitted,
+      attemptId: result.attemptId,
+    });
+  } catch (err) {
+    return next(err);
+  }
+}
+
+const submitSchema = z.object({
+  sessionId: z.string().min(1).max(64),
+  answers: z.record(z.union([z.number().int(), z.null()])).optional(),
+  timeSpent: z.record(z.number().min(0).max(24 * 60 * 60)).optional(),
+});
+
+async function submitAttempt(req, res, next) {
+  try {
+    const input = submitSchema.parse(req.body || {});
+    const { attempt, replay } = await submitSession({
+      auth: req.auth,
+      sessionId: input.sessionId,
+      examToken: examToken(req),
+      payload: input,
+    });
+    return respondWithAttempt(res, replay ? 200 : 201, attempt);
+  } catch (err) {
+    return next(err);
+  }
+}
+
+/** Quit/restart: the session is submitted with its saved answers (it still counts as an attempt). */
+async function abandonAttempt(req, res, next) {
+  try {
+    const { attempt } = await submitSession({
+      auth: req.auth,
+      sessionId: req.params.id,
+      examToken: examToken(req),
+      payload: req.body,
+      reason: "abandoned",
+    });
+    return respondWithAttempt(res, 200, attempt);
+  } catch (err) {
+    return next(err);
+  }
+}
+
+async function listActive(req, res, next) {
+  try {
+    const sessions = await listActiveSessions(req.auth);
+    const views = [];
+    for (const session of sessions) views.push(await viewOf(session));
+    return res.json({ sessions: views });
+  } catch (err) {
+    return next(err);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Results (rank and percentile are computed on read)
+// ---------------------------------------------------------------------------
 async function listAttempts(req, res, next) {
   try {
-    const userId = req.auth.userId;
-    const attempts = await Attempt.find({ userId })
-      .select("testId attemptNumber score accuracy rank percentile correctCount wrongCount skippedCount unattemptedCount timeTakenSeconds totalTime submittedAt sectionScores analysis")
+    const attempts = await Attempt.find({ userId: req.auth.userId })
+      .select(ATTEMPT_SUMMARY_FIELDS)
       .sort({ submittedAt: -1 })
       .limit(200)
       .lean();
-
-    res.json({ attempts: attempts.map(toAttemptResponse) });
+    const ranks = await getRanksForAttempts(attempts);
+    res.json({ attempts: attempts.map((attempt) => toAttemptResponse(attempt, ranks.get(String(attempt._id)))) });
   } catch (err) {
     next(err);
   }
+}
+
+function ownedQuery(req) {
+  return req.auth.role === "admin"
+    ? { _id: req.params.id }
+    : { _id: req.params.id, userId: req.auth.userId };
+}
+
+function paginate(allQuestions, page, limit) {
+  const total = allQuestions.length;
+  const start = (page - 1) * limit;
+  const items = allQuestions.slice(start, start + limit);
+  return {
+    items,
+    pagination: {
+      page,
+      limit,
+      total,
+      pages: total ? Math.ceil(total / limit) : 1,
+      hasMore: start + items.length < total,
+    },
+  };
 }
 
 async function getResult(req, res, next) {
@@ -61,153 +245,20 @@ async function getResult(req, res, next) {
     if (!isValidObjectId(req.params.id)) {
       return res.status(400).json({ error: "Invalid result id" });
     }
-
     const includeReview = String(req.query.includeReview || "").trim() === "1";
     const { page, limit } = analysisQuestionsQuerySchema.parse(req.query || {});
-    const query = req.auth.role === "admin"
-      ? { _id: req.params.id }
-      : { _id: req.params.id, userId: req.auth.userId };
-
-    const attempt = await Attempt.findOne(query)
-      .select(includeReview
-        ? "testId attemptNumber score accuracy rank percentile correctCount wrongCount skippedCount unattemptedCount timeTakenSeconds totalTime submittedAt sectionScores analysis questionReview"
-        : "testId attemptNumber score accuracy rank percentile correctCount wrongCount skippedCount unattemptedCount timeTakenSeconds totalTime submittedAt sectionScores analysis")
+    const attempt = await Attempt.findOne(ownedQuery(req))
+      .select(includeReview ? `${ATTEMPT_SUMMARY_FIELDS} questionReview` : ATTEMPT_SUMMARY_FIELDS)
       .lean();
-
     if (!attempt) return res.status(404).json({ error: "Result not found" });
-    if (Number(attempt.rank || 0) === 0 && Number(attempt.percentile || 0) === 0) {
-      computeRankAndPercentileForAttempt(attempt)
-        .then((repair) => Attempt.updateOne(
-          { _id: attempt._id },
-          { $set: { rank: repair.rank, percentile: repair.percentile } }
-        ))
-        .catch(() => {});
-    }
-    const payload = { attempt: toAttemptResponse(attempt) };
 
+    const payload = { attempt: toAttemptResponse(attempt, await getRankFor(attempt)) };
     if (includeReview) {
-      const allQuestions = Array.isArray(attempt.questionReview) ? attempt.questionReview : [];
-      const start = (page - 1) * limit;
-      const items = allQuestions.slice(start, start + limit);
+      const { items, pagination } = paginate(Array.isArray(attempt.questionReview) ? attempt.questionReview : [], page, limit);
       payload.questions = items;
-      payload.pagination = {
-        page,
-        limit,
-        total: allQuestions.length,
-        pages: allQuestions.length ? Math.ceil(allQuestions.length / limit) : 1,
-        hasMore: start + items.length < allQuestions.length,
-      };
+      payload.pagination = pagination;
     }
-
     res.json(payload);
-  } catch (err) {
-    next(err);
-  }
-}
-
-async function submitAttempt(req, res, next) {
-  try {
-    const startedAtMs = Date.now();
-    const userId = req.auth.userId;
-    const { testId, answers, timeSpent, timeTakenSeconds } = submitSchema.parse(req.body || {});
-
-    const runtimeSnapshot = await getTestRuntimeSnapshot(testId);
-    const test = runtimeSnapshot && runtimeSnapshot.test;
-    if (!test || test.status !== "live") return res.status(404).json({ error: "Test not found" });
-
-    const hasAccess = await canAccessTest(req.auth, test);
-    if (!hasAccess) {
-      return res.status(402).json({ error: "Buy Test Series" });
-    }
-
-    const questions = runtimeSnapshot.questions || [];
-    if (!questions.length || questions.length !== (test.questionIds || []).length) {
-      return res.status(400).json({ error: "Test questions are missing. Please contact admin." });
-    }
-
-    const safeAnswers = answers || {};
-    const evalResult = evaluateAttempt({
-      test,
-      questions,
-      answers: safeAnswers,
-      timeSpent: timeSpent || {},
-    });
-
-    const analysis = buildAttemptAnalysis({
-      test,
-      questions,
-      evalResult,
-      answers: safeAnswers,
-      timeTakenSeconds: Number(timeTakenSeconds || 0),
-    });
-
-    const submittedAt = new Date();
-    const basePayload = {
-      userId,
-      testId,
-      answers: safeAnswers,
-      score: evalResult.score,
-      accuracy: Number(evalResult.accuracy.toFixed(2)),
-      correctCount: evalResult.correctCount,
-      wrongCount: evalResult.wrongCount,
-      skippedCount: evalResult.skippedCount,
-      unattemptedCount: evalResult.unattemptedCount,
-      userEmail: String(req.auth.email || "").trim().toLowerCase(),
-      userRole: String(req.auth.role || "student").trim().toLowerCase(),
-      timeTakenSeconds: Number(timeTakenSeconds || evalResult.totalTrackedTimeSeconds || 0),
-      totalTime: Number(timeTakenSeconds || evalResult.totalTrackedTimeSeconds || 0),
-      answerDetails: evalResult.answerDetails,
-      questionReview: evalResult.questionReview,
-      sectionScores: evalResult.sectionScores,
-      sectionWise: evalResult.sectionWise,
-      topicWise: evalResult.topicWise,
-      analysis,
-      submittedAt,
-    };
-
-    let attemptNumber = (await Attempt.countDocuments({ userId, testId })) + 1;
-    let attempt = null;
-
-    for (let tries = 0; tries < 3 && !attempt; tries += 1) {
-      try {
-        attempt = await Attempt.create({
-          ...basePayload,
-          attemptNumber,
-        });
-      } catch (err) {
-        if (err && err.code === 11000) {
-          attemptNumber += 1;
-          continue;
-        }
-        throw err;
-      }
-    }
-
-    if (!attempt) {
-      return res.status(409).json({ error: "Could not save attempt. Please retry once." });
-    }
-
-    const rankPayload = await computeRankAndPercentileForAttempt(attempt);
-
-    attempt.rank = rankPayload.rank;
-    attempt.percentile = rankPayload.percentile;
-    await Attempt.updateOne(
-      { _id: attempt._id },
-      { $set: { rank: rankPayload.rank, percentile: rankPayload.percentile } }
-    );
-
-    const elapsedMs = Date.now() - startedAtMs;
-    if (elapsedMs > 500) {
-      // eslint-disable-next-line no-console
-      console.warn("Slow submitAttempt", {
-        userId: String(userId),
-        testId: String(testId),
-        attemptNumber,
-        elapsedMs,
-      });
-    }
-
-    res.status(201).json({ attempt: toAttemptResponse(attempt) });
   } catch (err) {
     next(err);
   }
@@ -218,19 +269,13 @@ async function getAnalysisSummary(req, res, next) {
     if (!isValidObjectId(req.params.id)) {
       return res.status(400).json({ error: "Invalid analysis id" });
     }
-
-    const query = req.auth.role === "admin"
-      ? { _id: req.params.id }
-      : { _id: req.params.id, userId: req.auth.userId };
-
-    const attempt = await Attempt.findOne(query)
-      .select("testId userEmail attemptNumber score correctCount wrongCount skippedCount unattemptedCount accuracy rank percentile timeTakenSeconds totalTime submittedAt sectionWise topicWise analysis")
+    const attempt = await Attempt.findOne(ownedQuery(req))
+      .select(`${ATTEMPT_SUMMARY_FIELDS} userEmail sectionWise topicWise`)
       .lean();
-
     if (!attempt) {
       return res.status(404).json({ error: "Analysis not found" });
     }
-
+    const rankInfo = await getRankFor(attempt);
     return res.json({
       summary: {
         id: String(attempt._id),
@@ -243,8 +288,8 @@ async function getAnalysisSummary(req, res, next) {
         skippedCount: attempt.skippedCount,
         unattemptedCount: attempt.unattemptedCount || attempt.skippedCount,
         accuracy: attempt.accuracy,
-        rank: attempt.rank,
-        percentile: attempt.percentile,
+        rank: rankInfo.rank,
+        percentile: rankInfo.percentile,
         totalTime: attempt.totalTime || attempt.timeTakenSeconds,
         submittedAt: attempt.submittedAt,
         sectionWise: attempt.sectionWise || null,
@@ -262,38 +307,31 @@ async function getAnalysisQuestions(req, res, next) {
     if (!isValidObjectId(req.params.id)) {
       return res.status(400).json({ error: "Invalid analysis id" });
     }
-
     const { page, limit } = analysisQuestionsQuerySchema.parse(req.query || {});
-    const query = req.auth.role === "admin"
-      ? { _id: req.params.id }
-      : { _id: req.params.id, userId: req.auth.userId };
-
-    const attempt = await Attempt.findOne(query)
-      .select("questionReview")
-      .lean();
-
+    const attempt = await Attempt.findOne(ownedQuery(req)).select("questionReview").lean();
     if (!attempt) {
       return res.status(404).json({ error: "Analysis not found" });
     }
-
-    const allQuestions = Array.isArray(attempt.questionReview) ? attempt.questionReview : [];
-    const total = allQuestions.length;
-    const start = (page - 1) * limit;
-    const items = allQuestions.slice(start, start + limit);
-
-    return res.json({
-      questions: items,
-      pagination: {
-        page,
-        limit,
-        total,
-        pages: total ? Math.ceil(total / limit) : 1,
-        hasMore: start + items.length < total,
-      },
-    });
+    const { items, pagination } = paginate(Array.isArray(attempt.questionReview) ? attempt.questionReview : [], page, limit);
+    return res.json({ questions: items, pagination });
   } catch (err) {
     next(err);
   }
 }
 
-module.exports = { submitAttempt, getResult, listAttempts, getAnalysisSummary, getAnalysisQuestions };
+module.exports = {
+  startAttempt,
+  takeover,
+  getSessionPaper,
+  saveSessionProgress,
+  advance,
+  submitAttempt,
+  abandonAttempt,
+  listActive,
+  postIntegrityEvents,
+  getResult,
+  listAttempts,
+  getAnalysisSummary,
+  getAnalysisQuestions,
+  toAttemptResponse,
+};

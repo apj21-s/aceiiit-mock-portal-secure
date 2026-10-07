@@ -4,7 +4,10 @@ const { requireAuth } = require("../middleware/auth");
 const { readLimiter } = require("../middleware/rateLimit");
 const { listReminders, createReminder, updateReminder, deleteReminder, resendReminder } = require("../controllers/reminderController");
 
+const { objectIdParam } = require("../middleware/validate");
+
 const router = express.Router();
+router.param("id", objectIdParam);
 
 router.get("/", requireAuth, readLimiter(), listReminders);
 router.post("/", requireAuth, createReminder);

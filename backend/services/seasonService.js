@@ -9,7 +9,8 @@ async function getActiveSeason() {
     active = await Season.findOne({ isDefaultActive: true }).exec();
   }
   if (!active) {
-    active = await Season.findOne().sort({ createdAt: -1 }).exec();
+    // Never treat an archived season as the active one.
+    active = await Season.findOne({ status: { $ne: "archived" } }).sort({ createdAt: -1 }).exec();
   }
   // Auto-bootstrap if no season exists in DB
   if (!active) {

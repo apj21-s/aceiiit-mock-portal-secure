@@ -1,67 +1,93 @@
-const express = require('express');
+const crypto = require("crypto");
+const express = require("express");
+const rateLimit = require("express-rate-limit");
+const { z } = require("zod");
+
+const { provisionFromCommerce, revokeFromCommerce } = require("../services/paymentSyncService");
+
+// Server-to-server API for the AceIIIT commerce backend. Authenticated by a shared secret
+// (INTERNAL_API_SECRET, required in production); exempt from browser CSRF.
 const router = express.Router();
-const User = require('../models/User');
-const Entitlement = require('../models/Entitlement');
-const Season = require('../models/Season');
 
-router.post('/access/provision', async (req, res) => {
-  const secret = req.headers['x-internal-api-secret'];
-  const expectedSecret = process.env.INTERNAL_API_SECRET || 'secret';
-  if (secret !== expectedSecret) {
-    return res.status(401).json({ error: 'Unauthorized internal access' });
+router.use(
+  rateLimit({
+    windowMs: 60 * 1000,
+    max: 120,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "Too many internal requests." },
+  })
+);
+
+function secretsMatch(provided, expected) {
+  // Hash both sides so the comparison is constant-time and length-safe.
+  const a = crypto.createHash("sha256").update(String(provided || "")).digest();
+  const b = crypto.createHash("sha256").update(String(expected || "")).digest();
+  return crypto.timingSafeEqual(a, b);
+}
+
+function requireInternalSecret(req, res, next) {
+  const expected = String(process.env.INTERNAL_API_SECRET || "");
+  const provided = req.get("x-internal-api-secret");
+  // No default secret: an unset secret means the internal API is closed.
+  if (!expected || !provided || !secretsMatch(provided, expected)) {
+    return res.status(401).json({ error: "Unauthorized internal access" });
   }
+  return next();
+}
 
-  const { commerceUserId, mockUserId, email, resourceCode, entitlementId, idempotencyKey } = req.body;
+const accessSchema = z.object({
+  commerceUserId: z.string().trim().min(1).max(128),
+  email: z.string().trim().email().max(254),
+  resourceCode: z.string().trim().regex(/^[A-Z0-9_]{2,64}$/, "resourceCode must be UPPER_SNAKE_CASE"),
+  entitlementId: z.string().trim().min(1).max(128),
+  idempotencyKey: z.string().trim().min(8).max(128),
+});
 
+function parseBody(req, res) {
+  const parsed = accessSchema.safeParse(req.body || {});
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.issues[0].message, code: "INVALID_BODY" });
+    return null;
+  }
+  return parsed.data;
+}
+
+router.post("/access/provision", requireInternalSecret, async (req, res, next) => {
+  const input = parseBody(req, res);
+  if (!input) return undefined;
   try {
-    // Determine season based on resource code. We'll default to the active season or create a placeholder.
-    let season = await Season.findOne({ status: 'active' });
-    if (!season) {
-      season = await Season.create({ name: 'Default Season', status: 'active', year: new Date().getFullYear() });
-    }
+    const { entitlement, payment, season, replay } = await provisionFromCommerce(input);
+    return res.json({
+      success: true,
+      replay,
+      entitlement: {
+        id: String(entitlement._id),
+        status: entitlement.status,
+        seasonId: String(season._id),
+        email: entitlement.normalizedEmail,
+      },
+      paymentRecordId: String(payment._id),
+      mockUserId: entitlement.userId ? String(entitlement.userId) : null,
+    });
+  } catch (err) {
+    return next(err);
+  }
+});
 
-    // Upsert User
-    const normalizedEmail = email.toLowerCase().trim();
-    let user = await User.findOne({ normalizedEmail });
-    if (!user) {
-      user = await User.create({
-        name: email.split('@')[0],
-        email: email,
-        normalizedEmail,
-        isPaid: true,
-        status: 'active'
-      });
-    } else {
-      user.isPaid = true;
-      user.status = 'active';
-      await user.save();
-    }
-
-    // Use entitlementId as Idempotency Key mapping via PaymentId or storing it directly.
-    // The Entitlement schema has a compound unique index on { seasonId: 1, normalizedEmail: 1 }.
-    // This makes the operation naturally idempotent per season per email!
-    
-    let entitlement = await Entitlement.findOne({ seasonId: season._id, normalizedEmail });
-    if (!entitlement) {
-      entitlement = await Entitlement.create({
-        userId: user._id,
-        email: user.email,
-        normalizedEmail,
-        seasonId: season._id,
-        tier: 'paid',
-        status: 'active',
-        source: 'admin' // from commerce backend
-      });
-    } else {
-      entitlement.tier = 'paid';
-      entitlement.status = 'active';
-      await entitlement.save();
-    }
-
-    res.json({ success: true, entitlement });
-  } catch (error) {
-    console.error('Provisioning error:', error);
-    res.status(500).json({ error: 'Internal Server Error' });
+router.post("/access/revoke", requireInternalSecret, async (req, res, next) => {
+  const input = parseBody(req, res);
+  if (!input) return undefined;
+  try {
+    const { entitlement, season } = await revokeFromCommerce(input);
+    return res.json({
+      success: true,
+      entitlement: entitlement
+        ? { id: String(entitlement._id), status: entitlement.status, seasonId: String(season._id) }
+        : null,
+    });
+  } catch (err) {
+    return next(err);
   }
 });
 

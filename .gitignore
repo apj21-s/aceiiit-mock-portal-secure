@@ -71,3 +71,10 @@ backend/.env
 
 # dataconnect generated files
 .dataconnect
+
+# CI / local test caches
+.mongodb-binaries/
+
+# Local env variants (secrets). Only the example is committed.
+.env.*
+!.env.example

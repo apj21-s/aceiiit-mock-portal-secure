@@ -8,7 +8,10 @@ const testSchema = new mongoose.Schema(
     series: { type: String, default: "UGEE 2026", index: true },
     type: { type: String, enum: ["practice", "scheduled"], default: "practice", index: true },
     isFree: { type: Boolean, default: false, index: true },
-    status: { type: String, enum: ["draft", "live"], default: "draft", index: true },
+    // "practice" tests are private, student-generated papers; never listed in the catalog.
+    status: { type: String, enum: ["draft", "live", "practice"], default: "draft", index: true },
+    isPractice: { type: Boolean, default: false },
+    ownerUserId: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null, index: true },
     displayOrder: { type: Number, default: 100, index: true },
     durationMinutes: { type: Number, default: 180 },
     sectionDurations: {
@@ -19,6 +22,15 @@ const testSchema = new mongoose.Schema(
     benchmarkScores: { type: [Number], default: [] },
     totalMarks: { type: Number, default: 0 },
     negativeMarks: { type: Number, default: -1 },
+    // Per-session seeded shuffling; answers are mapped back to the original order server-side.
+    shuffleQuestions: { type: Boolean, default: false },
+    shuffleOptions: { type: Boolean, default: false },
+    // Exam-integrity policy. Browser signals are telemetry; no mode ever auto-disqualifies.
+    integrity: {
+      mode: { type: String, enum: ["record", "warn", "strict"], default: "warn" },
+      warnThreshold: { type: Number, default: 1, min: 1, max: 100 },
+      autoSubmitThreshold: { type: Number, default: 5, min: 1, max: 100 },
+    },
     questionIds: [{ type: mongoose.Schema.Types.ObjectId, ref: "Question", default: [] }],
     deletedAt: { type: Date, default: null },
   },

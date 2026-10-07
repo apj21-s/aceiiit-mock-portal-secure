@@ -22,10 +22,8 @@ async function getActiveSeasonEndpoint(req, res, next) {
 
 async function createSeason(req, res, next) {
   try {
-    const { name, examName = "UGEE", year, status = "draft", startDate, endDate } = req.body || {};
-    if (!name || !year) {
-      return res.status(400).json({ error: "Season name and year are required" });
-    }
+    // Validated by the route (adminRoutes schemas.createSeason).
+    const { name, examName, year, status, startDate, endDate, resourceCode } = req.body;
 
     const season = await Season.create({
       name,
@@ -34,6 +32,7 @@ async function createSeason(req, res, next) {
       status,
       startDate: startDate ? new Date(startDate) : null,
       endDate: endDate ? new Date(endDate) : null,
+      resourceCode: resourceCode || "",
       createdById: req.auth ? req.auth.userId : null,
     });
 

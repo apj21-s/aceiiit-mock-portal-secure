@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: backend
+
+env:
+  # mongodb-memory-server downloads a MongoDB binary on first use; cache it between runs.
+  MONGOMS_DOWNLOAD_DIR: ${{ github.workspace }}/.mongodb-binaries
+
+jobs:
+  test:
+    name: Lint, test, audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - uses: actions/cache@v4
+        with:
+          path: .mongodb-binaries
+          key: mongodb-binaries-${{ runner.os }}-${{ hashFiles('backend/package-lock.json') }}
+
+      - run: npm ci
+
+      - run: npm run lint
+
+      - run: npm test
+
+      # Fail on high/critical advisories in production dependencies.
+      - run: npm audit --omit=dev --audit-level=high
+
+  e2e:
+    name: Browser E2E
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - uses: actions/cache@v4
+        with:
+          path: .mongodb-binaries
+          key: mongodb-binaries-${{ runner.os }}-${{ hashFiles('backend/package-lock.json') }}
+
+      - run: npm ci
+
+      # GitHub's Ubuntu runners ship Google Chrome at /usr/bin/google-chrome.
+      - run: npm run test:e2e
+        env:
+          CHROME_PATH: /usr/bin/google-chrome
+
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-screenshots
+          path: backend/node_modules/.cache/e2e-shots
+          if-no-files-found: ignore

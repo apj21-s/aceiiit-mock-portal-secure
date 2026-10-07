@@ -1,133 +1,87 @@
 const Attempt = require("../models/Attempt");
 const { MemoryCache } = require("../utils/memoryCache");
 
-const rankCache = new MemoryCache(128);
-const RANK_CACHE_TTL_MS = 15 * 1000;
-const inflight = new Map();
+// Rank and percentile are computed on read from the current attempt population, so they
+// stay correct as more students submit. They are never frozen onto the attempt document.
+// Ordering: higher score first, then shorter *server-measured* duration, then earlier
+// submission. Admin, practice and invalidated attempts are excluded from the cohort.
 
-const NON_ADMIN_FILTER = {
-  $or: [
-    { userRole: { $exists: false } },
-    { userRole: { $ne: "admin" } },
-  ],
+const rankCache = new MemoryCache(256);
+const RANK_CACHE_TTL_MS = 15 * 1000;
+
+const COHORT_FILTER = {
+  userRole: { $ne: "admin" },
+  isPractice: { $ne: true },
+  invalidatedAt: null,
 };
 
-function compareEntries(a, b) {
-  if (Number(b.score || 0) !== Number(a.score || 0)) {
-    return Number(b.score || 0) - Number(a.score || 0);
-  }
-  if (Number(a.timeTakenSeconds || 0) !== Number(b.timeTakenSeconds || 0)) {
-    return Number(a.timeTakenSeconds || 0) - Number(b.timeTakenSeconds || 0);
-  }
-  return Number(a.submittedAt || 0) - Number(b.submittedAt || 0);
+function isRankable(attempt) {
+  if (!attempt) return false;
+  if (String(attempt.userRole || "student").toLowerCase() === "admin") return false;
+  if (attempt.isPractice) return false;
+  if (attempt.invalidatedAt) return false;
+  return true;
 }
 
-function buildCacheKey(testId, attemptNumber) {
+function cacheKey(testId, attemptNumber) {
   return `rank:${String(testId)}:${Number(attemptNumber)}`;
 }
 
-async function loadRankSnapshot(testId, attemptNumber) {
-  const cacheKey = buildCacheKey(testId, attemptNumber);
-  const cached = rankCache.get(cacheKey);
+function compareEntries(a, b) {
+  if (b.score !== a.score) return b.score - a.score;
+  if (a.time !== b.time) return a.time - b.time;
+  return a.submittedAt - b.submittedAt;
+}
+
+async function loadCohort(testId, attemptNumber) {
+  const key = cacheKey(testId, attemptNumber);
+  const cached = rankCache.get(key);
   if (cached) return cached;
-
-  const entries = await Attempt.find({ testId, attemptNumber, ...NON_ADMIN_FILTER })
+  const rows = await Attempt.find({ testId, attemptNumber, ...COHORT_FILTER })
     .select("_id score timeTakenSeconds submittedAt")
-    .sort({ score: -1, timeTakenSeconds: 1, submittedAt: 1 })
     .lean();
-
-  const snapshot = entries.map((entry) => ({
-    id: String(entry._id),
-    score: Number(entry.score || 0),
-    timeTakenSeconds: Number(entry.timeTakenSeconds || 0),
-    submittedAt: new Date(entry.submittedAt).getTime(),
-  }));
-
-  rankCache.set(cacheKey, snapshot, RANK_CACHE_TTL_MS);
-  return snapshot;
+  const entries = rows
+    .map((row) => ({
+      id: String(row._id),
+      score: Number(row.score || 0),
+      time: Number(row.timeTakenSeconds || 0),
+      submittedAt: new Date(row.submittedAt).getTime(),
+    }))
+    .sort(compareEntries);
+  const index = new Map(entries.map((entry, i) => [entry.id, i]));
+  const cohort = { entries, index };
+  rankCache.set(key, cohort, RANK_CACHE_TTL_MS);
+  return cohort;
 }
 
-function insertIntoSnapshot(entries, attempt) {
-  const id = String(attempt.id || attempt._id || "");
-  const alreadyPresent = entries.some((entry) => entry.id === id);
-  const nextEntries = alreadyPresent
-    ? entries.slice()
-    : entries.concat({
-        id,
-        score: Number(attempt.score || 0),
-        timeTakenSeconds: Number(attempt.timeTakenSeconds || 0),
-        submittedAt: Number(attempt.submittedAt || 0),
-      });
-
-  nextEntries.sort(compareEntries);
-  return nextEntries;
+function percentileFor(rank, total) {
+  if (!total || !rank) return 0;
+  if (total === 1) return 100;
+  const value = ((total - rank) / (total - 1)) * 100;
+  return Math.max(0, Math.min(100, Number(value.toFixed(2))));
 }
 
-async function withKeyLock(key, work) {
-  const previous = inflight.get(key) || Promise.resolve();
-  let release;
-  const current = new Promise((resolve) => {
-    release = resolve;
-  });
-  inflight.set(key, previous.then(() => current));
+async function getRankFor(attempt) {
+  if (!isRankable(attempt)) return { rank: 0, percentile: 0, total: 0 };
+  const cohort = await loadCohort(attempt.testId, attempt.attemptNumber);
+  const position = cohort.index.get(String(attempt._id || attempt.id));
+  if (position === undefined) return { rank: 0, percentile: 0, total: cohort.entries.length };
+  const rank = position + 1;
+  const total = cohort.entries.length;
+  return { rank, percentile: percentileFor(rank, total), total };
+}
 
-  try {
-    await previous;
-    return await work();
-  } finally {
-    release();
-    if (inflight.get(key) === current) {
-      inflight.delete(key);
-    }
+/** Batch variant for lists; loads each (test, attemptNumber) cohort at most once. */
+async function getRanksForAttempts(attempts) {
+  const result = new Map();
+  for (const attempt of attempts || []) {
+    result.set(String(attempt._id || attempt.id), await getRankFor(attempt));
   }
+  return result;
 }
 
-async function computeRankAndPercentile({ testId, attemptNumber, attemptId, score, timeTakenSeconds, submittedAt }) {
-  const cacheKey = buildCacheKey(testId, attemptNumber);
-  return withKeyLock(cacheKey, async () => {
-    const snapshot = await loadRankSnapshot(testId, attemptNumber);
-    const entries = insertIntoSnapshot(snapshot, {
-      id: attemptId,
-      score,
-      timeTakenSeconds,
-      submittedAt: new Date(submittedAt).getTime(),
-    });
-
-    rankCache.set(cacheKey, entries, RANK_CACHE_TTL_MS);
-
-    const rankIndex = entries.findIndex((entry) => String(entry.id) === String(attemptId));
-    const rank = rankIndex === -1 ? entries.length : rankIndex + 1;
-    const total = entries.length;
-    const percentile = total ? ((total - rank) / total) * 100 : 0;
-
-    return {
-      rank,
-      percentile: Math.max(0, Math.min(100, Number(percentile.toFixed(2)))),
-    };
-  });
+function invalidateRankCache(testId) {
+  rankCache.deleteByPrefix(`rank:${String(testId)}:`);
 }
 
-function isNonAdminAttempt(attempt) {
-  return String(attempt && attempt.userRole || "student").trim().toLowerCase() !== "admin";
-}
-
-async function computeRankAndPercentileForAttempt(attempt) {
-  if (!attempt || !isNonAdminAttempt(attempt)) {
-    return { rank: 0, percentile: 0 };
-  }
-
-  return computeRankAndPercentile({
-    testId: attempt.testId,
-    attemptNumber: attempt.attemptNumber,
-    attemptId: attempt._id || attempt.id,
-    score: attempt.score,
-    timeTakenSeconds: attempt.timeTakenSeconds,
-    submittedAt: attempt.submittedAt,
-  });
-}
-
-function invalidateRankCache(testId, attemptNumber) {
-  rankCache.delete(buildCacheKey(testId, attemptNumber));
-}
-
-module.exports = { computeRankAndPercentile, computeRankAndPercentileForAttempt, invalidateRankCache };
+module.exports = { getRankFor, getRanksForAttempts, invalidateRankCache, percentileFor, COHORT_FILTER };

@@ -14,8 +14,9 @@ const paymentRecordSchema = new mongoose.Schema(
     },
     source: {
       type: String,
-      enum: ["google_sheet", "admin"],
-      default: "google_sheet",
+      // "google_sheet" kept only so historical records stay valid; Sheets is no longer a source.
+      enum: ["commerce", "admin", "google_sheet"],
+      default: "admin",
       index: true,
     },
     sourceRecordId: { type: String, default: "", trim: true },

@@ -1,6 +1,44 @@
 const { google } = require("googleapis");
 const GoogleCalendarConnection = require("../models/GoogleCalendarConnection");
 const GoogleCalendarEvent = require("../models/GoogleCalendarEvent");
+const { encryptSecret, decryptSecret } = require("../utils/crypto");
+const { logger, errorSummary } = require("../utils/logger");
+
+function portalBaseUrl() {
+  return String(process.env.PORTAL_BASE_URL || "http://localhost:4000").replace(/\/+$/, "");
+}
+
+/** OAuth callback URL: explicit env, else derived from the portal origin. https-only in production. */
+function calendarRedirectUri() {
+  const uri = String(process.env.GOOGLE_CALENDAR_REDIRECT_URI || `${portalBaseUrl()}/api/calendar/google/callback`);
+  if (process.env.NODE_ENV === "production" && !uri.startsWith("https://")) {
+    throw new Error("Google Calendar redirect URI must use https in production.");
+  }
+  return uri;
+}
+
+/** Stores a refresh token encrypted at rest. */
+function encryptRefreshToken(token) {
+  return token ? encryptSecret(token) : "";
+}
+
+function readRefreshToken(connection) {
+  return connection && connection.refreshToken ? decryptSecret(connection.refreshToken) : "";
+}
+
+/** Best-effort revocation at Google so a disconnected portal can't keep calendar access. */
+async function revokeRefreshToken(connection) {
+  const token = readRefreshToken(connection);
+  if (!token) return false;
+  try {
+    const oauth2Client = getOAuth2Client();
+    await oauth2Client.revokeToken(token);
+    return true;
+  } catch (err) {
+    logger.warn({ err: errorSummary(err) }, "google token revoke failed (removed locally anyway)");
+    return false;
+  }
+}
 
 /**
  * Creates and configures a Google OAuth2 client using the environment variables.
@@ -9,7 +47,7 @@ const GoogleCalendarEvent = require("../models/GoogleCalendarEvent");
 function getOAuth2Client() {
   const clientId = process.env.GOOGLE_CLIENT_ID;
   const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
-  const redirectUri = process.env.GOOGLE_CALENDAR_REDIRECT_URI;
+  const redirectUri = calendarRedirectUri();
 
   if (!clientId || !clientSecret || !redirectUri) {
     throw new Error("Missing Google OAuth Calendar credentials in environment");
@@ -67,6 +105,10 @@ module.exports = {
   getAuthUrl,
   exchangeCodeForTokens,
   syncReminderToCalendar,
+  encryptRefreshToken,
+  readRefreshToken,
+  revokeRefreshToken,
+  buildGoogleEventPayload,
 };
 
 // -----------------------------------------------------------------------------
@@ -81,7 +123,7 @@ function buildGoogleEventPayload(reminder) {
     ? reminder.subjectFocus.join(", ") : "";
   const title = String(reminder.title || "ACE IIIT Mock Plan");
   
-  const origin = process.env.CLIENT_ORIGIN || "https://portal.aceiiit.in";
+  const origin = portalBaseUrl();
   const testLink = reminder.testId ? `${origin}/#instructions/${reminder.testId}` : `${origin}/#dashboard`;
 
   let description = `Subject Focus: ${subjectFocus}\n\nLink: ${testLink}`;
@@ -126,7 +168,7 @@ async function syncReminderToCalendar(reminder, action) {
 
     // 2. Initialize OAuth client and Calendar API
     const oauth2Client = getOAuth2Client();
-    oauth2Client.setCredentials({ refresh_token: connection.refreshToken });
+    oauth2Client.setCredentials({ refresh_token: readRefreshToken(connection) });
     
     // Note: googleapis handles token refresh automatically before requests if they are expired.
     const calendar = google.calendar({ version: "v3", auth: oauth2Client });
@@ -217,7 +259,7 @@ async function syncReminderToCalendar(reminder, action) {
     }
 
   } catch (error) {
-    console.error(`[GoogleCalendarSync] Failed to ${action} reminder ${reminder._id}:`, error.message);
+    logger.error({ err: errorSummary(error), action, reminderId: String(reminder._id) }, "google calendar sync failed");
     
     // Check if the error is due to a revoked token
     if (error.message && (error.message.includes("invalid_grant") || error.message.includes("revoked"))) {

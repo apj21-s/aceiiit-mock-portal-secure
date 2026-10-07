@@ -12,6 +12,8 @@ const seasonSchema = new mongoose.Schema(
       index: true,
     },
     isDefaultActive: { type: Boolean, default: false, index: true },
+    // Commerce product resource code (e.g. "PAID_MOCK_SERIES") provisioned into this season.
+    resourceCode: { type: String, trim: true, default: "", index: true },
     startDate: { type: Date, default: null },
     endDate: { type: Date, default: null },
     createdById: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },

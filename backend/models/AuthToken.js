@@ -2,7 +2,7 @@ const mongoose = require("mongoose");
 
 const authTokenSchema = new mongoose.Schema(
   {
-    userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true, index: true },
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null, index: true },
     email: { type: String, required: true, lowercase: true, trim: true, index: true },
     tokenHash: { type: String, required: true, index: true },
     purpose: { type: String, enum: ["activation", "password_reset"], required: true, index: true },

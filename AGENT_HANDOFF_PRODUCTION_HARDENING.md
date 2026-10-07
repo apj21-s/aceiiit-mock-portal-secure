@@ -73,7 +73,7 @@
 | D4 | **Exam integrity = enforcement + telemetry**, not proctoring. Browser signals are evidence; the server enforces. No webcam or screen recording. | Owner review |
 | D5 | **Abandoned sessions:** the server deadline runs independently. A sweeper expires the session and finalizes the result from the server-saved answers. Nothing depends on the browser "auto-submitting". | Owner review |
 | D6 | **One active exam session with session binding** (`examToken`), not device authentication. A fingerprint is telemetry only. Start/resume/409/takeover behave exactly as in M2b's table. | Owner review |
-| D7 | **Git:** the agent never commits or pushes. Stop after each milestone and hand over the changed files and a suggested commit message. | Owner |
+| D7 | **Git:** the agent never commits or pushes. **Updated 2026-10-07: the owner said not to stop for commits.** Run all milestones back to back; the owner commits everything later. Still give the per-milestone report (§11) in the tracker, with changed files and suggested commit messages. | Owner |
 | D8 | Static assets move to **`backend/public/`**; only that directory is served. | Review §31 |
 | D9 | User-state cache, if used, has a TTL of 30s or less and is **invalidated immediately** on security changes. Entitlement checks always go to the DB. | Review §3.1 |
 | D10 | AI circuit breaker: use the provider's `retryDelay` or a configurable TTL with a maximum. **No hardcoded timezone reset.** | Review §3.2 |
@@ -626,15 +626,15 @@ docs: document production deployment               (M8)
 |---|---|---|---|
 | Pre-M0: owner checkpoint commit | ☐ (skipped) | n/a | The owner said "go" without committing. The agent saved non-git baselines (without `.env`) to its session scratchpad. |
 | M0 Safety net | ☑ 2026-10-06 | ☑ 13/13 | `app.js`/`server.js` split; Jest, supertest and memory-server; characterization and known-issue tests; prod audit 8 → 0; `SECURITY.md` |
-| M1 Auth/sessions/CSRF/static | ☐ | ☐ | |
-| M2 Exam integrity | ☐ | ☐ | |
-| M2b Exam flow/formatting/integrity telemetry | ☐ | ☐ | |
-| M3 Commerce/entitlements (+ AceIIIT) | ☐ | ☐ | |
-| M4 QOTD/email/uploads/calendar | ☐ | ☐ | Q1 answered? |
-| M5/M6 IDOR/validation/audit | ☐ | ☐ | |
-| M7 Gemini Performance Intelligence | ☐ | ☐ | Model re-checked? |
-| M8 Ops/frontend/CI/load/docs/legal | ☐ | ☐ | |
-| Final verification and report | ☐ | ☐ | |
+| M1 Auth/sessions/CSRF/static | ☑ 2026-10-07 | ☑ 90/90 | Report in §14 |
+| M2 Exam integrity | ☑ 2026-10-07 | ☑ 114/114 + browser E2E | Report in §14 |
+| M2b Exam flow/formatting/integrity telemetry | ☑ 2026-10-07 | ☑ 124/124 + browser E2E | Report in §14 |
+| M3 Commerce/entitlements (+ AceIIIT) | ☑ 2026-10-07 | ☑ portal 146/146 + E2E; AceIIIT 87 pass | Report in §14 |
+| M4 QOTD/email/uploads/calendar | ☑ 2026-10-07 | ☑ 168/168 + E2E | Q1 resolved by default (Resend→Brevo→SMTP); report in §14 |
+| M5/M6 IDOR/validation/audit | ☑ 2026-10-07 | ☑ 178/178 + student & admin E2E | Report in §14 |
+| M7 Gemini Performance Intelligence | ☑ 2026-10-07 | ☑ 210/210 + E2E | Model re-checked 2026-10-07; report in §14 |
+| M8 Ops/frontend/CI/load/docs/legal | ☑ 2026-10-07 | ☑ 232/232 + 4 E2E suites (prod smoke 36/36) | Report in §14 |
+| Final verification and report | ☑ 2026-10-07 | ☑ 236/236 + 4 E2E suites, lint 0 errors, prod audit 0 | "Final report" in §14. Production readiness depends on the owner items it lists |
 
 ## 11. Per-milestone report template
 
@@ -695,3 +695,602 @@ STOPPED: waiting for the owner to commit before Mx+1.
 - **The commerce repo** shares `MONGODB_URI` naming with the portal. Once it moves to HTTP, it must no longer need the portal's DB URI.
 - The **`.env` has `BREVO_API_KEY`** but no SMTP (see Q1).
 - **Free-tier Gemini** content may be used by Google, so never send PII or question text.
+
+---
+
+## 14. Milestone reports (agent log)
+
+### M1: Authentication, sessions, CSRF, static files (2026-10-07)
+**Re-audit:**
+- `mock_google_`/`mock_apple_`, the unverified Apple fallback, optional audience, repo-root static serving, localStorage Bearer tokens, stale JWT state and the OTP aliases were all OPEN. All are now **FIXED**.
+
+**Implemented:**
+- **Env validation:** `config/env.js` (Zod) is called from `server.js`. Production requires JWT/INTERNAL/CALENDAR secrets of 32+ characters, `MONGODB_URI`, `GOOGLE_CLIENT_ID`, an https `PORTAL_BASE_URL` and an email key, and refuses `ALLOW_INSECURE_DEV_AUTH`.
+- **OAuth** (`authController.js`, rewritten):
+  - JWKS verification of signature, alg, iss, aud, exp and sub, refetching keys once when the `kid` is unknown.
+  - Fails closed: 503 when not configured or keys can't be fetched.
+  - No tokeninfo fallback, no unsigned decode, and mocks only behind the dev flag.
+  - Links accounts by provider subject, or by email only when the provider verified it; 409 when the email is bound to another subject.
+- **Sessions:**
+  - `services/sessionService.js`: JWT `{userId, tv}`, 24h (`SESSION_TTL_HOURS`), with sliding renewal in `/auth/me`.
+  - `middleware/auth.js`: cookie only, loads the user on every request (no cache), and rejects deleted, disabled or `tv`-mismatched sessions. Role and paid state come from the DB.
+  - `User.tokenVersion` is bumped on password change or reset, role change, admin delete, `POST /api/admin/users/:id/revoke-sessions` (audited) and `POST /api/auth/logout-all`.
+- **CSRF:** `middleware/csrf.js` implements double-submit (`aceiiit_csrf` cookie plus `X-CSRF-Token` header, constant-time compare) on POST, PUT, PATCH and DELETE under `/api`. Only `/api/internal/*` is exempt. `GET /api/auth/csrf` bootstraps the token.
+- **Abuse protection:**
+  - `loginAccountLimiter`: per email, failures only, 5 per 15 minutes.
+  - DB lockout using `failedLoginCount`/`lockedUntil`. Attempts 1–5 get 401 and the 6th gets 429, the same for existing and unknown accounts.
+  - Generic login message.
+  - Activation request: same response for everyone and no User created. The account is created at `/activate/complete` (`AuthToken.userId` is now optional).
+  - Per-IP auth limit lowered from 1000 to 600 per 10 minutes.
+  - OTP routes, the OTP limiter, `models/Otp.js`, `sendOtpEmail` and the frontend `sendOtp`/`verifyOtp` were removed.
+- **Static:** `index.html`, `css/`, `js/` and `assets/` moved to `backend/public/`, and only that directory is served. The SPA fallback serves only extension-less GETs outside `/api`. KaTeX 0.16.9 is installed locally (`/vendor/katex`); the fallback URL is jsdelivr, which the CSP allows (cdnjs was blocked).
+- **Frontend** (`public/js/storage.js`): a single `request()` path sends the cookie session plus the CSRF header, refreshes the token and retries once on `CSRF_FAILED`, and clears the session on 401. No token is stored, and legacy stored tokens are dropped. The calendar helpers go through `api()`.
+
+**Tests:** `npm test` → 8 suites, 90 tests, all pass.
+- New in `tests/security/`: `env`, `static`, `oauth`, `session`, `csrf`, `abuse`.
+- `tests/helpers/session.js` provides a cookie and CSRF client.
+
+**Exit criteria (all PASS):**
+- Mock Google, forged Apple, wrong audience and expired tokens each get 401.
+- Missing production env fails boot.
+- `/backend/server.js`, `/backend/package.json` and `/backend/.env` return 404.
+- A revoked session gets 401 immediately.
+- POST, PUT, PATCH and DELETE without CSRF each get 403; a mismatched token gets 403; a header without a cookie gets 403.
+- Lockout is enforced.
+
+**Env for the owner to set before deploying:** `PORTAL_BASE_URL`, `INTERNAL_API_SECRET` (the same value in AceIIIT, 32+ characters), `CALENDAR_TOKEN_KEY`, `SESSION_TTL_HOURS` (optional), `GOOGLE_CLIENT_ID`. `JWT_SECRET` must be 32+ characters. `JWT_EXPIRES_IN` is no longer used.
+
+**Notes and risks:**
+- **Everyone is signed out once on deploy.** Existing 7-day JWTs lack `tv` and fail the check.
+- **GET side effects:** `/api/calendar/google/connect` sets an OAuth-state cookie, which carries no CSRF risk. `getResult`'s rank "repair" write is removed in M2.
+- `scripts/test-login-load.js` and `scripts/verify-auth-matrix.js` still use the old Bearer/mock flows; they get updated or removed in M8.
+
+**Suggested commits:** `security: harden authentication and sessions` and `security: isolate public assets and secrets`
+
+### M2: Server-authoritative exam sessions (2026-10-07)
+**Re-audit:** client-owned timing, section lock and answers; client timing used in ranking; frozen rank; broken client-side practice scoring. All were OPEN and are now **FIXED**.
+
+**Implemented:**
+- **Models:**
+  - `models/AttemptSession.js`: Mongo partial unique index `one_active_session_per_user_test` on `{userId, testId}` where `status:"active"`. Stores the exam token hash, server-saved answers, timeSpent, marked, visited and `lastSeq`, the timeline fields, and `submittedReason`.
+  - `models/IdempotencyRecord.js`: unique on `userId+operation+key`, with a 24h TTL.
+  - `Attempt` gained `sessionId` (unique, sparse), `isPractice`, `submittedReason` and `invalidatedAt`/`invalidatedReason`.
+  - `Test` gained `status:"practice"`, `isPractice` and `ownerUserId`.
+- **`services/attemptSessionService.js`:**
+  - `computeTimeline` uses server timestamps only. REAP starts at the early SUPR submit or automatically at the SUPR deadline; grace is 60s.
+  - `startSession` follows the start/resume/409 table.
+  - `takeoverSession` rotates the token.
+  - `getPaper` serves questions only after start and requires the token.
+  - `saveProgress` validates question membership, option range, section lock, REAP not started, deadlines and stale `seq`.
+  - `advanceSection` performs the server SUPR lock.
+  - `finalizeSession` is idempotent and race-safe: it claims `active→finalizing`, recovers stuck claims, and guarantees exactly one Attempt per session.
+  - `submitSession`: a late submit gets 409 `EXAM_EXPIRED` and the saved answers are finalized.
+  - `listActiveSessions` finalizes any expired sessions it finds.
+- **`services/attemptSweeper.js`** runs every 30s from `server.js`. It expires sessions past the deadline and finalizes them from saved answers. No browser involvement is needed, and it is safe across instances.
+- **`services/rankService.js`:** rank and percentile are computed on read (score desc, then server duration asc, then `submittedAt` asc), excluding admin, practice and invalidated attempts. Cohorts are cached 15s and invalidated on finalize. A single student gets percentile 100. Admin snapshot, results and user detail also compute ranks on read.
+- **Routes** (`routes/attemptRoutes.js`):
+  - `POST /api/attempt/start`
+  - `GET /api/attempt/sessions/active`
+  - `POST /api/attempt/session/:id/{takeover,advance,abandon}`
+  - `GET …/paper`
+  - `PUT …/answers`
+  - `POST /api/attempt` (requires `sessionId`, `X-Exam-Token` and `Idempotency-Key`)
+
+  The legacy direct submit gets 400.
+- **`POST /api/tests/practice`:** a server-built paper drawn only from accessible questions. Free accounts get one; it is excluded from the catalog, admin lists and ranks.
+- **Rate limits:** `submissionLimiter` and `readLimiter` are keyed by user when authenticated, so one campus NAT IP doesn't throttle a whole class.
+- **`middleware/error.js`** passes `code` and extra fields (`attemptId`, `sessionId`) through on exposed errors.
+- **Frontend** (`public/js/storage.js`, `public/js/app.js`):
+  - The local attempt mirrors the server session, and the timer uses `store.serverNow()`, a monotonic `performance.now()` offset from the server clock.
+  - Autosave is debounced at 3s and sends only changed answers (plus timeSpent, marked and visited), with an increasing `seq`. It retries 3s, 6s, 15s, then 30s, and resyncs on `SECTION_LOCKED`.
+  - A "Saved to server ✓ / Offline" chip shows autosave state.
+  - Answers are flushed with a keepalive `fetch` on unload and when the tab is hidden.
+  - `launchExam()` handles start, resume, the 409 takeover confirm, and expired sessions (showing the server result).
+  - Advancing to REAP calls the server.
+  - Submit uses a stable Idempotency-Key and retries on 5xx or network errors; `EXAM_EXPIRED` leads to the finalized result.
+  - **Quit and Restart now submit the saved answers** (`/abandon`). This closes the "abandon near the deadline and restart for more time" hole.
+  - Client-only practice tests and pre-session in-progress attempts from older builds are dropped on load.
+- **Bugs fixed along the way:**
+  - `User.toJSON` leaked `tokenVersion`, `failedLoginCount`, `lockedUntil` and the Google/Apple subjects; these are now stripped.
+  - **The results page threw on a missing `#back-dashboard` button, so Retake never worked.** The bindings are now guarded.
+
+**Tests:**
+- `npm test` → 114/114, including new `tests/integrity/exam-session.test.js` (23 tests).
+- **Browser E2E** with puppeteer-core and system Chrome: the script lives in the agent scratchpad and will be added to the repo in M8. It covers cookie login (no token in storage, httpOnly cookie), start, timer from the server, autosave to the server, reload recovery, a second tab getting 409 → takeover (same session, answers carried over, old token rejected), REAP advance, submit, server score 8, rank-on-read, and the results page rendering. There are no console errors other than the designed 409s.
+
+**Exit criteria (all PASS):** session creation; a concurrent duplicate start produces one session; deadline enforcement; late submit rejected; abandoned session finalized server-side; duplicate submit returns the same attempt; invalid option, wrong question and wrong test rejected; SUPR after lock rejected; negative marking; rank changes as others submit; server-time tie-break; clock skew ignored.
+
+**Notes:**
+- Attempts already in the DB keep their stored `rank`/`percentile` fields, but responses now compute them, so those fields are ignored.
+- The legacy `getTestQuestions` endpoint still serves questions before start. M3 restricts it (questions then come only via the paper).
+
+**Suggested commit:** `integrity: make exam sessions server authoritative`
+
+### M2b: Exam flow, formatting, integrity (enforcement + telemetry) (2026-10-07)
+**Implemented:**
+- **Shuffling:**
+  - `Test.shuffleQuestions` and `Test.shuffleOptions` are copied onto the session with a random `shuffleSeed` (`attemptSessionService`: `seededShuffle`, `optionPermutation`, `orderQuestions`).
+  - Questions are shuffled within each section, and SUPR always precedes REAP.
+  - The paper serves permuted options. Answers are stored in the **original** option order (mapped in `buildProgressUpdate`) and echoed back in displayed order (`sessionView` takes optional `optionCounts`), so scoring is unchanged.
+- **Integrity policy:** `Test.integrity = {mode: record|warn|strict, warnThreshold, autoSubmitThreshold}`, defaulting to warn, then 1, then 5; practice papers use record. The policy is snapshotted onto `AttemptSession.integrity`, which also holds the server-side `violations`, `byType`, `lastCountedAt` and `takeovers`.
+- **Telemetry endpoint:** `models/IntegrityEvent.js` plus `POST /api/attempt/session/:id/events`, which requires the binding and is rate-limited.
+  - **Counted events:** `tab_hidden`, `fullscreen_exit`, `copy_attempt`, `cut_attempt`, `paste_attempt`, `blocked_shortcut`, `print_attempt`, `second_tab`.
+  - **Telemetry only:** `window_blur`, `context_menu`, `offline`, `viewport_shrink`, `fullscreen_return`, `device_takeover`.
+  - A counted type is deduped within 2s, and the client can't lower the count.
+  - Strict mode with violations over the threshold finalizes the session (`submittedReason:"integrity_threshold"`).
+  - **No mode ever auto-invalidates.** A takeover writes a `device_takeover` event plus an `EXAM_SESSION_TAKEOVER` audit entry. `Attempt.integrity` snapshots the counts at finalize.
+- **Admin:**
+  - `GET /api/admin/attempts/:id/integrity` returns the event timeline.
+  - `POST /api/admin/attempts/:id/invalidate {reason, restore?}` requires a reason, is audited as `ATTEMPT_INVALIDATED`/`ATTEMPT_RESTORED`, invalidates the rank cache and is reversible.
+  - The leaderboard accepts `?excludeFlagged=1`, and the results payload includes integrity data.
+  - The admin UI gains a results badge, Review (timeline) and an invalidate/restore prompt. The test form has integrity mode, a strict limit, and the shuffle checkboxes.
+- **Frontend** (`public/js/examIntegrity.js`, new):
+  - Monitors visibility, debounced blur, full-screen exit (10s grace with a one-click return prompt), clipboard and context menu (blocked on the exam surface), blocked shortcuts, print, a second tab via BroadcastChannel, offline duration and viewport shrink.
+  - Events are batched to the server. Adds a watermark (email, session and time) and `@media print` hiding.
+  - Full screen is requested inside the Begin click.
+  - A non-blocking notice shows the server count.
+  - The instructions page discloses everything that is recorded, and the student agrees to it.
+- **Formatting:**
+  - A–D option letters, with keys 1–9 to select (ignored in text fields and modals).
+  - Lazy images with "Figure n" alt text.
+  - Passage/question split pane at 1024px and wider.
+  - Scrollable `.katex-display`.
+  - **Admin PDF export now renders LaTeX** (KaTeX in the export window) instead of printing escaped source.
+- **Bug fixed** (it predates this work): **the exam was broken on phones (≤780px).** Unconditional `!important` "Floating Exam Layout" rules later in `portal.css` re-showed the desktop sidebar and forced a 280px column. A mobile override is now appended last. Verified by screenshot at 390px with no horizontal overflow.
+
+**Tests:**
+- `npm test` → 124/124, including new `tests/integrity/integrity-telemetry.test.js` (10 tests): shuffle mapping and scoring, section ordering, binding required, warn counting and dedupe, unknown types rejected, strict auto-submit after the threshold (not invalidated), record mode, takeover audit, admin timeline, invalidate/restore and ranks, `excludeFlagged`, and students forbidden from both.
+- **Browser E2E** additionally checks A–D letters, the watermark, the number-key select, a copy attempt being recorded server-side with a notice shown, and no overflow at 390 and 1280px.
+
+**Honest limits:** browser signals deter and inform but can't stop a second device or devtools. This is documented in `SECURITY.md` in M8.
+
+**Suggested commit:** `integrity: exam flow, formatting and telemetry`
+
+### M3: Payments, entitlements, paid-content isolation (2026-10-07). First half; see the completion entry below
+**Done (backend; `npm test` 123/123):**
+- `canAccessTest` is read-only and implements: free OR admin OR active, unexpired Entitlement for the test's season. The isPaid shortcut and the grant side effect are removed. `getEntitledSeasonIds`, `isTestAccessible` and `hasAnyActiveEntitlement` were added.
+- `linkPendingPaymentToUser` no longer reactivates revoked entitlements. It only links `userId` and creates missing entitlements for verified payments.
+- **Catalog** (`testDataService.getCatalogPayload`): metadata only, with `questionIds: []`, `questions: []`, a per-user `accessible` flag, and `sectionSummary` only when accessible. The shared base is cached 60s.
+- `GET /api/tests/:id/questions` is admin-only; students get 403 `PAPER_VIA_SESSION_ONLY`. The runtime and public question loaders now include soft-deleted questions a test still references, so a test can't brick.
+- **Sheets removed:**
+  - Deleted `services/paidSheetService.js` and `scripts/smokeTest.js` (which was Sheets-based).
+  - Removed `/admin/sync-sheets`, `/admin/payments/sync`, the sheet job in `server.js`, `isSheetVerified` in the admin API, and the signup `isPaid` from Sheets.
+  - `PaymentRecord.source` now accepts `commerce|admin|google_sheet` (the last is legacy only).
+- `Season.resourceCode` field added.
+- **`services/paymentSyncService.js`:**
+  - `createManualPayment`, exposed as `POST /api/admin/payments`: creates a pending record that the admin then verifies.
+  - `provisionFromCommerce` and `revokeFromCommerce`: idempotent, audited as `INTERNAL_PROVISION`/`INTERNAL_REVOKE`, and create a pending user for unknown emails.
+  - `resolveSeasonForResource`: a tagged season, else the generic codes (`COMMERCE_ACTIVE_SEASON_RESOURCE_CODES`, default `PAID_MOCK_SERIES`) map to the existing active season, else 422. It never creates a season.
+  - Errors now carry HTTP status codes.
+- **`routes/internalRoutes.js` rewritten:**
+  - Mandatory `INTERNAL_API_SECRET`: none set means closed (401).
+  - SHA-256 plus `timingSafeEqual` compare.
+  - Zod body `{commerceUserId, email, resourceCode, entitlementId, idempotencyKey}`.
+  - Rate limited.
+  - `POST /access/provision` and `POST /access/revoke`.
+- Fixed the admin users "enrolled only" filter, which ignored the search term.
+
+**Remaining M3 work (next agent, start here):**
+1. **Tests:** six-case entitlement matrix (including expired); internal API (missing or wrong secret 401, bad body 400, valid request creates the entitlement, replay is idempotent with no duplicate audit, unmapped resource 422, revoke works); `POST /admin/payments` followed by verify grants access; catalog leaks no IDs.
+2. **Frontend** (`public/js/app.js`):
+   - Replace `!t.isFree && !user.isPaid && !auth.isAdmin(user)` locks (around lines 3811, 3881, 4430, 4476, 4511, 5431) with `t.accessible === false`.
+   - `renderInstructions` must stop calling `getTestQuestionsFromRemote`/`ensureTestQuestionsLoaded` for students. Use `test.sectionSummary` for counts and marks.
+   - Remove the "sheet" users tab (around line 7717) and `syncPaidSheets` (storage around 1916, app around 9427).
+   - Add an admin "Add payment" form that calls `POST /api/admin/payments`.
+   - Set `User.isPaid` in `/auth/me` from `hasAnyActiveEntitlement` (display only).
+3. **AceIIIT repo** (`api/src/services/commerce.service.ts:346-421`): replace the direct `MockUser` Mongo writes with `fetch(MOCK_PORTAL_URL + "/api/internal/access/provision|revoke")` with the `x-internal-api-secret` header. Remove `mongoose`, `MockUser` and `connectMockPortal`. Add `MOCK_PORTAL_URL` to `config.ts` and `.env.example`. Update `tests/e2e.test.ts`.
+4. **Database integrity:**
+   - Drop the `User.deletedAt` TTL index, with a migration script to drop the `deletedAt_1` index on users.
+   - `deleteQuestion`/purge must return 409 when the question is attached to a live test.
+   - User purge should anonymize and cascade.
+   - Fix the duplicate-index warnings (`User.normalizedEmail`, `GoogleCalendarEvent.reminderId`).
+   - Attempt-review slimming: decide and document (deferred is acceptable if justified).
+5. Re-run the browser E2E (scratchpad script `e2e/exam-e2e.js`; copy it into the repo in M8) after the frontend changes.
+
+**After M3:** M4, M5/M6, M7 and M8 per §7.
+
+### M3, completion (2026-10-07)
+**Done after the partial entry above:**
+- **Tests:**
+  - `tests/payments/entitlements.test.js` (18): the six-case matrix plus expired; `User.isPaid` alone gives 402; login doesn't reactivate a revoked entitlement; catalog isolation.
+  - Internal API: missing, wrong or unset secret → 401; bad body → 400; unmapped resource → 422 with no season created; a valid request creates a commerce PaymentRecord, an Entitlement, an audit entry and a pending user; replay is idempotent; a tagged season wins; revoke works and is audited.
+  - Admin add-payment then verify grants access; students get 403.
+  - `tests/payments/data-integrity.test.js` (5).
+- **Bug fixed:** `getActiveSeason()` fell back to the newest season *even if archived*. It now excludes archived seasons.
+- **Frontend:**
+  - Locks use the server-computed `test.accessible` via `isTestLocked()` instead of `user.isPaid`.
+  - `renderInstructions` never fetches questions for students; it uses `test.sectionSummary` for counts and marks.
+  - The Sheets UI is replaced by an "Add payment" form (`store.createPayment`) with "verify now".
+  - The buy screen copy no longer says "log out and log in again".
+  - `/auth/me` and login sync `User.isPaid` from `hasAnyActiveEntitlement` (display only).
+- **AceIIIT repo** (working tree only; your own uncommitted changes there were kept):
+  - `commerce.service.ts` no longer imports mongoose or writes to the portal DB. `callMockPortal()` POSTs to `${MOCK_PORTAL_URL}/api/internal/access/{provision,revoke}` with `x-internal-api-secret`, a 10s timeout and `idempotencyKey: provision-<entitlementId>`. Failures leave `PROVISIONING_FAILED`, so the existing retry route still works.
+  - `StudentIdentity.mockUserId` comes from the portal response (the portal now returns `mockUserId`).
+  - `config.ts` gains `MOCK_PORTAL_URL` (optional URL); `.env.example` documents it and recommends a 32+ character shared secret.
+  - Tests: `setup-env.ts` sets `MOCK_PORTAL_URL`; `security.test.ts` asserts the HTTP calls via the existing fetch spy; `e2e.test.ts` mocks fetch.
+  - `npx jest` → 87 passed, 12 skipped (DB suites without `TEST_DATABASE_URL`, as before).
+- **Database integrity:**
+  - The `User.deletedAt` TTL is removed. Run `node scripts/migrations/2026-10-drop-user-ttl.js` (dry run) and then `--apply` once in production.
+  - Deleting or purging a question used by a live test returns 409 `QUESTION_IN_LIVE_TEST`.
+  - User purge requires the user to be in trash first. It anonymizes attempts, unlinks entitlements, deletes reminders, calendar data and sessions, and logs a `USER_PURGED` audit entry.
+  - Duplicate-index warnings fixed.
+- **Browser E2E** additionally checks that the paid test shows the buy screen and that a direct question fetch returns 403.
+
+**Accepted / deferred:** slimming the attempt review. Each Attempt still embeds `questionReview` (question content at submit time). Slimming it needs copy-on-edit question snapshots. Since this copy *is* what preserves historical correctness, it is deferred to P2 and accepted as storage overhead.
+
+**Owner actions:**
+- Set `MOCK_PORTAL_URL` in AceIIIT.
+- Use the same `INTERNAL_API_SECRET` (32+ characters) in both services.
+- Optionally tag seasons with `resourceCode`; `PAID_MOCK_SERIES` maps to the active season by default.
+- Run the TTL migration.
+- `MONGODB_URI` is no longer needed in the AceIIIT api.
+
+**Suggested commits:** `commerce: migrate to backend-native entitlements` (portal) and `commerce: provision mock portal over internal HTTP API` (AceIIIT)
+
+### M4: QOTD, email and reminders, uploads, calendar (2026-10-07)
+**Re-audit findings (all now FIXED):**
+- QOTD was broken on both ends. The client called a nonexistent `store.getUser()`, so it never POSTed and kept the answer in localStorage as a "guest". The server read `req.auth.id`.
+- The answer shipped in the payload, and the QOTD could be picked from paid or draft tests.
+- **Reminder emails were SMTP-only and SMTP isn't configured, so they never sent.**
+- **A successful calendar-invite email set `Reminder.sentAt`.** After any edit or resend, the real pre-exam reminder was therefore never sent.
+- Email HTML was not escaped, ICS text was not escaped, and there was a base64-in-Mongo upload fallback.
+- Calendar refresh tokens were stored in plaintext, disconnect didn't revoke at Google, and links used `CLIENT_ORIGIN` (default `localhost:10000`).
+
+**Implemented:**
+- **QOTD:**
+  - Questions come from **live free** tests only, picked deterministically per IST day (`qotdDateKey`). The pick is persisted in the new `models/QotdPick.js`, so it stays stable across restarts, publishes and instances.
+  - The payload has no answer or explanation.
+  - `POST /api/tests/qotd-attempt {questionId, selectedOption}` uses `req.auth.userId`, an atomic one-per-day write, 409 `QOTD_STALE`/`QOTD_ALREADY_ATTEMPTED` (with the prior result), and 400 for a bad option. It returns `{correct, correctOption, explanation}` afterwards, and the catalog includes today's `qotd.attempt`.
+  - `User.lastQotdAttempt` gains `questionId` and `correct`.
+  - Frontend: the answer is never in the page before submitting, the explanation is shown afterwards, and KaTeX renders.
+- **Email** (`utils/mailService.js` rewritten; new `utils/escape.js`):
+  - Resend first, then Brevo, then SMTP (only if configured). Sender and SendPulse are removed.
+  - Every dynamic value is `escapeHtml`'d, and links go through `safeUrl` (http/https only).
+  - Attachments are supported on all providers.
+  - Reminder and invite mail uses the same chain, and links use `PORTAL_BASE_URL`.
+  - ICS output uses `escapeIcsText` and CRLF stripping, folds lines at 75 octets, and keeps UID `<id>@aceiiit.in`, UTC times and the SEQUENCE.
+- **Reminders** (`services/reminderService.js` rewritten):
+  - New fields: `deliveryState pending|sending|sent|failed|cancelled`, `attempts`, `nextAttemptAt`, `claimedAt`, `failedAt`, plus `inviteSentAt`/`inviteError` kept separate from delivery.
+  - Each reminder is claimed atomically and handled in its own try/catch, with backoff 1m → 5m → 30m → 2h and failure after 5 attempts.
+  - Stuck `sending` claims are released after 5 minutes, and legacy rows without `deliveryState` still send.
+  - A reminder whose plan already started is marked failed rather than sending a wrong "starts in" email.
+  - The controller resets delivery on update and sets `cancelled` on delete; resend touches only the invite.
+- **Uploads** (new `services/imageUploadService.js`, used by both the upload route and admin question images):
+  - Multer limit is 4MB with a MIME allow-list (png/jpeg/webp/gif), and the **real bytes are sniffed**.
+  - No base64 fallback: a Cloudinary failure returns 502 `IMAGE_STORAGE_UNAVAILABLE`, and missing configuration returns 503.
+- **Calendar:**
+  - New `utils/crypto.js` encrypts refresh tokens with AES-256-GCM (`v1:iv:tag:ct`, key from `CALENDAR_TOKEN_KEY`); legacy plaintext is still readable.
+  - Disconnect revokes the token at Google (`revokeRefreshToken`) before clearing it.
+  - The redirect URI defaults to `${PORTAL_BASE_URL}/api/calendar/google/callback` and must be https in production.
+  - Event links use `PORTAL_BASE_URL`.
+  - Migration: `node scripts/migrations/2026-10-encrypt-calendar-tokens.js` (dry run), then `--apply`.
+
+**Tests:** `npm test` → 168/168.
+- `tests/features/qotd.test.js` (4): free/live only, no answer, persisted, one per day, invalid input, stable daily pick.
+- `tests/features/email-reminders.test.js` (10): escaping, `javascript:` links, the ICS UID/SEQUENCE/escaping/fold/CRLF-injection checks, update and delete SEQUENCE++ without marking sent, failure isolation, the backoff schedule and max attempts, skips and legacy rows, expired plans.
+- `tests/features/uploads-calendar.test.js` (8): valid PNG, >4MB, fake magic bytes, SVG, Cloudinary failure gives 502 with no data URI, students forbidden, crypto round trip and tamper detection, disconnect revokes and clears.
+- Browser E2E adds: no answer in the DOM before answering, the result after a server submit, and the answered state persisting after reload.
+
+**Owner actions:**
+- Run the calendar token migration once `CALENDAR_TOKEN_KEY` is set.
+- Email works with your existing Resend and Brevo keys; SMTP is now optional.
+- Remove `PAID_SHEETS_*` from `.env` (no longer used).
+
+**Suggested commit:** `security: harden qotd email uploads calendar`
+
+### M5/M6: Authorization, validation, audit (2026-10-07)
+**IDOR re-audit:**
+- Every student route with an id already scoped to its owner: results and analysis use `ownedQuery`, exam sessions use `loadOwnedSession`, reminders filter by `userId`, tests go through the entitlement check.
+- Admin routes all require `requireAdmin`.
+- The cross-user matrix below now proves this.
+
+**Implemented:**
+- **`middleware/validate.js`:** `validate({params, query, body})` with Zod. Parsed values replace the raw input, and empty query values count as absent. `objectIdParam` is registered via `router.param("id")` on the admin, test, attempt and reminder routers, so a malformed `:id` gets 400 before any DB call.
+- **Schemas added:**
+  - admin users list (`role` enum, int paging, `search` capped at 64), payments list (`status` enum, `seasonId`), audit logs filters, leaderboard (`testId`, `excludeFlagged`)
+  - trash `kind`/`id`, verify payment (`sendEmail`), create and duplicate season (including `resourceCode`), invalidate
+  - calendar callback query, calendar auto-add body
+  - Existing controller schemas are kept: auth, attempts and sessions, questions, tests, config, reminders, QOTD, practice, internal.
+- **`utils/escapeRegex.js`** is used for the admin user and payment search. This closes regex injection and ReDoS, and blocks operator injection such as `role[$ne]=` (400).
+- **Audit:**
+  - `services/auditLogService.redact()` replaces any key matching password, secret, token, hash, apikey, authorization, cookie or refresh with `[REDACTED]`, at any depth.
+  - New `middleware/audit.js` writes a log entry after successful (2xx) admin mutations only. It covers config, user delete, grant/revoke access, trash restore and purge, question create/update/delete, test create/update/delete/duplicate, attach/detach (including bulk), reorder and generate.
+  - `USER_ROLE_CHANGED` is logged when `ADMIN_EMAILS` changes a role.
+  - Already audited explicitly: payments, seasons, publish, invalidate, revoke-sessions, purge, takeover, internal provisioning.
+
+**Tests:** `npm test` → 178/178. New `tests/security/authz-validation-audit.test.js` (10):
+- Cross-user 404 for results, analysis, paper, answers, advance, events, abandon, takeover, submit, and reminder update/delete/resend; student lists stay isolated.
+- Admin surfaces return 403 to students.
+- Malformed ids → 400.
+- Operator and regex injection, bad filters, season and calendar schema checks.
+- Lifecycle audit entries; failed mutations not audited; redaction; role-change audit.
+
+Browser E2E: the student flow passes, and a new **admin smoke test** (agent scratchpad `e2e/admin-e2e.js`) renders all 9 Admin Studio tabs with no page errors and confirms "Add payment, verify now" grants an entitlement.
+
+**Suggested commit:** `security: complete idor validation and audit`
+
+### M7: Gemini Performance Intelligence (2026-10-07)
+**Model check** (ai.google.dev on 2026-10-07):
+- Stable Flash-Lite models are `gemini-3.5-flash-lite` and `gemini-3.1-flash-lite`, both with a free Standard tier. The 2.0 and older 2.5 variants are shutting down.
+- **The free tier states "Content used to improve our products: Yes".** Hence the strict no-PII payload and the disclosure; this must not be marketed as private.
+- The default `GEMINI_MODEL` is `gemini-3.5-flash-lite` and is configurable.
+- SDK: `@google/genai` 2.27 (`ai.models.generateContent` with `responseMimeType`, `responseJsonSchema`, `maxOutputTokens`, `abortSignal`; `ApiError.status`).
+
+**Implemented:**
+- **Deterministic layer** (authoritative):
+  - `services/analyticsService.js`: overall, section, topic and difficulty buckets (accuracy, attempt rate, average and median time, marks gained/lost), plus timing relative to the student's own median.
+  - `services/patternDetectionService.js`: `high_time_low_accuracy`, `fast_low_accuracy`, `accurate_but_slow`, `weak_topics`, `difficulty_sensitivity`, `easy_question_slips`, `low_coverage`, `time_sunk_into_wrong_answers`, `section_gap`, `improving`/`regressing`. Each carries its evidence and a minimum sample size; there are no psychological claims.
+  - `services/performanceProfileService.js`: the change since the previous attempt, and a trajectory of the last 6 accuracies.
+- **AI layer** (`services/aiInterpretationService.js`):
+  - `buildAIInterpretationPayload` sends aggregate evidence only.
+  - One Zod `InterpretationSchema` (`.strict()`, with caps) plus the matching `RESPONSE_JSON_SCHEMA` sent to Gemini.
+  - The system instruction says: no numbers unless copied, no scores, ranks or percentiles, no psychology.
+  - **Typed numeric validation:** `buildEvidenceNumberSet` (percentages, counts, durations, marks) and `findUnsupportedNumbers`. It checks only typed claims (`N%`, `N/M`, `N marks`, `N questions`, durations, `mm:ss`); rank and percentile claims are always rejected. It ignores numbers inside topic and section names, years, dates and list ordinals.
+  - Pipeline: parse → Zod → number check → on failure, the deterministic fallback.
+  - **Reliability:**
+    - 20s `AbortController` timeout.
+    - Retries only on network errors, timeouts, 5xx and per-minute 429, honouring a hinted `retryDelay`, at most 3 attempts. A 400 or other 4xx is never retried.
+    - A daily-quota 429 opens a **circuit breaker** (provider `retryDelay`, else `AI_BREAKER_TTL_MS`, capped at `AI_BREAKER_MAX_MS`; no timezone assumption).
+    - Jobs that hit the breaker are parked with `retryAfter` and get AI once it closes.
+    - `AI_MIN_INTERVAL_MS` paces calls for free-tier rate limits.
+  - **Async:** `services/domainEvents.js` carries `attempt.finalized`, emitted by `finalizeSession`, so exam code never imports AI. A listener enqueues one job per attempt (unique `attemptId`). `interpretationWorker` claims jobs atomically and recovers stuck ones. Submission never waits.
+  - **Storage:** `models/AttemptInterpretation.js`, isolated from `Attempt`, holds `status`, `provider`, `model` (with prompt version), `payloadVersion`/`payloadHash`, `result`, `deterministic`, `fallbackReason`, `attemptCount`, `retryAfter` and `expiresAt` (365-day TTL).
+  - If AI is disabled or not configured, jobs resolve to the deterministic result immediately.
+- **API:** `controllers/aiController.js` is the only AI consumer.
+  - `GET /api/analysis/:id/interpretation` (owner or admin) returns `{status, source, result, deterministic, pending, profile, disclosure}`.
+  - `GET /api/admin/ai-status` returns enabled, configured, model and breaker state, never the key.
+- **UI:** a "Performance Intelligence" card on the results page.
+  - Sections: What Changed? · The Pattern · Your Edge · Where Marks Leak · Your Error Fingerprint · Your Next Move · Your Trajectory.
+  - Labelled "AI interpretation" or "Rule-based interpretation", with a note that the score, accuracy, rank and percentile above are verified.
+  - Polls while pending and shows the disclosure text.
+- **Bugs fixed:**
+  - The exam-integrity notice stayed on screen after the exam ended; it is now removed in `stopRuntime`.
+  - KaTeX was bumped from 0.16.9 to 0.19.0 (3 moderate advisories); production audit is back to 0.
+
+**Tests:** `npm test` → 210/210. New `tests/ai/performance-intelligence.test.js` (32), with Gemini mocked:
+- One job per attempt; valid output stored and served; cache hit makes 0 extra calls; submission doesn't wait; disabled gives the fallback; owner-only.
+- Fallbacks for invalid JSON, wrong schema, extra fields, an invented % and an invented rank.
+- A timeout is retried 3 times and then falls back; a 400 is not retried; a 500 and a per-minute 429 recover; the daily-quota breaker parks jobs and they retry after it closes.
+- A privacy snapshot of the payload (no email, name, ids, question text or options), and the prompt equals the payload.
+- The Attempt document is unchanged; the API key never appears in responses, logs or stored docs.
+- Typed-number validator: 8 accepted cases and 6 rejected cases.
+- A **dependency-isolation scan** confirms no integrity, entitlement, rank or payment module imports the AI layer.
+
+The browser E2E checks that the card renders with the verified-vs-interpretation labelling and the disclosure.
+
+**Owner actions:**
+- To enable AI, set `AI_INTERPRETATION_ENABLED=true`, `GEMINI_API_KEY` (server only) and, optionally, `GEMINI_MODEL`.
+- With AI off, everything works on the deterministic interpretation.
+
+**Suggested commits:** `ai: add deterministic performance intelligence` and `ai: integrate Gemini interpretation`
+
+### M8: Ops, frontend, CI, load, docs, legal (2026-10-07)
+**Implemented:**
+- **Observability:** pino request ids, `/ready`, optional Sentry, graceful shutdown. Server logging goes through pino via `errorSummary()` (Google errors carry auth headers). `no-console` is enforced in server code.
+- **Account rights:** `GET /api/account/export` and `DELETE /api/account`, plus the Account page UI. Bug fixed: the export always reported `password: false`.
+- **Legal:** `public/privacy.html` and `public/terms.html` (drafts; owner legal review needed). Footer links to Privacy, Terms and Support.
+- **Loader:**
+  - The dead WebGL "orb" code was removed. It was never called, and it loaded `ogl` from a CDN.
+  - Reduced-motion users get a static mark, because the SMIL animation can't be paused by CSS.
+  - The overlay is cleared on the error screen.
+- **Responsive audit** (`tests/e2e/responsive.e2e.js`, 9 routes × 8 widths): overflow went from 19 route/width cases to 0. Fixes:
+  - Studio tabs and question rows clipped (rows were also clipped at 768px).
+  - Results stats strip was 780px wide.
+  - Dashboard grid had min-content floors.
+  - Instructions double-scrolled, and the chat button covered the consent checkbox.
+  - Studio topbar overflowed.
+- **Admin question bank:** new paginated `GET /api/admin/questions`; the snapshot now carries only attached questions plus `questionBankTotal`.
+  - The Bank tab, the drawer and the modal use the server. Before this, the Bank tab rendered every question and ignored its filters, and the drawer filters had no handlers at all.
+  - The backup export pages through the whole bank.
+- **Lint and format:** ESLint 9 flat config and a Prettier config; `npm run lint` gives 0 errors. A mass reformat was deliberately not run; do it as its own commit. Lint found real bugs, now fixed:
+  - `openImageLightbox` and `showSaveChip` were undefined (ReferenceErrors).
+  - Duplicate store key.
+  - Unreachable legacy code.
+- **Security fixes found during M8:**
+  - `safeImageUrl` let `"` break out of `src` attributes; quotes and angle brackets are now percent-encoded.
+  - Login timing oracle for unknown accounts; a dummy bcrypt compare equalizes it.
+  - `npm run seed` deleted ALL questions and tests; it now refuses on a non-empty DB or in production.
+  - Harnesses loaded `backend/.env`; `ACEIIIT_SKIP_DOTENV=1` now prevents that. Earlier scratchpad admin E2E runs may have attempted one real payment email to buyer@test.local.
+- **Performance:** `bcryptjs` was replaced by native `bcrypt` (`utils/password.js`, with bcryptjs fallback; hashes are compatible). Full flow p95 at 150 students went from 54 s to 26 s, and autosave p95 from 2.7 s to 0.42 s.
+- **Indexes:** production runs with `autoIndex` off, so the new unique indexes (single active session, idempotency and others) would never have been created. Added:
+  - `scripts/migrations/2026-10-sync-indexes.js`: create-only; dry run by default.
+  - `services/indexCheck.js` with a boot warning.
+- **Tests:**
+  - New Jest suites: `account/account-data`, `admin/question-bank`, `security/password`, `ops/indexes`.
+  - E2E moved into the repo, `npm run test:e2e`: production, exam, admin and responsive suites. The production suite is a NODE_ENV=production smoke with 36 checks.
+  - Load harness `scripts/load-test.js`; results are in TESTING.md.
+- **CI:** `.github/workflows/ci.yml` runs lint, test and `npm audit --omit=dev --audit-level=high`, then the E2E job.
+- **Removed:**
+  - `check_braces.js`, `backend/test_qotd.js`, `backend/verify_ics.js`, `scripts/verify-auth-matrix.js`.
+  - `scripts/test-login-load.js`: it wrote to MONGODB_URI; replaced by `backend/scripts/load-test.js`.
+  - Left in place: `$null` (needs approval) and `backend/scripts/test_calendar_sync.js` (not on the approved list).
+- **Docs:** README was rewritten. New: ARCHITECTURE, TESTING. Rewritten: DEPLOYMENT, SECURITY. `.env.example` is complete. PRODUCTION_HARDENING has a status note.
+
+**Results:** `npm test` passes 232/232 (22 suites). Lint: 0 errors, 18 warnings (unused frontend locals). All 4 E2E suites pass. Production dependency audit: 0 vulnerabilities.
+
+**Known cosmetic issue:** one malformed traced SVG path (app.js ~4239) logs console errors. The source image isn't available, so it was left as is.
+
+**Follow-up (done in the final pass):** final report written (below); `production.e2e.js` added to TESTING.md; added `tests/features/email-providers.test.js` (Resend → Brevo → SMTP fallback and the all-fail 503; this checklist item had no test); full re-run is green.
+
+**Owner actions:** see the DEPLOYMENT.md checklist. In order: migrations (sync-indexes, drop-user-ttl, encrypt-calendar-tokens), new env vars, `UV_THREADPOOL_SIZE`, backups and restore drill, staging, legal review.
+
+**Suggested commits:** `ops: add observability and CI`, `test: add production verification matrix`, `docs: document production deployment`, then a separate `style: prettier format`.
+
+## Final report (2026-10-07)
+
+### Executive summary
+All milestones M0–M8 are implemented in the working tree. Nothing is committed: per D7, the owner commits.
+
+**Final verification run:**
+
+| Check | Result |
+|---|---|
+| `npm run lint` | 0 errors (18 warnings, all unused locals in the frontend) |
+| `npm test` | 236/236 tests in 23 suites |
+| `npm run test:e2e` | 4 suites pass: production-mode smoke 36/36, student exam flow, Admin Studio, and the responsive audit (0 issues) |
+| `npm audit --omit=dev` | 0 vulnerabilities |
+
+**What this covers:** everything in the codebase that `PRODUCTION_HARDENING.md` requires is implemented and verified locally.
+
+**What is not verified:** the remaining items need the production environment:
+- backups and a restore drill
+- a staging environment
+- real OAuth, email and Gemini credentials
+- CI on GitHub
+- legal review
+
+**Status: ready for staging, not yet production-ready.** It becomes production-ready once the owner checklist below is done.
+
+### Implemented changes (by milestone; details in each report above)
+- **M0:** app/server split; Jest, supertest and memory-server; characterization tests; production audit 8 → 0.
+- **M1:**
+  - OAuth verified against JWKS, failing closed.
+  - Zod env validation at boot.
+  - Only `backend/public` is served.
+  - Cookie-only sessions with `tokenVersion` revocation, and CSRF on every method.
+  - Lockout and enumeration safety; the OTP flow is removed.
+- **M2:**
+  - Server-authoritative exam sessions with deadlines, autosave and the SUPR lock.
+  - Idempotent submit; a sweeper finalizes abandoned exams.
+  - Rank and percentile computed on read; server-side practice mode.
+- **M2b:**
+  - Rich-text and KaTeX formatting fixes.
+  - Session binding: resume, 409 and takeover.
+  - Seeded option shuffling.
+  - Integrity telemetry with record/warn/strict modes and no auto-invalidation; admin review and invalidation.
+- **M3:**
+  - Entitlement is the only access authority; Sheets removed.
+  - Authenticated, idempotent internal provisioning; the AceIIIT commerce repo now calls it over HTTP.
+  - Catalog sends metadata only; data-integrity fixes.
+- **M4:**
+  - QOTD rebuilt on the server; email HTML and ICS escaping.
+  - Provider chain Resend → Brevo → SMTP; reminder state machine.
+  - Upload hardening; calendar tokens encrypted and revoked on disconnect.
+- **M5/M6:** IDOR matrix, Zod validation everywhere, audit coverage with redaction.
+- **M7:**
+  - Deterministic analytics first.
+  - Gemini interpretation: async, schema-validated, typed-number guarded, with circuit breaker, privacy-safe payload and dependency-isolation test.
+- **M8:**
+  - Observability; account data rights; legal pages.
+  - Responsive and loader fixes; paginated admin question bank.
+  - ESLint, Prettier and CI.
+  - Browser E2E and the load harness in the repo.
+  - Native bcrypt; index migration and boot check; seed guard.
+  - Documentation.
+
+### Tests executed
+- **Jest:** 23 suites, 236 tests (list in TESTING.md).
+- **Browser E2E:**
+  - production smoke: 36 checks
+  - student flow: 24 checks
+  - admin flow: 19 checks
+  - responsive: 9 routes × 8 widths
+- **Load test** at 20 / 40 / 60 / 80 / 100 / 150 concurrent students: all flows completed with 0 errors (TESTING.md).
+- **AceIIIT** (M3): 87 passed and 12 skipped (DB suites without `TEST_DATABASE_URL`).
+
+### Verification matrix: PRODUCTION_HARDENING §30
+| Area | Verification | Required | Result | Evidence |
+|---|---|---|---|---|
+| Google auth | mock token | 401 | PASS | `security/oauth`; production smoke |
+| Apple auth | forged token | 401 | PASS | `security/oauth` (forged, mock and unverified email) |
+| OAuth | wrong audience | 401 | PASS | `security/oauth` |
+| Environment | missing required secret | boot failure | PASS | `security/env`; production smoke (4 cases) |
+| Static | `/backend/server.js`, `/backend/.env` | 404 | PASS | `security/static`; production smoke (8 paths) |
+| Internal API | wrong secret / bad body | 401 / 400 | PASS | `payments/entitlements` |
+| Internal API | valid request / replay | entitlement / no duplicate | PASS | `payments/entitlements` |
+| QOTD | answer before submit / paid or draft question | impossible | PASS | `features/qotd`; exam E2E |
+| Exam | late submit / duplicate submit | rejected / same attempt | PASS | `integrity/exam-session` |
+| Exam | invalid option / wrong test's question | 400 | PASS | `integrity/exam-session` ("invalid option, unknown question…"). Sessions are bound to their test |
+| Access | none / correct / revoked / wrong season | 402 / allowed / 402 / 402 | PASS | `payments/entitlements` (also covers expired and admin) |
+| IDOR | another user's attempt / reminder | denied | PASS | `security/authz-validation-audit` (13-endpoint matrix) |
+| IDOR | another user's calendar | denied | PASS (by design) | Calendar routes take no id and always act on the session user |
+| AI | malformed / invented number / timeout | fallback | PASS | `ai/performance-intelligence` |
+| AI | duplicate attempt | one analysis | PASS | `ai/performance-intelligence` |
+| AI | PII in payload | test failure | PASS | `ai/performance-intelligence` (payload snapshot test) |
+| Security | API key in logs | impossible | PASS | `ai/performance-intelligence`, `ops/observability` (redaction) |
+
+### §29 production-readiness checklist
+| Section | Result |
+|---|---|
+| Security | All PASS: mock auth impossible, OAuth claims verified, secret required and timing-safe, source and `.env` inaccessible, cookie-only, revocation, CSRF, lockout, enumeration (including timing), IDOR |
+| Exam | All PASS |
+| Commerce | All PASS. The real AceIIIT → portal path on staging is NOT VERIFIED; it is unit and E2E tested with mocked HTTP |
+| QOTD | All PASS |
+| Email | All PASS. Delivery through real providers is NOT VERIFIED |
+| Calendar | All PASS. A real Google round trip is NOT VERIFIED |
+| AI | All PASS with Gemini mocked. A real Gemini call and the current model ID are NOT VERIFIED (owner to check before enabling) |
+| Operations | PASS: request IDs, redaction, health, readiness, graceful shutdown, lint, tests, audit |
+| Operations, partial | Sentry is PARTIAL: implemented and scrubbed, but no DSN or account has been verified. CI is PARTIAL: the workflow exists and the same commands pass locally, but it has not run on GitHub |
+| Operations, not verified | Backup procedure, restore procedure and staging environment are NOT VERIFIED; they are owner actions documented in DEPLOYMENT.md |
+
+### Final acceptance criteria
+| # | Criterion | Result |
+|---|---|---|
+| 1 | All P0 findings fixed and tested | PASS |
+| 2 | Every access path uses Entitlement | PASS |
+| 3 | Production auth can't use mocks | PASS |
+| 4 | Backend source not public | PASS |
+| 5 | Server-authoritative deadlines | PASS |
+| 6 | Idempotent duplicate submit | PASS |
+| 7 | QOTD can't leak answers | PASS |
+| 8 | IDOR matrix passes | PASS |
+| 9 | Internal provisioning authenticated and idempotent | PASS |
+| 10 | AI asynchronous and optional | PASS |
+| 11 | Gemini key server-only | PASS |
+| 12 | No PII or question text in the AI payload | PASS |
+| 13 | AI output schema-validated | PASS |
+| 14 | AI can't alter Attempt | PASS |
+| 15 | Deterministic analytics work without Gemini | PASS |
+| 16 | CI passes | PARTIAL: local equivalent passes; first GitHub run pending |
+| 17 | Dependency audit resolved or documented | PASS: production 0; dev-only `sprintf-js` moderate is an accepted risk |
+| 18 | Load tests recorded | PASS (local). Capacity on production hardware is NOT VERIFIED |
+| 19 | Backup and restore tested | NOT VERIFIED (owner) |
+| 20 | Deployment checklist complete | OPEN (owner checklist in DEPLOYMENT.md) |
+
+### Remaining risks
+Full table in `SECURITY.md`.
+
+| Risk | Status |
+|---|---|
+| Single instance: limits, queue and caches are in-memory | ACCEPTED; Redis is P2 |
+| Browser telemetry can be spoofed | ACCEPTED; enforcement is server-side |
+| Login bursts are bcrypt-bound on small hosts | PARTIAL |
+| `'unsafe-inline'` in the CSP | OPEN; P2 |
+| Purge of the 30-day trash drops test titles from old results | ACCEPTED |
+| Legal pages are drafts | OPEN |
+| Malformed decorative SVG path logs console errors | Cosmetic |
+| 18 lint warnings for unused frontend locals | Cosmetic |
+| Earlier scratchpad admin E2E runs loaded `backend/.env` | May have attempted one payment email to buyer@test.local; harnesses now set `ACEIIIT_SKIP_DOTENV` |
+
+### Changed files
+- **Working tree:** 53 modified, 34 deleted and 48 untracked paths. See `git status`.
+- **Moved:** the `assets/`, `css/`, `js/` and `index.html` deletions are moves into `backend/public/` (M1).
+- **AceIIIT repo:** `api/src/services/commerce.service.ts`, `src/config.ts`, `.env.example` and its tests, as working-tree edits.
+
+### Migration requirements
+Run these in order, after a backup. Each is a dry run first, then `--apply`; see DEPLOYMENT.md.
+0. `2026-10-renumber-duplicate-attempts.js`. Added after a read-only check of the live DB found 40 duplicate (student, test, attempt number) groups. They are all in 1 student/test group, and 132 attempts get renumbered. Without this, the unique attempt-number index can't build.
+1. `2026-10-sync-indexes.js`. Required: without it, the single-session, idempotency, interpretation and QOTD unique indexes don't exist in production. The live-DB dry run showed 22 indexes to create, 6 of them unique.
+2. `2026-10-drop-user-ttl.js`
+3. `2026-10-encrypt-calendar-tokens.js`
+
+**New environment variables:** `PORTAL_BASE_URL`, `INTERNAL_API_SECRET` (shared with AceIIIT), `CALENDAR_TOKEN_KEY`, a 32+ character `JWT_SECRET`, `UV_THREADPOOL_SIZE`, and optionally `SENTRY_DSN` and the `GEMINI_*` variables.
+
+**AceIIIT environment:** `MOCK_PORTAL_URL` and the shared secret. Remove the portal `MONGODB_URI` from it.
+
+**User impact:** everyone is signed out once.
+
+### Deployment checklist, rollback plan, unverifiable items
+- The full deployment checklist, smoke checks and rollback plan are in `DEPLOYMENT.md`.
+- **Rollback:** redeploy the previous build. The migrations are additive or safe to leave in place. Restore from the pre-release snapshot if data is damaged. Commerce retries `PROVISIONING_FAILED` on its own.
+- **Unverifiable from the dev machine (owner checklist):**
+  - Atlas backup and restore drill
+  - staging environment
+  - real Google/Apple OAuth clients and the Calendar redirect
+  - email sender verification and real delivery
+  - Gemini key and current model
+  - Sentry project
+  - GitHub CI first run
+  - a load test on production-sized hardware
+  - legal review of the privacy and terms pages
+

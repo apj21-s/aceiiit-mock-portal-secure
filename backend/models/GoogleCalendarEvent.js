@@ -2,7 +2,7 @@ const mongoose = require("mongoose");
 
 const googleCalendarEventSchema = new mongoose.Schema(
   {
-    reminderId: { type: mongoose.Schema.Types.ObjectId, ref: "Reminder", required: true, index: true },
+    reminderId: { type: mongoose.Schema.Types.ObjectId, ref: "Reminder", required: true },
     userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true, index: true },
     googleEventId: { type: String, required: true },
     syncStatus: { type: String, enum: ["synced", "pending", "failed"], default: "synced", index: true },

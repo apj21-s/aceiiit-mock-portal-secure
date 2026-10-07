@@ -1,13 +1,16 @@
 const multer = require("multer");
 
-const storage = multer.memoryStorage();
+const { MAX_IMAGE_BYTES, ALLOWED_MIME_TYPES } = require("../services/imageUploadService");
 
+// First-pass filter on the declared type; the real bytes are verified again in
+// services/imageUploadService.js before anything is stored.
 const upload = multer({
-  storage,
-  limits: { fileSize: 15 * 1024 * 1024 }, // 15MB limit per image
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_IMAGE_BYTES, files: 9, fields: 50 },
   fileFilter: (_req, file, cb) => {
-    if (!file || !file.mimetype || !String(file.mimetype).toLowerCase().startsWith("image/")) {
-      const err = new Error("Only image uploads are allowed.");
+    const mime = String((file && file.mimetype) || "").toLowerCase();
+    if (!ALLOWED_MIME_TYPES.includes(mime)) {
+      const err = new Error("Only PNG, JPEG, WebP or GIF images are allowed.");
       err.status = 400;
       err.expose = true;
       return cb(err);

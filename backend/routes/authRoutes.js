@@ -12,21 +12,24 @@ const {
   appleAuth,
   getAuthConfig,
   logout,
+  logoutAll,
   me,
-  sendOtp,
-  verifyOtp,
   updatePassword,
 } = require("../controllers/authController");
 const { requireAuth } = require("../middleware/auth");
-const { authLimiter, otpLimiter, readLimiter, activationLimiter, passwordResetLimiter } = require("../middleware/rateLimit");
+const { issueCsrfToken } = require("../middleware/csrf");
+const { authLimiter, loginAccountLimiter, readLimiter, activationLimiter, passwordResetLimiter } = require("../middleware/rateLimit");
 
 const router = express.Router();
 
 // Public OAuth & Client Configuration
 router.get("/config", readLimiter(), getAuthConfig);
 
+// CSRF token bootstrap (sets the aceiiit_csrf cookie if missing and echoes its value)
+router.get("/csrf", readLimiter(), issueCsrfToken);
+
 // Email + Password Normal Login
-router.post("/login", authLimiter(), login);
+router.post("/login", authLimiter(), loginAccountLimiter(), login);
 
 // Account Activation Flow
 router.post("/activate/request", activationLimiter(), requestActivation);
@@ -44,11 +47,8 @@ router.post("/apple", authLimiter(), appleAuth);
 
 // Session & User Info
 router.post("/logout", logout);
+router.post("/logout-all", authLimiter(), requireAuth, logoutAll);
 router.get("/me", requireAuth, me);
 router.put("/password", authLimiter(), requireAuth, updatePassword);
-
-// Legacy OTP Endpoints (Preserved for compatibility)
-router.post("/send-otp", otpLimiter(), sendOtp);
-router.post("/verify-otp", authLimiter(), verifyOtp);
 
 module.exports = router;

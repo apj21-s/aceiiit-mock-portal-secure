@@ -7,6 +7,12 @@ verification, and release readiness\
 owner\
 **Updated:** 2026-10-06
 
+> **Implementation status (2026-10-07):** M0–M8 are implemented in the working tree.
+> The final verification matrix, test results, residual risks and deployment checklist are
+> in `AGENT_HANDOFF_PRODUCTION_HARDENING.md` (§14, "Final report"). The operational docs
+> are `ARCHITECTURE.md`, `SECURITY.md`, `DEPLOYMENT.md` and `TESTING.md`. This document is
+> kept unchanged below as the review the work was executed against.
+
 ------------------------------------------------------------------------
 
 ## 1. Executive decision

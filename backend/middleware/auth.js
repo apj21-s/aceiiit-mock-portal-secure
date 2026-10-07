@@ -1,5 +1,5 @@
-const jwt = require("jsonwebtoken");
 const User = require("../models/User");
+const { SESSION_COOKIE, verifySessionToken } = require("../services/sessionService");
 
 const PRESENCE_TOUCH_INTERVAL_MS = 60 * 1000;
 
@@ -21,37 +21,56 @@ function touchUserPresence(userId) {
   ).catch(function () {});
 }
 
+// Sessions are cookie-only. Bearer headers are deliberately ignored so the browser
+// never needs to hold a readable token (no localStorage JWTs).
 function extractToken(req) {
-  const header = String(req.headers.authorization || "");
-  const match = header.match(/^Bearer\s+(.+)$/i);
-  if (match && match[1]) {
-    return match[1].trim();
-  }
-  const cookieHeader = String(req.headers.cookie || "");
-  if (cookieHeader) {
-    const cookies = cookieHeader.split(";");
-    for (const cookie of cookies) {
-      const parts = cookie.trim().split("=");
-      if (parts[0] === "aceiiit_session" && parts[1]) {
-        return decodeURIComponent(parts[1]);
-      }
-    }
-  }
-  return null;
+  const fromParser = req.cookies && req.cookies[SESSION_COOKIE];
+  return fromParser ? String(fromParser) : null;
 }
 
-function requireAuth(req, res, next) {
+const SESSION_USER_FIELDS = "name email role isPaid status deletedAt tokenVersion";
+
+/**
+ * Authenticates the session cookie against the *current* user record on every request.
+ * Deleted/disabled users and revoked sessions (tokenVersion mismatch) are rejected
+ * immediately; role and paid state always come from the database, never the JWT.
+ */
+async function requireAuth(req, res, next) {
   const token = extractToken(req);
   if (!token) {
     return res.status(401).json({ error: "Unauthorized" });
   }
+  let payload;
   try {
-    const payload = jwt.verify(token, process.env.JWT_SECRET);
-    req.auth = payload;
-    touchUserPresence(payload && payload.userId);
-    return next();
+    payload = verifySessionToken(token);
   } catch (_err) {
     return res.status(401).json({ error: "Unauthorized" });
+  }
+  try {
+    const user = payload && payload.userId
+      ? await User.findById(payload.userId).select(SESSION_USER_FIELDS).lean()
+      : null;
+    if (
+      !user ||
+      user.deletedAt ||
+      user.status === "disabled" ||
+      Number(user.tokenVersion || 0) !== Number(payload.tv)
+    ) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    req.auth = {
+      userId: String(user._id),
+      role: user.role,
+      email: user.email,
+      isPaid: Boolean(user.isPaid),
+      name: user.name,
+      tv: Number(user.tokenVersion || 0),
+      iat: payload.iat,
+    };
+    touchUserPresence(user._id);
+    return next();
+  } catch (err) {
+    return next(err);
   }
 }
 

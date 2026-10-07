@@ -6,8 +6,23 @@ const { connectDb } = require("../config/db");
 const Question = require("../models/Question");
 const Test = require("../models/Test");
 
+// Sample data for an EMPTY development database. The seed replaces all questions and tests,
+// so it refuses to run against a database that already has any, unless --wipe is passed
+// (never allowed with NODE_ENV=production).
 async function main() {
+  const wipe = process.argv.includes("--wipe");
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("Refusing to seed with NODE_ENV=production.");
+  }
   await connectDb(process.env.MONGODB_URI);
+
+  const [questionCount, testCount] = await Promise.all([Question.estimatedDocumentCount(), Test.estimatedDocumentCount()]);
+  if ((questionCount || testCount) && !wipe) {
+    throw new Error(
+      `Refusing to seed: the database already has ${questionCount} questions and ${testCount} tests, which seeding would delete. ` +
+        "Use an empty database, or pass --wipe if you really mean to replace them."
+    );
+  }
 
   await Promise.all([Question.deleteMany({}), Test.deleteMany({})]);
 
@@ -69,13 +84,11 @@ async function main() {
     { title: "UGEE 2026 Mock Test 6 (Paid)", subtitle: "Paid mock", series: "UGEE 2026", type: "practice", isFree: false, status: "live" },
   ]);
 
-  // eslint-disable-next-line no-console
   console.log("Seeded UGEE 2026 series. Example test:", test1.id);
   process.exit(0);
 }
 
 main().catch((err) => {
-  // eslint-disable-next-line no-console
   console.error(err);
   process.exit(1);
 });
