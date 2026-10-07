@@ -17,7 +17,9 @@
     href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;700;800;900&family=Manrope:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600;700&display=swap"
     rel="stylesheet"
   >
-  <link rel="stylesheet" href="css/portal.css?v=1.0.31">
+  <link rel="stylesheet" href="css/portal.css?v=1.0.32">
+  <!-- Dashboard mascot: fetched during app boot so it is ready when the dashboard renders. -->
+  <link rel="preload" as="image" href="assets/mascot-wave.svg" type="image/svg+xml" fetchpriority="high">
   <link rel="stylesheet" href="/vendor/katex/katex.min.css">
   <script src="https://accounts.google.com/gsi/client" async defer></script>
   <script type="text/javascript" src="https://appleid.cdn-apple.com/appleauth/static/jsapi/appleid/1/en_US/appleid.auth.js" async defer></script>
@@ -38,14 +40,14 @@
     </main>
   </noscript>
   <div id="app"></div>
-  <script src="js/seed.js?v=1.0.31"></script>
-  <script src="js/storage.js?v=1.0.31"></script>
-  <script src="js/auth.js?v=1.0.31"></script>
-  <script src="js/db.js?v=1.0.31"></script>
-  <script src="js/ui.js?v=1.0.31"></script>
-  <script src="js/examIntegrity.js?v=1.0.31"></script>
+  <script src="js/seed.js?v=1.0.32"></script>
+  <script src="js/storage.js?v=1.0.32"></script>
+  <script src="js/auth.js?v=1.0.32"></script>
+  <script src="js/db.js?v=1.0.32"></script>
+  <script src="js/ui.js?v=1.0.32"></script>
+  <script src="js/examIntegrity.js?v=1.0.32"></script>
   <script src="/vendor/katex/katex.min.js"></script>
   <script src="/vendor/katex/contrib/auto-render.min.js"></script>
-  <script src="js/app.js?v=1.0.31"></script>
+  <script src="js/app.js?v=1.0.32"></script>
 </body>
 </html>

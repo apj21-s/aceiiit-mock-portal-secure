@@ -5,7 +5,7 @@
   "type": "commonjs",
   "main": "server.js",
   "engines": {
-    "node": ">=20"
+    "node": "22.x"
   },
   "scripts": {
     "dev": "node server.js",

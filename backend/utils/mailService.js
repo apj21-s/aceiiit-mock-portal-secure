@@ -252,7 +252,10 @@ function buildReminderIcs(reminder, testLink, method = "REQUEST", status = "CONF
   const subjectFocus = Array.isArray(reminder.subjectFocus) && reminder.subjectFocus.length ? reminder.subjectFocus.join(", ") : "";
   let description = `Subject Focus: ${subjectFocus}\n\nLink: ${testLink}`;
   if (reminder.notes) description += `\n\nNotes: ${reminder.notes}`;
-  const organizer = parseFromAddress(reminderFromEmail()).email || "no-reply@aceiiit.in";
+  const sender = parseFromAddress(reminderFromEmail());
+  const organizer = sender.email || "no-reply@aceiiit.in";
+  // RFC 5545 parameter value: quoted, without quotes or control characters.
+  const organizerName = String(sender.name || "ACEIIIT Mock Portal").replace(/["\r\n\x00-\x1f]/g, "").trim() || "ACEIIIT Mock Portal";
   const lines = [
     "BEGIN:VCALENDAR",
     "VERSION:2.0",
@@ -268,7 +271,7 @@ function buildReminderIcs(reminder, testLink, method = "REQUEST", status = "CONF
     `SUMMARY:${escapeIcsText(reminder.title || "ACE IIIT Mock Plan")}`,
     `DESCRIPTION:${escapeIcsText(description)}`,
     `URL:${icsValue(testLink)}`,
-    `ORGANIZER;CN=ACE IIIT:mailto:${icsValue(organizer)}`,
+    `ORGANIZER;CN="${organizerName}":mailto:${icsValue(organizer)}`,
     `ATTENDEE;RSVP=TRUE:mailto:${icsValue(reminder.email)}`,
     `STATUS:${status === "CANCELLED" ? "CANCELLED" : "CONFIRMED"}`,
     "END:VEVENT",

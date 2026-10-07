@@ -4584,7 +4584,7 @@
       '</span></p>' +
       '</div>' +
       '<div class="dashboard-greeting-mascot">' +
-      '<img src="assets/aceiiit_mascot_natural_wave.svg" alt="ACE IIIT Mascot Waving">' +
+      '<img src="assets/mascot-wave.svg" width="1295" height="1214" alt="ACE IIIT Mascot Waving" fetchpriority="high" decoding="async">' +
       '</div>' +
       '</section>' +
       nextUpHtml +
@@ -5646,7 +5646,7 @@
       '</div>' +
       '<div class="legend-card submit-card exam-submitcard">' +
       '<div class="progress-line"><span style="width:' + (questions.length ? ((answeredCount / questions.length) * 100) : 0) + '%;"></span></div>' +
-      '<p class="list-note">' + answeredCount + ' of ' + questions.length + ' answered across the paper.</p>' +
+      '<p class="list-note">' + answeredCount + ' of ' + questions.length + ' answered</p>' +
       '<button class="button button-danger" id="submit-test">Submit</button>' +
       '</div>' +
       '</aside>' +
@@ -6154,8 +6154,12 @@
 
     var test = store.getTestById(attempt.testId);
     var questions = store.getQuestionsForTest(attempt.testId);
-    var maxScore = questions.reduce(function (sum, q) { return sum + Number(q.marks || 0); }, 0);
     var result = attempt.result;
+    // Full marks come from the server (the attempt's own question snapshot); students no
+    // longer receive the question list, so summing it client-side gave 0.
+    var maxScore = Number(result.maxScore) > 0
+      ? Number(result.maxScore)
+      : questions.reduce(function (sum, q) { return sum + Number(q.marks || 0); }, 0);
     var analysis = (prefetchedSummary && prefetchedSummary.analysis) || result.analysis || null;
     var sectionScores = result.sectionScores || {};
     var analysisHydrating = !analysis && !!store.getAttemptAnalysis && !prefetchedSummary;
@@ -6205,280 +6209,224 @@
       return "is-focus";
     }
 
-    function buildAnalysisCards(summary) {
-      if (!summary) return "";
-      return (
-        '<div class="analysis-showcase">' +
-        '<div class="analysis-spotlight analysis-stage ' + analysisToneClass(summary.scoreLabel) + '"' + stageStyle(0) + '>' +
-        '<span class="analysis-kicker">Score band</span>' +
-        '<strong>' + escapeHtml(String(summary.scoreLabel || "Balanced")) + '</strong>' +
-        '<span>' + escapeHtml(String(summary.scorePercentage || 0)) + '% of total marks captured</span>' +
-        '</div>' +
-        '<div class="analysis-spotlight analysis-stage ' + analysisToneClass(summary.paceLabel) + '"' + stageStyle(1) + '>' +
-        '<span class="analysis-kicker">Pace signal</span>' +
-        '<strong>' + escapeHtml(String(summary.paceLabel || "Balanced")) + '</strong>' +
-        '<span>Avg ' + escapeHtml(String(summary.avgSecondsPerAttempted || 0)) + 's per attempted question</span>' +
-        '</div>' +
-        '</div>' +
-        '<div class="analysis-mini-grid">' +
-        '<div class="analysis-mini-card analysis-stage"' + stageStyle(2) + '><span class="analysis-kicker">Completion</span><strong>' + escapeHtml(String(summary.completionRate || 0)) + '%</strong><small>Paper coverage</small></div>' +
-        '<div class="analysis-mini-card analysis-stage"' + stageStyle(3) + '><span class="analysis-kicker">Attempted</span><strong>' + escapeHtml(String(summary.attemptedCount || 0)) + '/' + escapeHtml(String(summary.totalQuestions || 0)) + '</strong><small>Questions taken</small></div>' +
-        '<div class="analysis-mini-card analysis-stage"' + stageStyle(4) + '><span class="analysis-kicker">Best section</span><strong>' + escapeHtml(String(summary.strongSection ? summary.strongSection.key : "-")) + '</strong><small>' + escapeHtml(String(summary.strongSection ? summary.strongSection.accuracy : 0)) + '% accuracy</small></div>' +
-        '<div class="analysis-mini-card analysis-stage"' + stageStyle(5) + '><span class="analysis-kicker">Focus section</span><strong>' + escapeHtml(String(summary.weakSection ? summary.weakSection.key : "-")) + '</strong><small>' + escapeHtml(String(summary.weakSection ? summary.weakSection.accuracy : 0)) + '% accuracy</small></div>' +
-        '</div>'
-      );
+    function clampPct(value) {
+      return Math.max(0, Math.min(100, Number(value || 0)));
+    }
+
+    function roundTo(value, digits) {
+      var factor = Math.pow(10, digits || 0);
+      return Math.round(Number(value || 0) * factor) / factor;
+    }
+
+    function accuracyTone(accuracy) {
+      var a = Number(accuracy || 0);
+      if (a >= 70) return "is-strong";
+      if (a >= 45) return "is-good";
+      if (a >= 25) return "is-watch";
+      return "is-focus";
     }
 
     function highlightPlanText(text) {
       var keywords = ["Accuracy", "Slow down", "Focus", "timed drills", "weakest section", "low-confidence guesses", "REAP", "SUPR", "consistency", "marks away", "benchmark range", "configured benchmark range"];
-      var result = escapeHtml(String(text));
-      keywords.forEach(function(kw) {
+      var html = escapeHtml(String(text));
+      keywords.forEach(function (kw) {
         var regex = new RegExp("(" + escapeHtml(kw) + ")", "gi");
-        result = result.replace(regex, '<span class="plan-highlight">$1</span>');
+        html = html.replace(regex, '<span class="plan-highlight">$1</span>');
       });
-      return result;
+      return html;
     }
 
-    function buildSectionPanel(summary) {
-      if (!summary) return "";
-      var sectionRows = Array.isArray(summary.sectionInsights) ? summary.sectionInsights : [];
+    // Correct / wrong / skipped as one proportional bar.
+    function outcomeBar(correct, wrong, skipped, extraClass) {
+      var total = Math.max(1, Number(correct || 0) + Number(wrong || 0) + Number(skipped || 0));
       return (
-        '<section class="analysis-stage" style="flex: 1 1 100%; min-width: 0;"' + stageStyle(3) + '>' +
-        '<div class="divider"></div>' +
-        '<p class="section-label">Attempt analysis</p>' +
-        buildAnalysisCards(summary) +
-        '<div class="report-grid analysis-grid" style="margin-top: 18px; align-items: stretch;">' +
-        '<div class="report-card analysis-panel" style="height: 100%;">' +
-        '<p class="section-label">Section-wise performance</p>' +
-        (sectionRows.length
-          ? '<div class="analysis-section-list">' + sectionRows.map(function (section) {
-            var meterWidth = Math.max(6, Math.min(100, Number(section.accuracy || 0)));
-            return (
-              '<div class="analysis-section-row">' +
-              '<div class="analysis-section-head">' +
-              '<strong>' + escapeHtml(section.key) + '</strong>' +
-              '<span class="analysis-pill">' + escapeHtml(String(section.accuracy)) + '% accuracy</span>' +
-              '</div>' +
-              '<div class="analysis-meter"><span data-width="' + meterWidth + '%"></span></div>' +
-              '<div class="analysis-section-meta">' +
-              '<span>Completion ' + escapeHtml(String(section.completion)) + '%</span>' +
-              '<span>Score ' + escapeHtml(String(section.score || 0)) + '</span>' +
-              '<span>Time ' + formatTime(Number(section.timeSpent || 0)) + '</span>' +
-              '<span>Avg/question ' + escapeHtml(String(section.avgTimePerAttempted || 0)) + 's</span>' +
-              '</div>' +
-              '</div>'
-            );
-          }).join("") + '</div>'
-          : '<div class="empty-state">Section insights unavailable.</div>') +
-        '</div>' +
-        '<aside class="report-card analysis-panel" style="display: flex; flex-direction: column; height: 100%;">' +
-        '<p class="section-label">Next-step plan</p>' +
-        '<div class="analysis-plan-list js-plan-carousel" style="position: relative; display: block; flex: 1; margin-top: 16px; min-height: 220px;">' +
-        (summary.nextBenchmark !== null && summary.nextBenchmark !== undefined
-          ? '<div class="analysis-plan-row plan-card-3d is-benchmark"><div><p style="font-size: 1.1rem; line-height: 1.6; color: var(--ink-soft);">' + highlightPlanText('You are ' + String(summary.benchmarkGap || 0) + ' marks away from the next benchmark (' + String(summary.nextBenchmark) + ').') + '</p></div><div><p class="plan-card-name">Benchmark target</p><p class="plan-card-desig">Performance Goal</p></div></div>'
-          : '<div class="analysis-plan-row plan-card-3d is-benchmark"><div><p style="font-size: 1.1rem; line-height: 1.6; color: var(--ink-soft);">' + highlightPlanText('You are already at or above the configured benchmark range for this paper.') + '</p></div><div><p class="plan-card-name">Benchmark target</p><p class="plan-card-desig">Performance Goal</p></div></div>') +
-        ((summary.recommendations || []).map(function (item, index) {
-          return '<div class="analysis-plan-row plan-card-3d"><div><p style="font-size: 1.1rem; line-height: 1.6; color: var(--ink-soft);">' + highlightPlanText(item) + '</p></div><div><p class="plan-card-name">Focus ' + (index + 1) + '</p><p class="plan-card-desig">Targeted Action</p></div></div>';
-        }).join("") || '<div class="analysis-plan-row plan-card-3d"><div><p style="font-size: 1.1rem; line-height: 1.6; color: var(--ink-soft);">' + highlightPlanText('Keep practising with timed mixed sets to improve consistency.') + '</p></div><div><p class="plan-card-name">Focus</p><p class="plan-card-desig">Targeted Action</p></div></div>') +
-        '</div>' +
-        '</aside>' +
-        '</div>' +
-        '</section>'
-      );
-    }
-
-    function buildTopicPanel(summary) {
-      var topics = summary && Array.isArray(summary.topicInsights) ? summary.topicInsights : [];
-      if (!summary) return "";
-
-      // Derive pill colour from accuracy band
-      function accuracyPillStyle(acc) {
-        var a = Number(acc || 0);
-        if (a >= 80) return 'background:rgba(35,148,66,0.15);color:#239442;';
-        if (a >= 60) return 'background:rgba(216,177,61,0.18);color:#7a5d00;';
-        if (a >= 40) return 'background:rgba(200,110,30,0.15);color:#994d00;';
-        return 'background:rgba(183,58,40,0.15);color:#b73a28;';
-      }
-
-      // Meter colour: green for strong topics, red-orange for weak
-      function meterClass(acc) {
-        return Number(acc || 0) >= 65 ? 'analysis-meter' : 'analysis-meter analysis-meter-soft';
-      }
-
-      // Human label for the tag field
-      function tagLabel(tag, index) {
-        if (index === 0) return '⚠ Highest priority';
-        if (tag === 'no correct answers') return '✗ 0% accuracy';
-        if (tag === 'fully skipped') return '— Not attempted';
-        if (tag === 'weak accuracy') return '↓ Weak accuracy';
-        if (tag === 'below par') return '↓ Below par';
-        if (tag === 'strong') return '✓ Strong area';
-        if (tag === '1 question') return '· Small sample';
-        return '· Needs work';
-      }
-
-      function tagBadgeStyle(tag, index) {
-        if (index === 0) return 'color:#b73a28;font-weight:800;';
-        if (tag === 'strong') return 'color:#239442;font-weight:700;';
-        if (tag === 'fully skipped') return 'color:var(--ink-soft);font-weight:600;';
-        return 'color:var(--ink-soft);font-weight:600;';
-      }
-
-      return (
-        '<section class="report-card analysis-stage" style="padding: 24px; flex: 1 1 420px; min-width: 0; display: flex; flex-direction: column; overflow: hidden;"' + stageStyle(4) + '>' +
-        '<p class="section-label" style="flex-shrink: 0;">Topic-wise analysis</p>' +
-        (topics.length
-          ? '<div class="analysis-topic-list js-topic-scroll" style="overflow-y: auto; flex: 1; padding-right: 4px; margin-top: 4px;">' + topics.map(function (topic, index) {
-              var acc      = Number(topic.accuracy || 0);
-              var width    = Math.max(4, Math.min(100, acc));
-              var marksLost = Math.min(0, Number(topic.score || 0));  // negative if net loss
-              var marksLostLabel = marksLost < 0 ? (marksLost + ' marks') : '+' + Number(topic.score || 0) + ' marks';
-              var avgTime = Number(topic.avgTimePerAttempted || 0);
-              var avgTimeLabel = avgTime > 0 ? avgTime + 's / attempted' : 'No attempts';
-
-              return (
-                '<div class="analysis-topic-row">' +
-                  '<div class="analysis-topic-head">' +
-                    '<div>' +
-                      '<strong>' + escapeHtml(String(topic.topic || 'General')) + '</strong>' +
-                      '<span style="margin-left:8px;font-size:0.78rem;' + tagBadgeStyle(topic.tag, index) + '">' +
-                        tagLabel(topic.tag, index) +
-                      '</span>' +
-                    '</div>' +
-                    '<span class="analysis-pill" style="' + accuracyPillStyle(acc) + '">' + acc + '%</span>' +
-                  '</div>' +
-                  '<div class="' + meterClass(acc) + '"><span data-width="' + width + '%"></span></div>' +
-                  '<div class="analysis-section-meta">' +
-                    '<span title="Net score impact">' + escapeHtml(marksLostLabel) + '</span>' +
-                    '<span>Attempted ' + escapeHtml(String(topic.attempted || 0)) + '/' + escapeHtml(String(topic.total || 0)) + '</span>' +
-                    '<span>' + escapeHtml(String(topic.wrong || 0)) + ' wrong</span>' +
-                    '<span title="Avg time per attempted question">' + escapeHtml(avgTimeLabel) + '</span>' +
-                    '<span style="color:var(--ink-soft);font-size:0.78rem;">' + escapeHtml(String(topic.section || '')) + '</span>' +
-                  '</div>' +
-                '</div>'
-              );
-            }).join('') + '</div>'
-          : '<div class="empty-state">Topic insights will appear here once this paper is submitted on the latest analysis pipeline.</div>') +
-        '</section>'
-      );
-    }
-
-    function buildTimePanel(summary) {
-      var timeInfo = summary && summary.timeAnalysis ? summary.timeAnalysis : null;
-      if (!summary || !timeInfo) return "";
-      var trackedWidth = timeInfo.totalTimeSeconds
-        ? Math.max(6, Math.min(100, Math.round((Number(timeInfo.trackedTimeSeconds || 0) / Number(timeInfo.totalTimeSeconds || 1)) * 100)))
-        : 0;
-      return (
-        '<section class="report-card analysis-stage" style="padding: 24px; flex: 1 1 420px; min-width: 0;"' + stageStyle(5) + '>' +
-        '<p class="section-label">Time analysis</p>' +
-        '<div class="analysis-time-grid">' +
-        '<div class="analysis-time-card"><span class="analysis-kicker">Total time</span><strong>' + escapeHtml(formatTime(Number(timeInfo.totalTimeSeconds || 0))) + '</strong><small>Recorded for this attempt</small></div>' +
-        '<div class="analysis-time-card"><span class="analysis-kicker">Avg per question</span><strong>' + escapeHtml(String(timeInfo.avgSecondsPerQuestion || 0)) + 's</strong><small>Across full paper</small></div>' +
-        '<div class="analysis-time-card"><span class="analysis-kicker">Avg per attempted</span><strong>' + escapeHtml(String(timeInfo.avgSecondsPerAttempted || 0)) + 's</strong><small>Answered questions only</small></div>' +
-        '<div class="analysis-time-card"><span class="analysis-kicker">Target pace</span><strong>' + escapeHtml(String(timeInfo.targetSecondsPerQuestion || 0)) + 's</strong><small>Ideal per-question speed</small></div>' +
-        '</div>' +
-        '<div class="analysis-time-meter">' +
-        '<div class="analysis-meter"><span data-width="' + trackedWidth + '%"></span></div>' +
-        '<div class="analysis-section-meta">' +
-        '<span>Tracked time ' + escapeHtml(formatTime(Number(timeInfo.trackedTimeSeconds || 0))) + '</span>' +
-        '<span>' + escapeHtml(timeInfo.timePressure ? "You were under time pressure." : "Time usage stayed under control.") + '</span>' +
-        '<span>' + escapeHtml(timeInfo.fastButErrorProne ? "High speed is hurting accuracy." : "Speed and accuracy stayed balanced.") + '</span>' +
-        '</div>' +
-        '</div>' +
-        '</section>'
-      );
-    }
-
-    function buildDonutChartSvg(segments, total, centerLabel, centerValue) {
-      var radius = 54;
-      var circumference = 2 * Math.PI * radius;
-      var offset = 0;
-      var safeTotal = Number(total || 0);
-      if (safeTotal <= 0) {
-        safeTotal = (segments || []).reduce(function (sum, segment) {
-          return sum + Number(segment.value || 0);
-        }, 0);
-      }
-      var rings = (segments || []).map(function (segment) {
-        var value = Math.max(0, Number(segment.value || 0));
-        var fraction = safeTotal > 0 ? value / safeTotal : 0;
-        var dash = Math.max(0, fraction * circumference);
-        var ring = '<circle class="analysis-donut-segment" cx="70" cy="70" r="' + radius + '" stroke="' + escapeAttribute(segment.color) + '" stroke-dasharray="' + dash + ' ' + (circumference - dash) + '" stroke-dashoffset="' + (-offset) + '"></circle>';
-        offset += dash;
-        return ring;
-      }).join("");
-      return (
-        '<div class="analysis-donut">' +
-        '<svg viewBox="0 0 140 140" aria-hidden="true">' +
-        '<circle class="analysis-donut-base" cx="70" cy="70" r="' + radius + '"></circle>' +
-        rings +
-        '</svg>' +
-        '<div class="analysis-donut-center">' +
-        '<span>' + escapeHtml(String(centerLabel || "")) + '</span>' +
-        '<strong>' + escapeHtml(String(centerValue || "")) + '</strong>' +
-        '</div>' +
+        '<div class="rs-stackbar' + (extraClass ? ' ' + extraClass : '') + '" role="img" aria-label="' +
+        escapeAttribute(correct + ' correct, ' + wrong + ' wrong, ' + skipped + ' skipped') + '">' +
+        '<span class="is-correct" data-width="' + roundTo((correct / total) * 100, 2) + '%"></span>' +
+        '<span class="is-wrong" data-width="' + roundTo((wrong / total) * 100, 2) + '%"></span>' +
+        '<span class="is-skipped" data-width="' + roundTo((skipped / total) * 100, 2) + '%"></span>' +
         '</div>'
       );
     }
 
-    function buildVisualAnalysisPanel(summary) {
-      var sectionValues = ["SUPR", "REAP"].map(function (key) {
-        return Number(sectionScores && sectionScores[key] && sectionScores[key].score || 0);
+    function sectionRowsFor(summary) {
+      if (summary && Array.isArray(summary.sectionInsights) && summary.sectionInsights.length) {
+        return summary.sectionInsights;
+      }
+      return ["SUPR", "REAP"].map(function (key) {
+        var s = (sectionScores && sectionScores[key]) || {};
+        var correct = Number(s.correct || 0);
+        var wrong = Number(s.wrong || 0);
+        var attempted = correct + wrong;
+        return { key: key, score: Number(s.score || 0), correct: correct, wrong: wrong, skipped: Number(s.skipped || 0), accuracy: attempted ? roundTo((correct / attempted) * 100, 2) : 0 };
       });
-      var sectionTotal = Math.max(1, sectionValues[0] + sectionValues[1]);
-      var latestAttempts = attemptHistory.slice(0, 6).reverse();
-      var maxHistoryScore = latestAttempts.reduce(function (max, item) {
+    }
+
+    function buildSectionsCard(summary) {
+      var rows = sectionRowsFor(summary);
+      return (
+        '<section class="rs-card rs-sections analysis-stage"' + stageStyle(1) + '>' +
+        '<div class="rs-card-head"><p class="section-label">Section breakdown</p></div>' +
+        '<div class="rs-section-list">' +
+        rows.map(function (section) {
+          var hasTime = Number(section.timeSpent || 0) > 0;
+          return (
+            '<div class="rs-section">' +
+            '<div class="rs-section-top">' +
+            '<strong class="rs-section-name">' + escapeHtml(String(section.key)) + '</strong>' +
+            '<span class="rs-section-score">Score <b>' + escapeHtml(String(roundTo(section.score, 2))) + '</b></span>' +
+            '<span class="rs-pill ' + accuracyTone(section.accuracy) + '">' + escapeHtml(String(roundTo(section.accuracy, 1))) + '% accuracy</span>' +
+            '</div>' +
+            outcomeBar(Number(section.correct || 0), Number(section.wrong || 0), Number(section.skipped || 0)) +
+            '<div class="rs-meta">' +
+            '<span><i class="rs-dot is-correct"></i>' + escapeHtml(String(section.correct || 0)) + ' correct</span>' +
+            '<span><i class="rs-dot is-wrong"></i>' + escapeHtml(String(section.wrong || 0)) + ' wrong</span>' +
+            '<span><i class="rs-dot is-skipped"></i>' + escapeHtml(String(section.skipped || 0)) + ' skipped</span>' +
+            (hasTime ? '<span>Time ' + escapeHtml(formatTime(Number(section.timeSpent || 0))) + '</span>' : '') +
+            (Number(section.avgTimePerAttempted || 0) > 0 ? '<span>' + escapeHtml(String(section.avgTimePerAttempted)) + 's per attempted</span>' : '') +
+            '</div>' +
+            '</div>'
+          );
+        }).join("") +
+        '</div>' +
+        '</section>'
+      );
+    }
+
+    function buildVerdictCard(summary) {
+      if (!summary) {
+        return (
+          '<aside class="rs-card rs-verdict analysis-stage"' + stageStyle(2) + '>' +
+          '<p class="section-label">Verdict &amp; next steps</p>' +
+          '<div class="empty-state">' + (analysisHydrating
+            ? 'Loading the stored analysis for this attempt…'
+            : 'Detailed analysis is available for attempts submitted after the analysis upgrade.') + '</div>' +
+          '</aside>'
+        );
+      }
+      var steps = [];
+      if (summary.nextBenchmark !== null && summary.nextBenchmark !== undefined) {
+        steps.push('You are ' + String(summary.benchmarkGap || 0) + ' marks away from the next benchmark (' + String(summary.nextBenchmark) + ').');
+      } else {
+        steps.push('You are already at or above the configured benchmark range for this paper.');
+      }
+      (summary.recommendations || []).forEach(function (item) { steps.push(item); });
+      if (steps.length === 1) steps.push('Keep practising with timed mixed sets to improve consistency.');
+      return (
+        '<aside class="rs-card rs-verdict analysis-stage"' + stageStyle(2) + '>' +
+        '<p class="section-label">Verdict &amp; next steps</p>' +
+        '<div class="rs-verdict-tags">' +
+        '<div class="rs-tag ' + analysisToneClass(summary.scoreLabel) + '"><span>Score band</span><strong>' + escapeHtml(String(summary.scoreLabel || "Balanced")) + '</strong><small>' + escapeHtml(String(summary.scorePercentage || 0)) + '% of total marks</small></div>' +
+        '<div class="rs-tag ' + analysisToneClass(summary.paceLabel) + '"><span>Pace</span><strong>' + escapeHtml(String(summary.paceLabel || "Balanced")) + '</strong><small>' + escapeHtml(String(summary.avgSecondsPerAttempted || 0)) + 's per attempted question</small></div>' +
+        '</div>' +
+        ((summary.strongSection || summary.weakSection)
+          ? '<p class="rs-verdict-line">' +
+            (summary.strongSection ? 'Strongest <b>' + escapeHtml(String(summary.strongSection.key)) + '</b> (' + escapeHtml(String(roundTo(summary.strongSection.accuracy, 1))) + '%)' : '') +
+            (summary.strongSection && summary.weakSection && summary.weakSection.key !== summary.strongSection.key
+              ? ' · Focus <b>' + escapeHtml(String(summary.weakSection.key)) + '</b> (' + escapeHtml(String(roundTo(summary.weakSection.accuracy, 1))) + '%)'
+              : '') +
+            '</p>'
+          : '') +
+        '<ol class="rs-steps">' + steps.map(function (step) { return '<li>' + highlightPlanText(step) + '</li>'; }).join("") + '</ol>' +
+        '</aside>'
+      );
+    }
+
+    var TOPICS_VISIBLE = 6;
+
+    function buildTopicCard(summary) {
+      var topics = summary && Array.isArray(summary.topicInsights) ? summary.topicInsights : [];
+      return (
+        '<section class="rs-card rs-topics analysis-stage"' + stageStyle(3) + '>' +
+        '<div class="rs-card-head"><p class="section-label">Topic analysis</p>' +
+        (topics.length ? '<span class="rs-head-note">Highest priority first</span>' : '') + '</div>' +
+        (topics.length
+          ? '<div class="rs-topic-table" role="table" aria-label="Topic analysis">' +
+            '<div class="rs-topic-row is-head" role="row">' +
+            '<span role="columnheader">Topic</span><span role="columnheader">Attempted</span><span role="columnheader">Correct / wrong</span><span role="columnheader">Accuracy</span><span role="columnheader">Net marks</span>' +
+            '</div>' +
+            topics.map(function (topic, index) {
+              var acc = roundTo(topic.accuracy, 1);
+              var net = roundTo(topic.score, 2);
+              var attempted = Number(topic.attempted || 0);
+              return (
+                '<div class="rs-topic-row' + (index >= TOPICS_VISIBLE ? ' is-extra' : '') + '" role="row">' +
+                '<span class="rs-topic-name" role="cell"><strong>' + escapeHtml(String(topic.topic || "General")) + '</strong>' +
+                '<em>' + escapeHtml(String(topic.section || "")) + '</em>' +
+                (index === 0 && attempted ? '<b class="rs-flag">Top priority</b>' : '') + '</span>' +
+                '<span role="cell" data-label="Attempted">' + attempted + '/' + escapeHtml(String(topic.total || 0)) + '</span>' +
+                '<span role="cell" data-label="Correct / wrong">' + escapeHtml(String(topic.correct || 0)) + ' / ' + escapeHtml(String(topic.wrong || 0)) + '</span>' +
+                '<span class="rs-acc" role="cell" data-label="Accuracy">' + (attempted
+                  ? '<i class="' + accuracyTone(acc) + '"><b data-width="' + Math.max(3, clampPct(acc)) + '%"></b></i>' + escapeHtml(String(acc)) + '%'
+                  : '<span class="rs-muted">Not attempted</span>') + '</span>' +
+                '<span class="rs-net ' + (net < 0 ? 'is-neg' : (net > 0 ? 'is-pos' : '')) + '" role="cell" data-label="Net marks">' + (net > 0 ? '+' : '') + escapeHtml(String(net)) + '</span>' +
+                '</div>'
+              );
+            }).join("") +
+            '</div>' +
+            (topics.length > TOPICS_VISIBLE
+              ? '<button type="button" class="button button-secondary button-compact rs-topic-toggle js-topic-toggle" aria-expanded="false">Show all ' + topics.length + ' topics</button>'
+              : '')
+          : '<div class="empty-state">Topic insights appear for attempts submitted on the current analysis pipeline.</div>') +
+        '</section>'
+      );
+    }
+
+    function buildTimeCard(summary) {
+      var t = summary && summary.timeAnalysis ? summary.timeAnalysis : null;
+      if (!t) return "";
+      var stat = function (label, value) {
+        return '<div class="rs-stat"><span>' + escapeHtml(label) + '</span><strong>' + escapeHtml(value) + '</strong></div>';
+      };
+      return (
+        '<section class="rs-card rs-time analysis-stage"' + stageStyle(4) + '>' +
+        '<p class="section-label">Time &amp; pace</p>' +
+        '<div class="rs-stat-grid">' +
+        stat("Total time", formatTime(Number(t.totalTimeSeconds || 0))) +
+        stat("Per question", String(t.avgSecondsPerQuestion || 0) + "s") +
+        stat("Per attempted", String(t.avgSecondsPerAttempted || 0) + "s") +
+        stat("Target pace", String(t.targetSecondsPerQuestion || 0) + "s") +
+        '</div>' +
+        '<ul class="rs-notes">' +
+        '<li class="' + (t.timePressure ? 'is-warn' : 'is-ok') + '">' + escapeHtml(t.timePressure ? "You were under time pressure." : "Time usage stayed under control.") + '</li>' +
+        '<li class="' + (t.fastButErrorProne ? 'is-warn' : 'is-ok') + '">' + escapeHtml(t.fastButErrorProne ? "High speed is costing accuracy." : "Speed and accuracy stayed balanced.") + '</li>' +
+        '</ul>' +
+        '</section>'
+      );
+    }
+
+    function buildHistoryCard() {
+      var recent = attemptHistory.slice(0, 6);
+      var trend = recent.slice().reverse();
+      var maxHistoryScore = trend.reduce(function (max, item) {
         return Math.max(max, Number(item && item.result && item.result.score || 0));
       }, Math.max(1, Number(maxScore || 0)));
-      var scorePercent = maxScore ? Math.round((Number(result.score || 0) / Number(maxScore || 1)) * 100) : 0;
       return (
-        '<section class="report-card analysis-stage" style="padding: 24px; flex: 1 1 420px; min-width: 0;"' + stageStyle(2) + '>' +
-        '<p class="section-label">Visual analysis</p>' +
-        '<div class="analysis-visual-grid">' +
-        '<div class="analysis-visual-card">' +
-        '<div class="analysis-review-head">' +
-        '<div><h3>Outcome split</h3><p class="helper-text">Correct vs wrong vs skipped</p></div>' +
-        '</div>' +
-        buildDonutChartSvg([
-          { value: Number(result.correctCount || 0), color: "#239442" },
-          { value: Number(result.wrongCount || 0), color: "#b73a28" },
-          { value: Number(result.unattemptedCount !== undefined ? result.unattemptedCount : result.skippedCount || 0), color: "#c9b99f" }
-        ], Number(questions.length || 0), "Coverage", scorePercent + "%") +
-        '<div class="analysis-legend-row">' +
-        '<span><i style="background:#239442"></i>Correct</span>' +
-        '<span><i style="background:#b73a28"></i>Wrong</span>' +
-        '<span><i style="background:#c9b99f"></i>Skipped</span>' +
-        '</div>' +
-        '</div>' +
-        '<div class="analysis-visual-card">' +
-        '<div class="analysis-review-head">' +
-        '<div><h3>Section share</h3><p class="helper-text">Marks captured from each section</p></div>' +
-        '</div>' +
-        buildDonutChartSvg([
-          { value: sectionValues[0], color: "#d8b13d" },
-          { value: sectionValues[1], color: "#8f2d1f" }
-        ], sectionTotal, "Score", String(result.score || 0)) +
-        '<div class="analysis-legend-row">' +
-        '<span><i style="background:#d8b13d"></i>SUPR</span>' +
-        '<span><i style="background:#8f2d1f"></i>REAP</span>' +
-        '</div>' +
-        '</div>' +
-        '</div>' +
-        '<div class="divider"></div>' +
-        '<div class="analysis-visual-card">' +
-        '<div class="analysis-review-head">' +
-        '<div><h3>Attempt trend</h3><p class="helper-text">Latest scores for this same test</p></div>' +
-        '</div>' +
-        (latestAttempts.length
-          ? '<div class="analysis-history-bars">' + latestAttempts.map(function (item, index) {
+        '<section class="rs-card rs-history analysis-stage"' + stageStyle(5) + '>' +
+        '<div class="rs-card-head"><p class="section-label">Attempt history</p>' +
+        (attemptHistory.length ? '<span class="meta-chip">' + attemptHistory.length + ' total</span>' : '') + '</div>' +
+        (trend.length > 1
+          ? '<div class="rs-trend" role="img" aria-label="Scores of your recent attempts, oldest to latest">' + trend.map(function (item) {
             var score = Number(item && item.result && item.result.score || 0);
-            var height = Math.max(10, Math.min(100, Math.round((score / Math.max(1, maxHistoryScore)) * 100)));
-            var isCurrent = item.id === attempt.id;
-            return '<div class="analysis-history-bar' + (isCurrent ? ' is-current' : '') + '"><span style="height:' + height + '%;"></span><strong>' + escapeHtml(String(score)) + '</strong><small>A' + escapeHtml(String(item.attemptNumber || (index + 1))) + '</small></div>';
+            var height = Math.max(8, Math.min(100, Math.round((Math.max(0, score) / maxHistoryScore) * 100)));
+            return '<span class="' + (item.id === attempt.id ? 'is-current' : '') + '" title="Attempt ' + escapeAttribute(String(item.attemptNumber || "")) + ': ' + escapeAttribute(String(score)) + '"><b style="height:' + height + '%"></b></span>';
           }).join("") + '</div>'
-          : '<div class="empty-state">Your next attempts will appear here as a score trend.</div>') +
-        '</div>' +
+          : '') +
+        (recent.length
+          ? '<ul class="rs-history-list">' + recent.map(function (a) {
+            var isCurrent = a.id === attempt.id;
+            return (
+              '<li class="' + (isCurrent ? 'is-current' : '') + '">' +
+              '<span class="rs-history-label">Attempt ' + escapeHtml(String(a.attemptNumber || "")) + '</span>' +
+              '<strong>' + escapeHtml(String(a.result.score)) + (maxScore ? '<small>/' + escapeHtml(String(maxScore)) + '</small>' : '') + '</strong>' +
+              '<span class="rs-muted">' + escapeHtml(formatDateOnly(a.submittedAt)) + '</span>' +
+              (isCurrent
+                ? '<span class="meta-chip">Viewing</span>'
+                : '<button class="button button-secondary button-compact js-open-result" data-id="' + escapeAttribute(a.id) + '">Open</button>') +
+              '</li>'
+            );
+          }).join("") + '</ul>'
+          : '<div class="empty-state">No previous attempts.</div>') +
         '</section>'
       );
     }
@@ -6504,34 +6452,13 @@
       );
     }
 
-    function buildSummaryPanels(summary) {
-      var html = "";
-      if (summary) {
-        html += buildSectionPanel(summary);
-      } else if (analysisHydrating) {
-        html += (
-          '<section class="report-card analysis-stage" style="padding: 24px; flex: 1 1 100%; min-width: 0;"' + stageStyle(2) + '>' +
-          '<p class="section-label">Attempt analysis</p>' +
-          '<div class="empty-state">Loading the latest stored analysis for this attempt.</div>' +
-          '</section>'
-        );
-      } else {
-        html += (
-          '<section class="report-card analysis-stage" style="padding: 24px; flex: 1 1 100%; min-width: 0;"' + stageStyle(2) + '>' +
-          '<p class="section-label">Attempt analysis</p>' +
-          '<div class="empty-state">This attempt was submitted before the upgraded analysis system was enabled. Submit a new attempt to see section, topic, time, and question-level insights here.</div>' +
-          '</section>'
-        );
-      }
-      if (summary) {
-        html += buildVisualAnalysisPanel(summary);
-        html += buildTopicPanel(summary);
-        html += buildTimePanel(summary);
-      } else {
-        html += buildVisualAnalysisPanel(null);
-      }
-      html += buildQuestionReviewShell();
-      return html;
+    // Left: sections + time (balances the taller verdict card on the right).
+    function buildTopRow(summary) {
+      return '<div class="rs-side-stack">' + buildSectionsCard(summary) + buildTimeCard(summary) + '</div>' + buildVerdictCard(summary);
+    }
+
+    function buildDetailRow(summary) {
+      return (summary ? buildTopicCard(summary) : "") + '<div class="rs-side-stack">' + buildHistoryCard() + '</div>';
     }
 
     function buildOptionRow(text, optionIndex, review) {
@@ -6660,58 +6587,9 @@
       }).join("");
     }
 
-    function sectionBar(sectionKey) {
-      var section = sectionScores[sectionKey] || { correct: 0, wrong: 0, skipped: 0, score: 0 };
-      var attempted = Number(section.correct || 0) + Number(section.wrong || 0);
-      var accuracy = attempted ? Math.round((Number(section.correct || 0) / attempted) * 100) : 0;
-      return (
-        '<div class="bar-item">' +
-        '<div class="bar-head"><span>' + escapeHtml(sectionKey) + '</span><span>' + accuracy + '%</span></div>' +
-        '<div class="bar-track"><span data-width="' + accuracy + '%"></span></div>' +
-        '<div class="helper-text" style="margin-top: 8px;">Score: ' + escapeHtml(String(section.score || 0)) + ' | Correct: ' + escapeHtml(String(section.correct || 0)) + ' | Wrong: ' + escapeHtml(String(section.wrong || 0)) + ' | Skipped: ' + escapeHtml(String(section.skipped || 0)) + '</div>' +
-        '</div>'
-      );
-    }
-
     var attemptHistory = store.listUserAttempts(user.id).filter(function (a) {
       return a.testId === attempt.testId && a.status === "submitted" && a.result;
     });
-    var attemptProgressHtml = attemptHistory.length
-      ? (
-        '<div class="report-history-section">' +
-        '<div class="report-history-head">' +
-        '<div><p class="section-label" style="margin:0;">Attempt progression</p><h3>Your recent submitted attempts</h3></div>' +
-        '<span class="meta-chip">' + escapeHtml(String(attemptHistory.length)) + ' total</span>' +
-        '</div>' +
-        '<div class="report-history-strip">' +
-        attemptHistory.slice(0, 6).map(function (a) {
-          var isCurrentAttempt = a.id === attempt.id;
-          return (
-            '<div class="report-history-card' + (isCurrentAttempt ? ' is-current' : '') + '">' +
-            '<div class="report-history-kicker">' + (isCurrentAttempt ? 'Current attempt' : 'Attempt ' + escapeHtml(String(a.attemptNumber || ""))) + '</div>' +
-            '<strong>Score ' + escapeHtml(String(a.result.score)) + '</strong>' +
-            '<div class="report-history-meta">' +
-            '<span>Percentile ' + escapeHtml(String(a.result.percentile || "-")) + '%</span>' +
-            '<span>' + escapeHtml(formatDateOnly(a.submittedAt)) + '</span>' +
-            '</div>' +
-            (isCurrentAttempt
-              ? '<span class="meta-chip">Open now</span>'
-              : '<button class="button button-secondary button-compact js-open-result" data-id="' + escapeAttribute(a.id) + '">Open</button>') +
-            '</div>'
-          );
-        }).join("") +
-        '</div>' +
-        '</div>'
-      )
-      : (
-        '<div class="report-history-section">' +
-        '<div class="report-history-head">' +
-        '<div><p class="section-label" style="margin:0;">Attempt progression</p><h3>Your recent submitted attempts</h3></div>' +
-        '</div>' +
-        '<div class="empty-state">No previous attempts.</div>' +
-        '</div>'
-      );
-
       var wittyLines = [
         "The server has crunched your answers, judged your life choices, and compiled your results.",
         "Evaluation complete. The algorithms have pondered over your responses.",
@@ -6721,53 +6599,79 @@
       ];
       var witticism = wittyLines[(attempt ? attempt.id.charCodeAt(attempt.id.length - 1) : 0) % wittyLines.length] || wittyLines[0];
 
+      var correctCount = Number(result.correctCount || 0);
+      var wrongCount = Number(result.wrongCount || 0);
+      var skippedCount = Number(result.unattemptedCount !== undefined ? result.unattemptedCount : result.skippedCount || 0);
+      var attemptedCount = correctCount + wrongCount;
+      var totalQuestions = attemptedCount + skippedCount || Number(analysis && analysis.totalQuestions || 0);
+      var timeTaken = Number(result.totalTime !== undefined ? result.totalTime : result.timeTakenSeconds || 0);
+      var paperSeconds = test && test.durationMinutes ? Number(test.durationMinutes) * 60 : 0;
+      var rankValue = Number(result.rank || 0);
+      var rankTotal = Number(result.rankTotal || 0);
+      var cohortLabel = Number(attempt.attemptNumber || 1) > 1 ? 'among attempt ' + attempt.attemptNumber + ' takers' : 'among first attempts';
+
+      function kpi(label, valueHtml, sub, extraClass) {
+        return (
+          '<div class="rs-kpi' + (extraClass ? ' ' + extraClass : '') + '">' +
+          '<span class="rs-kpi-label">' + escapeHtml(label) + '</span>' +
+          '<strong class="rs-kpi-value">' + valueHtml + '</strong>' +
+          (sub ? '<span class="rs-kpi-sub">' + escapeHtml(sub) + '</span>' : '') +
+          '</div>'
+        );
+      }
+
+      var kpisHtml =
+        '<div class="rs-kpis analysis-stage"' + stageStyle(0) + '>' +
+        kpi("Score",
+          '<span data-animate-number="' + escapeAttribute(String(result.score || 0)) + '"></span>' + (maxScore ? '<small>/ ' + escapeHtml(String(maxScore)) + '</small>' : ''),
+          maxScore ? roundTo((Number(result.score || 0) / maxScore) * 100, 1) + '% of total marks' : '', "is-primary") +
+        kpi("Rank",
+          rankValue ? '<span data-animate-number="' + rankValue + '"></span>' + (rankTotal ? '<small>of ' + rankTotal + '</small>' : '') : '—',
+          rankValue ? cohortLabel : (result.invalidated ? 'Removed from ranking' : 'Not ranked')) +
+        kpi("Percentile",
+          rankValue ? '<span data-animate-number="' + escapeAttribute(String(result.percentile || 0)) + '" data-suffix="%" data-decimals="2"></span>' : '—',
+          rankValue ? 'Relative standing' : '') +
+        kpi("Accuracy",
+          '<span data-animate-number="' + escapeAttribute(String(result.accuracy || 0)) + '" data-suffix="%" data-decimals="2"></span>',
+          correctCount + ' of ' + attemptedCount + ' attempted correct') +
+        kpi("Attempted",
+          escapeHtml(String(attemptedCount)) + (totalQuestions ? '<small>/ ' + totalQuestions + '</small>' : ''),
+          skippedCount + ' skipped') +
+        kpi("Time taken",
+          escapeHtml(formatTime(timeTaken)),
+          paperSeconds ? 'of ' + formatTime(paperSeconds) + ' allowed' : '') +
+        '</div>' +
+        '<div class="rs-outcome analysis-stage"' + stageStyle(0) + '>' +
+        outcomeBar(correctCount, wrongCount, skippedCount, "is-large") +
+        '<div class="rs-legend">' +
+        '<span><i class="rs-dot is-correct"></i>Correct <b>' + correctCount + '</b></span>' +
+        '<span><i class="rs-dot is-wrong"></i>Wrong <b>' + wrongCount + '</b></span>' +
+        '<span><i class="rs-dot is-skipped"></i>Skipped <b>' + skippedCount + '</b></span>' +
+        '</div>' +
+        '</div>';
+
       app.innerHTML = buildShell(
         renderPrimaryNav("progress", user) +
-        '<section class="results-dashboard-layout" style="margin: 32px auto; width: 96%; max-width: 100%; padding: 0;">' +
-        
-        '<div class="autohide-bar" style="position: sticky; top: 90px; z-index: 40; display: flex; justify-content: flex-end; gap: 8px; margin-bottom: -32px; padding-bottom: 32px; pointer-events: none;">' +
-        '<button class="button button-primary button-compact" id="retake-test" style="border-radius: 20px; font-size: 0.75rem; pointer-events: auto; padding: 4px 14px;">Retake Test</button>' +
+        '<section class="rs-page">' +
+        '<header class="rs-hero">' +
+        '<div class="rs-hero-text">' +
+        '<p class="section-label">Result · Attempt ' + escapeHtml(String(attempt.attemptNumber || 1)) + ' · ' + escapeHtml(formatDateOnly(attempt.submittedAt)) + '</p>' +
+        '<h1>' + escapeHtml(test && test.title ? test.title : "UGEE Mock Test") + '</h1>' +
+        '<p class="rs-hero-sub"><strong>' + escapeHtml(firstName(user.name)) + '</strong>, ' + witticism + '</p>' +
         '</div>' +
-        
-        '<div class="report-body" style="padding: 0;">' +
-        '<div style="padding: 0 0 16px 0;">' +
-        '<p class="section-label" style="color: var(--gold); margin-bottom: 8px;">Result</p>' +
-        '<h1 style="font-size: clamp(2.5rem, 5vw, 4rem); letter-spacing: -0.03em; margin: 0 0 8px 0; line-height: 1.1;">' + escapeHtml(test && test.title ? test.title : "UGEE Mock Test") + '</h1>' +
-        '<p style="font-size: 1.1rem; color: var(--ink-soft); max-width: 800px; line-height: 1.6; margin: 0;"><strong>' + escapeHtml(firstName(user.name)) + '</strong>, ' + witticism + '</p>' +
+        '<div class="rs-hero-actions">' +
+        '<button class="button button-primary" id="retake-test">Retake test</button>' +
         '</div>' +
-      '<div class="premium-bento-layout" id="analysis-summary-root" style="display: flex; flex-wrap: wrap; gap: 24px; align-items: stretch;">' +
-      
-      '<div class="report-hero-panel" style="flex: 1 1 100%; min-width: 0; padding: 12px 0 24px 0;">' +
-      '<p class="section-label" style="margin-bottom: 24px; color: var(--gold);">Performance Summary</p>' +
-      '<div class="premium-stats-grid" style="display: flex; gap: 24px; overflow-x: auto; padding-bottom: 8px; flex-wrap: nowrap;">' +
-      '<div class="premium-stat-item analysis-stage" style="display: flex; flex-direction: column; gap: 4px; flex: 1 1 0; min-width: min-content;"' + stageStyle(0) + '><strong style="font-size: 2.25rem; font-weight: 800; line-height: 1;"><span data-animate-number="' + escapeAttribute(String(result.score || 0)) + '"></span>/' + escapeHtml(String(maxScore)) + '</strong><span style="font-size: 0.8rem; font-weight: 700; text-transform: uppercase; color: var(--ink-soft); white-space: nowrap;">Score</span></div>' +
-      '<div class="premium-stat-item analysis-stage" style="display: flex; flex-direction: column; gap: 4px; flex: 1 1 0; min-width: min-content;"' + stageStyle(1) + '><strong style="font-size: 2.25rem; font-weight: 800; line-height: 1;" data-animate-number="' + escapeAttribute(String(result.accuracy || 0)) + '" data-suffix="%" data-decimals="2"></strong><span style="font-size: 0.8rem; font-weight: 700; text-transform: uppercase; color: var(--ink-soft); white-space: nowrap;">Accuracy</span></div>' +
-      '<div class="premium-stat-item analysis-stage" style="display: flex; flex-direction: column; gap: 4px; flex: 1 1 0; min-width: min-content;"' + stageStyle(2) + '><strong style="font-size: 2.25rem; font-weight: 800; line-height: 1;" data-animate-number="' + escapeAttribute(String(result.rank || 0)) + '"></strong><span style="font-size: 0.8rem; font-weight: 700; text-transform: uppercase; color: var(--ink-soft); white-space: nowrap;">Rank</span></div>' +
-      '<div class="premium-stat-item analysis-stage" style="display: flex; flex-direction: column; gap: 4px; flex: 1 1 0; min-width: min-content;"' + stageStyle(3) + '><strong style="font-size: 2.25rem; font-weight: 800; line-height: 1;" data-animate-number="' + escapeAttribute(String(result.percentile || 0)) + '" data-suffix="%" data-decimals="2"></strong><span style="font-size: 0.8rem; font-weight: 700; text-transform: uppercase; color: var(--ink-soft); white-space: nowrap;">Percentile</span></div>' +
-      '<div class="premium-stat-item analysis-stage" style="display: flex; flex-direction: column; gap: 4px; flex: 1 1 0; min-width: min-content;"' + stageStyle(4) + '><strong style="font-size: 2.25rem; font-weight: 800; line-height: 1;" data-animate-number="' + escapeAttribute(String(result.correctCount || 0)) + '"></strong><span style="font-size: 0.8rem; font-weight: 700; text-transform: uppercase; color: var(--ink-soft); white-space: nowrap;">Correct</span></div>' +
-      '<div class="premium-stat-item analysis-stage" style="display: flex; flex-direction: column; gap: 4px; flex: 1 1 0; min-width: min-content;"' + stageStyle(5) + '><strong style="font-size: 2.25rem; font-weight: 800; line-height: 1;" data-animate-number="' + escapeAttribute(String(result.wrongCount || 0)) + '"></strong><span style="font-size: 0.8rem; font-weight: 700; text-transform: uppercase; color: var(--ink-soft); white-space: nowrap;">Wrong</span></div>' +
-      '<div class="premium-stat-item analysis-stage" style="display: flex; flex-direction: column; gap: 4px; flex: 1 1 0; min-width: min-content;"' + stageStyle(6) + '><strong style="font-size: 2.25rem; font-weight: 800; line-height: 1;" data-animate-number="' + escapeAttribute(String(result.unattemptedCount !== undefined ? result.unattemptedCount : result.skippedCount || 0)) + '"></strong><span style="font-size: 0.8rem; font-weight: 700; text-transform: uppercase; color: var(--ink-soft); white-space: nowrap;">Skipped</span></div>' +
-      '<div class="premium-stat-item analysis-stage" style="display: flex; flex-direction: column; gap: 4px; flex: 1 1 0; min-width: min-content;"' + stageStyle(7) + '><strong style="font-size: 2.25rem; font-weight: 800; line-height: 1;">' + formatTime(Number(result.totalTime !== undefined ? result.totalTime : result.timeTakenSeconds || 0)) + '</strong><span style="font-size: 0.8rem; font-weight: 700; text-transform: uppercase; color: var(--ink-soft); white-space: nowrap;">Time taken</span></div>' +
-      '</div>' +
-      '</div>' +
-      
-      '<div class="report-card" style="padding: 24px; flex: 1 1 420px; min-width: 0;">' +
-      attemptProgressHtml +
-      '</div>' +
-      
-      '<div class="report-card" style="padding: 24px; flex: 1 1 420px; min-width: 0;">' +
-      '<p class="section-label" style="margin-bottom: 24px;">Section Performance</p>' +
-      '<div class="bar-list" id="section-performance-root">' + sectionBar("SUPR") + sectionBar("REAP") + '</div>' +
-      '</div>' +
-      
-      buildSummaryPanels(analysis) +
-      '</div>' +
-      '<div class="report-card pi-card" id="performance-intelligence-root" style="margin-top: 24px;" aria-live="polite">' +
-      '<p class="section-label">Performance Intelligence</p><p class="pi-muted">Analyzing your attempt…</p>' +
-      '</div>' +
-      '</div>' +
-      '</section>'
-    );
+        '</header>' +
+        kpisHtml +
+        '<div class="rs-row rs-top" id="analysis-summary-root">' + buildTopRow(analysis) + '</div>' +
+        '<div class="report-card pi-card" id="performance-intelligence-root" aria-live="polite">' +
+        '<p class="section-label">Performance Intelligence</p><p class="pi-muted">Analyzing your attempt…</p>' +
+        '</div>' +
+        '<div class="rs-row rs-detail' + (analysis ? '' : ' is-solo') + '" id="analysis-detail-root">' + buildDetailRow(analysis) + '</div>' +
+        '<div id="analysis-review-root">' + buildQuestionReviewShell() + '</div>' +
+        '</section>'
+      );
     mountPerformanceIntelligence(attempt.id);
 
     // The results view has no dashboard button; guard so the bindings below still run.
@@ -6785,11 +6689,22 @@
       });
     }
 
-    app.querySelectorAll(".js-open-result").forEach(function (button) {
-      button.addEventListener("click", function () {
-        navigate("results/" + button.dataset.id);
+    function bindDetailInteractions(root) {
+      root.querySelectorAll(".js-open-result").forEach(function (button) {
+        button.addEventListener("click", function () {
+          navigate("results/" + button.dataset.id);
+        });
       });
-    });
+      root.querySelectorAll(".js-topic-toggle").forEach(function (button) {
+        button.addEventListener("click", function () {
+          var card = button.closest(".rs-topics");
+          var expanded = card.classList.toggle("is-expanded");
+          button.setAttribute("aria-expanded", expanded ? "true" : "false");
+          button.textContent = expanded ? "Show fewer topics" : "Show all " + card.querySelectorAll(".rs-topic-row:not(.is-head)").length + " topics";
+        });
+      });
+    }
+    bindDetailInteractions(app);
 
     function bindReviewButtons() {
       app.querySelectorAll(".js-open-image-lightbox").forEach(function (button) {
@@ -6898,53 +6813,7 @@
       }
     }
 
-    function activatePlanCarousel(rootNode) {
-      var carousels = (rootNode || document).querySelectorAll('.js-plan-carousel');
-      for (var c = 0; c < carousels.length; c++) {
-        var carousel = carousels[c];
-        var rows = carousel.querySelectorAll('.analysis-plan-row');
-        if (rows.length <= 1) continue;
-        if (carousel.getAttribute('data-carousel-active')) continue;
-        carousel.setAttribute('data-carousel-active', 'true');
-        
-        var rowArray = [];
-        for (var i = 0; i < rows.length; i++) {
-          rowArray.push(rows[i]);
-        }
-
-        var CARD_OFFSET = 10; // px each card peeks out below the front card
-        var SCALE_FACTOR = 0.06; // scale reduction per level
-        var renderStack = function(arr) {
-          for (var i = 0; i < arr.length; i++) {
-            var row = arr[i];
-            // Only show top 3 visible cards; hide the rest
-            row.style.opacity = i < 3 ? '1' : '0';
-            row.style.visibility = i < 3 ? 'visible' : 'hidden';
-            // Positive top: each card peeks out below the front (shadcn CardStack style)
-            row.style.top = (i * CARD_OFFSET) + 'px';
-            row.style.transform = 'scale(' + (1 - i * SCALE_FACTOR) + ')';
-            row.style.transition = 'top 500ms cubic-bezier(0.4,0,0.2,1), transform 500ms cubic-bezier(0.4,0,0.2,1), opacity 500ms ease';
-            row.style.pointerEvents = i === 0 ? 'auto' : 'none';
-            // Front card has highest z-index
-            row.style.zIndex = arr.length - i;
-          }
-        };
-        
-        renderStack(rowArray);
-
-        (function(carouselEl, arr, renderFn) {
-          setInterval(function() {
-            if (!document.body.contains(carouselEl)) return;
-            var bottomCard = arr.pop();
-            arr.unshift(bottomCard);
-            renderFn(arr);
-          }, 4000);
-        })(carousel, rowArray, renderStack);
-      }
-    }
-
     activateAnalysisAnimations(app);
-    activatePlanCarousel(app);
     mountQuestionReviewLoader();
 
     if (!analysis && !prefetchedSummary && store.getAttemptAnalysis) {
@@ -6962,17 +6831,23 @@
         if (derivedSectionScores) {
           result.sectionScores = derivedSectionScores;
         }
-        var sectionRoot = document.getElementById("section-performance-root");
         var summaryRoot = document.getElementById("analysis-summary-root");
-        if (sectionRoot) {
-          sectionRoot.innerHTML = sectionBar("SUPR") + sectionBar("REAP");
-          activateAnalysisAnimations(sectionRoot);
+        var detailRoot = document.getElementById("analysis-detail-root");
+        var reviewRoot = document.getElementById("analysis-review-root");
+        if (summaryRoot) {
+          summaryRoot.innerHTML = buildTopRow(analysis);
+          activateAnalysisAnimations(summaryRoot);
         }
-        if (!summaryRoot) return;
-        summaryRoot.innerHTML = buildSummaryPanels(analysis);
-        activateAnalysisAnimations(summaryRoot);
-        activatePlanCarousel(summaryRoot);
-        mountQuestionReviewLoader();
+        if (detailRoot) {
+          detailRoot.className = "rs-row rs-detail" + (analysis ? "" : " is-solo");
+          detailRoot.innerHTML = buildDetailRow(analysis);
+          activateAnalysisAnimations(detailRoot);
+          bindDetailInteractions(detailRoot);
+        }
+        if (reviewRoot) {
+          reviewRoot.innerHTML = buildQuestionReviewShell();
+          mountQuestionReviewLoader();
+        }
       }).catch(function () { });
     }
 

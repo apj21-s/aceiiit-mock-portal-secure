@@ -3,6 +3,7 @@ const { z } = require("zod");
 
 const Attempt = require("../models/Attempt");
 const { getRankFor, getRanksForAttempts } = require("../services/rankService");
+const { getTestRuntimeSnapshot } = require("../services/testDataService");
 const {
   sessionView,
   startSession,
@@ -46,6 +47,7 @@ function toAttemptResponse(attempt, rankInfo) {
     accuracy: attempt.accuracy,
     rank: ranking.rank,
     percentile: ranking.percentile,
+    rankTotal: ranking.total || 0,
     correctCount: attempt.correctCount,
     wrongCount: attempt.wrongCount,
     skippedCount: attempt.skippedCount,
@@ -240,6 +242,35 @@ function paginate(allQuestions, page, limit) {
   };
 }
 
+/**
+ * Full marks for the paper as it was taken: summed from the attempt's own question snapshot
+ * (so later edits to questions don't change it), falling back to the test's current paper
+ * for very old attempts without a snapshot.
+ */
+async function maxScoreFor(attempt) {
+  const [row] = await Attempt.aggregate([
+    { $match: { _id: attempt._id } },
+    {
+      $project: {
+        count: { $size: { $ifNull: ["$questionReview", []] } },
+        max: {
+          $sum: {
+            $map: {
+              input: { $ifNull: ["$questionReview", []] },
+              as: "q",
+              in: { $convert: { input: "$$q.marks", to: "double", onError: 0, onNull: 0 } },
+            },
+          },
+        },
+      },
+    },
+  ]);
+  if (row && row.count) return row.max;
+  const snapshot = await getTestRuntimeSnapshot(attempt.testId).catch(() => null);
+  const questions = snapshot && Array.isArray(snapshot.questions) ? snapshot.questions : [];
+  return questions.length ? questions.reduce((sum, q) => sum + Number(q.marks || 0), 0) : null;
+}
+
 async function getResult(req, res, next) {
   try {
     if (!isValidObjectId(req.params.id)) {
@@ -253,6 +284,7 @@ async function getResult(req, res, next) {
     if (!attempt) return res.status(404).json({ error: "Result not found" });
 
     const payload = { attempt: toAttemptResponse(attempt, await getRankFor(attempt)) };
+    payload.attempt.maxScore = await maxScoreFor(attempt);
     if (includeReview) {
       const { items, pagination } = paginate(Array.isArray(attempt.questionReview) ? attempt.questionReview : [], page, limit);
       payload.questions = items;

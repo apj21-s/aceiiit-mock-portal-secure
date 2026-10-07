@@ -268,6 +268,8 @@
       accuracy: remote.accuracy,
       rank: remote.rank,
       percentile: remote.percentile,
+      rankTotal: remote.rankTotal || 0,
+      maxScore: remote.maxScore !== undefined ? remote.maxScore : null,
       correctCount: remote.correctCount,
       wrongCount: remote.wrongCount,
       skippedCount: remote.skippedCount,
