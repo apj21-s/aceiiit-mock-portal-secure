@@ -4,7 +4,7 @@ const path = require("path");
 const fs = require("fs");
 const { spawn } = require("child_process");
 const puppeteer = require("puppeteer-core");
-const { BACKEND, CHROME_PATH, serverEnv } = require("./helpers");
+const { BACKEND, CHROME_PATH, serverEnv, newHermeticPage } = require("./helpers");
 
 const PORT = 4979;
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -48,7 +48,7 @@ const log = (...a) => console.log("[admin-e2e]", ...a);
   const pageErrors = [];
   const check = (cond, msg) => { (cond ? log("PASS", msg) : (log("FAIL", msg), failures.push(msg))); };
   try {
-    const page = await browser.newPage();
+    const page = await newHermeticPage(browser);
     await page.setViewport({ width: 1366, height: 900 });
     page.on("pageerror", (e) => pageErrors.push(e.stack || e.message));
     page.on("dialog", async (d) => { log("dialog:", d.message().split("\n")[0]); await d.accept(); });

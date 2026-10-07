@@ -5,7 +5,7 @@ const path = require("path");
 const fs = require("fs");
 const { spawn } = require("child_process");
 const puppeteer = require("puppeteer-core");
-const { BACKEND, CHROME_PATH, SHOTS_DIR, serverEnv } = require("./helpers");
+const { BACKEND, CHROME_PATH, SHOTS_DIR, serverEnv, newHermeticPage } = require("./helpers");
 
 const ONLY = process.argv[2] ? process.argv[2].split(",") : null;
 const PORT = 4979;
@@ -107,7 +107,7 @@ async function measure(page) {
   try {
     // Student: create one finished attempt for the results page.
     const ctx = await browser.createBrowserContext();
-    const page = await ctx.newPage();
+    const page = await newHermeticPage(ctx);
     page.on("dialog", (d) => d.accept());
     await page.setViewport({ width: 1280, height: 900 });
     await login(page, "student@test.local");
@@ -165,7 +165,7 @@ async function measure(page) {
 
     if (!ONLY || ONLY.includes("admin") || ONLY.includes("login")) {
       const actx = await browser.createBrowserContext();
-      const apage = await actx.newPage();
+      const apage = await newHermeticPage(actx);
       apage.on("dialog", (d) => d.accept());
       for (const width of WIDTHS) {
         await apage.setViewport({ width, height: 900 });

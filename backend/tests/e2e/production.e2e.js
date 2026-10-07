@@ -37,7 +37,10 @@ function boot(env) {
 }
 
 (async () => {
-  const dbPath = fs.mkdtempSync(path.join(B, "node_modules/.cache/mongodb-test-data/prod-"));
+  // CI starts from a clean checkout: the cache folder may not exist yet.
+  const dataRoot = path.join(B, "node_modules/.cache/mongodb-test-data");
+  fs.mkdirSync(dataRoot, { recursive: true });
+  const dbPath = fs.mkdtempSync(path.join(dataRoot, "prod-"));
   const m = await MongoMemoryServer.create({ instance: { dbPath } });
   const uri = m.getUri() + "prodsmoke";
 

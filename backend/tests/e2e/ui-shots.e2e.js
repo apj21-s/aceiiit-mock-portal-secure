@@ -5,7 +5,7 @@ const path = require("path");
 const fs = require("fs");
 const { spawn } = require("child_process");
 const puppeteer = require("puppeteer-core");
-const { BACKEND, CHROME_PATH, SHOTS_DIR, serverEnv } = require("./helpers");
+const { BACKEND, CHROME_PATH, SHOTS_DIR, serverEnv, newHermeticPage } = require("./helpers");
 
 const OUT = process.argv[2] || path.join(SHOTS_DIR, "ui");
 const PORT = 4981;
@@ -53,7 +53,7 @@ const VIEWPORTS = [[1366, 657], [1440, 900], [1024, 700], [390, 800]];
   for (let i = 0; i < 40; i += 1) { try { if ((await fetch(BASE + "/ready")).status === 200) break; } catch (_e) {} await sleep(250); }
 
   const browser = await puppeteer.launch({ executablePath: CHROME_PATH, headless: true, args: ["--no-sandbox"] });
-  const page = await browser.newPage();
+  const page = await newHermeticPage(browser, { allowFonts: true });
   page.on("dialog", (d) => d.accept());
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));

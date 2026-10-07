@@ -9,7 +9,7 @@ supported, because native `bcrypt` ships prebuilt binaries for glibc only.
 | Root directory | `backend` |
 | Build | `npm ci --omit=dev` |
 | Start | `node server.js` |
-| Node | 22 LTS (`engines: >=20`) |
+| Node | 22 LTS (`engines: 22.x`; on Render also set `NODE_VERSION=22`, which takes precedence) |
 | Health check | `GET /health` (liveness) · `GET /ready` (readiness: DB, jobs, queue, AI breaker) |
 | Instances | **1** (rate limits, the submit queue and caches are in-memory; see "Scaling") |
 

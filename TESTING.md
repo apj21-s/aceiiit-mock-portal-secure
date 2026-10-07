@@ -31,6 +31,8 @@ The first test run downloads a MongoDB binary (needs network once).
 
 ## Browser E2E (`backend/tests/e2e`)
 
+Pages are hermetic: requests to anything other than the local test server (Google sign-in script, fonts, CDNs) are blocked, so runs don't hang on the network or DNS; that is why the browser console logs `ERR_FAILED` lines. The screenshot harness (`ui-shots.e2e.js`) still loads Google Fonts. On a machine with little free RAM, run the suites one at a time (`node tests/e2e/<suite>.e2e.js`), because each one starts Chrome, MongoDB and a server.
+
 Uses `puppeteer-core` with a locally installed Chrome (`CHROME_PATH`, default
 `/usr/bin/google-chrome`). Screenshots go to `node_modules/.cache/e2e-shots/`
 (`SHOTS=1` for the exam suite).

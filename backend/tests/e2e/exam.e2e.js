@@ -4,7 +4,7 @@ const path = require("path");
 const fs = require("fs");
 const { spawn } = require("child_process");
 const puppeteer = require("puppeteer-core");
-const { BACKEND, CHROME_PATH, SHOTS_DIR, serverEnv } = require("./helpers");
+const { BACKEND, CHROME_PATH, SHOTS_DIR, serverEnv, newHermeticPage } = require("./helpers");
 
 const PORT = 4978;
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -78,7 +78,7 @@ async function beginExam(page) {
   };
   try {
     const context = await browser.createBrowserContext();
-    const page = await context.newPage();
+    const page = await newHermeticPage(context);
     page.on("console", (m) => { if (m.type() === "error") consoleErrors.push(`tab1: ${m.text()}`); });
     page.on("pageerror", (e) => consoleErrors.push(`tab1 pageerror: ${e.stack}`));
     page.on("dialog", async (d) => { log("tab1 dialog:", d.message().split("\n")[0]); await d.accept(); });
@@ -168,7 +168,7 @@ async function beginExam(page) {
     check(stillChecked, "answer restored after reload");
 
     // 5. Second tab → 409 → takeover (tab has its own sessionStorage, so no exam token)
-    const page2 = await context.newPage();
+    const page2 = await newHermeticPage(context);
     page2.on("console", (m) => { if (m.type() === "error") consoleErrors.push(`tab2: ${m.text()}`); });
     page2.on("pageerror", (e) => consoleErrors.push(`tab2 pageerror: ${e.stack}`));
     let sawElsewhere = false;

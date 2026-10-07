@@ -1294,3 +1294,32 @@ Run these in order, after a backup. Each is a dry run first, then `--apply`; see
   - a load test on production-sized hardware
   - legal review of the privacy and terms pages
 
+
+## Production rollout log
+**Date:** 2026-10-07
+
+**Deploy:**
+- Render service `aceiiit-mock-portal` (https://mock.aceiiit.in) is running the hardened build. `/health` returns 200; `/ready` reports ready, with the DB connected, all 3 jobs running, and queue max 300.
+- Env set from `backend/.env.production.local`. `JWT_SECRET`, `CALENDAR_TOKEN_KEY` and `INTERNAL_API_SECRET` were regenerated. The old `INTERNAL_API_SECRET` was a patterned placeholder, and the old values were exposed in a screen recording.
+- `INTERNAL_API_SECRET` is synced into AceIIIT `api/.env`. The AceIIIT production env must be updated by the owner.
+
+**Migrations applied to production:**
+
+| Migration | Result |
+|---|---|
+| `renumber-duplicate-attempts` | 132 attempts in 1 group renumbered |
+| `sync-indexes` | 22 indexes created (6 unique), 0 failures. A re-run reports "All schema indexes exist" |
+| `encrypt-calendar-tokens` | 1 of 1 encrypted; a re-run shows 0 left |
+| `drop-user-ttl` | Nothing to do |
+
+Two legacy indexes remain for review, not dropped:
+- `tests.status_1_deletedAt_1_createdAt_1`
+- `users.deletedAt_1`
+
+**Still open (owner):**
+- Google OAuth client `…l3d4jr`: add the JavaScript origin `https://mock.aceiiit.in` and the redirect URI `/api/calendar/google/callback`. Until then, Google sign-in fails with `origin_mismatch`.
+- AceIIIT production env: set `INTERNAL_API_SECRET` (the new value) and `MOCK_PORTAL_URL`.
+- Rotate the credentials exposed in the screen recording: Google client secret, Resend key, MongoDB user password, Cloudinary secret, Brevo key.
+- Push the `engines: 22.x` change, or set `NODE_VERSION=22` on Render.
+- Run an Atlas restore drill.
+- Legal review of the privacy and terms pages.
