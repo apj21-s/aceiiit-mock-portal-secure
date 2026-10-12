@@ -994,11 +994,51 @@
       .replace(/'/g, "&#39;");
   }
 
+  // A line break is kept when the previous line ends a sentence/clause or a TeX row (\\), when
+  // the next line starts a list item, step or math continuation, or when either line is
+  // column-aligned (tabs or runs of spaces).
+  var REFLOW_KEEP_AFTER = /(?:[.?!:;]|\\\\)\s*$/;
+  var REFLOW_KEEP_BEFORE = /^\s*(?:\(\s*(?:[a-z]|[ivx]{1,4}|\d{1,2})\s*\)|(?:[a-z]|[ivx]{1,4}|\d{1,2})[.)](?:\s|$)|[•\-*–—=⇒→∴]|(?:statement|assertion|reason|column|list|step|case|note)\b)/i;
+  var REFLOW_ALIGNED = /\t| {3,}\S/;
+  var REFLOW_BLOCK = "\uE000"; // private-use marker standing in for a protected math block
+
+  // Question text pasted from PDFs carries hard line breaks mid-sentence ("…net charge, is\nzero.").
+  // Display-only reflow: a single mid-sentence break becomes a space; paragraph breaks, list items
+  // and display-math blocks ($$…$$, \[…\], \begin…\end) are kept exactly as typed.
+  function reflowHardBreaks(value) {
+    var text = String(value || "").replace(/\r\n?/g, "\n");
+    if (text.indexOf("\n") === -1) return text;
+    var blocks = [];
+    var masked = text.replace(/\$\$[\s\S]*?\$\$|\\\[[\s\S]*?\\\]|\\begin\{([a-zA-Z*]+)\}[\s\S]*?\\end\{\1\}/g, function (match) {
+      blocks.push(match);
+      return REFLOW_BLOCK + (blocks.length - 1) + REFLOW_BLOCK;
+    });
+    var lines = masked.split("\n");
+    var out = lines[0];
+    for (var i = 1; i < lines.length; i++) {
+      var prev = lines[i - 1];
+      var line = lines[i];
+      var keep = !prev.trim() || !line.trim() ||
+        REFLOW_KEEP_AFTER.test(prev) || REFLOW_KEEP_BEFORE.test(line) ||
+        REFLOW_ALIGNED.test(prev) || REFLOW_ALIGNED.test(line) ||
+        /\uE000\s*$/.test(prev) || /^\s*\uE000/.test(line);
+      out = keep ? out + "\n" + line : out.replace(/[ \t]+$/, "") + " " + line.replace(/^\s+/, "");
+    }
+    return out.replace(/\uE000(\d+)\uE000/g, function (_match, index) { return blocks[Number(index)]; });
+  }
+
+  // Long reading passages (REAP comprehension) keep the exam's side-by-side split so the options
+  // stay in view; short ones are lead-in instructions and stack above the question text.
+  function isLongPassage(passage) {
+    var text = String(passage || "").trim();
+    return text.length > 600 || (text.match(/\n\s*\n/g) || []).length >= 2;
+  }
+
   function formatRichText(value) {
     // Keep raw newlines so KaTeX auto-render can match delimiters like:
     // \[ ... \] even when the user types it on multiple lines.
     // Rendering uses CSS `white-space: pre-wrap` on `.rich-text`.
-    return escapeHtml(String(value || ""));
+    return escapeHtml(reflowHardBreaks(value));
   }
 
   function renderLatexInElement(root, attempt) {
@@ -1071,6 +1111,103 @@
       }
       el.textContent = prefix + Number(start).toFixed(decimals) + suffix;
     }, 16);
+  }
+
+  // One source for the student-facing exam label: the year of the admin-set UGEE exam date.
+  function targetExamLabel() {
+    var config = store.getAppConfig ? store.getAppConfig() : null;
+    var date = config && config.ugeeExamDate ? new Date(config.ugeeExamDate) : null;
+    return date && !isNaN(date.getTime()) ? "UGEE " + date.getFullYear() : "UGEE";
+  }
+
+  // KPIs over a student's submitted attempts, shared by Dashboard and Progress so both always agree.
+  // Scores are marks (not percentages); accuracy and percentile are percentages.
+  function summarizeAttempts(attempts) {
+    var submitted = (attempts || []).filter(function (a) { return a && a.status === "submitted" && a.result; })
+      .sort(function (a, b) { return new Date(a.submittedAt) - new Date(b.submittedAt); });
+    var count = submitted.length;
+    var round1 = function (value) { return Math.round(value * 10) / 10; };
+    var total = function (pick) {
+      return submitted.reduce(function (sum, a) { return sum + (Number(pick(a.result)) || 0); }, 0);
+    };
+    var unanswered = function (r) {
+      return r.unattemptedCount !== undefined && r.unattemptedCount !== null ? r.unattemptedCount : r.skippedCount;
+    };
+    var questionsSeen = total(function (r) { return Number(r.correctCount || 0) + Number(r.wrongCount || 0) + Number(unanswered(r) || 0); });
+    var secondsSpent = total(function (r) { return r.timeTakenSeconds; });
+    var best = submitted.reduce(function (top, a) {
+      return !top || Number(a.result.score) > Number(top.result.score) ? a : top;
+    }, null);
+    var sectionMap = {};
+    submitted.forEach(function (a) {
+      var scores = a.result.sectionScores || {};
+      Object.keys(scores).forEach(function (key) {
+        var row = sectionMap[key] || (sectionMap[key] = { key: key, correct: 0, wrong: 0, skipped: 0 });
+        row.correct += Number(scores[key].correct || 0);
+        row.wrong += Number(scores[key].wrong || 0);
+        row.skipped += Number(scores[key].skipped || 0);
+      });
+    });
+    var sections = Object.keys(sectionMap).sort(function (a, b) {
+      var order = ["SUPR", "REAP"];
+      return (order.indexOf(a) + 1 || 99) - (order.indexOf(b) + 1 || 99);
+    }).map(function (key) {
+      var row = sectionMap[key];
+      var attempted = row.correct + row.wrong;
+      row.accuracy = attempted ? round1((row.correct / attempted) * 100) : 0;
+      return row;
+    });
+    return {
+      count: count,
+      submitted: submitted,
+      averageScore: count ? round1(total(function (r) { return r.score; }) / count) : null,
+      bestScore: best ? Number(best.result.score) : null,
+      bestScorePercentile: best && Number(best.result.percentile) > 0 ? Number(best.result.percentile) : null,
+      averageAccuracy: count ? round1(total(function (r) { return r.accuracy; }) / count) : null,
+      bestPercentile: count ? Math.max.apply(null, submitted.map(function (a) { return Number(a.result.percentile) || 0; })) : null,
+      secondsPerQuestion: questionsSeen && secondsSpent ? Math.round(secondsSpent / questionsSeen) : null,
+      sections: sections
+    };
+  }
+
+  // Correct / wrong / skipped as one proportional bar; widths animate in via activateAnalysisAnimations.
+  function buildOutcomeBar(correct, wrong, skipped, extraClass) {
+    correct = Number(correct || 0);
+    wrong = Number(wrong || 0);
+    skipped = Number(skipped || 0);
+    var total = Math.max(1, correct + wrong + skipped);
+    var pct = function (value) { return Math.round((value / total) * 10000) / 100 + "%"; };
+    return (
+      '<div class="rs-stackbar' + (extraClass ? ' ' + extraClass : '') + '" role="img" aria-label="' +
+      escapeAttribute(correct + ' correct, ' + wrong + ' wrong, ' + skipped + ' skipped') + '">' +
+      '<span class="is-correct" data-width="' + pct(correct) + '"></span>' +
+      '<span class="is-wrong" data-width="' + pct(wrong) + '"></span>' +
+      '<span class="is-skipped" data-width="' + pct(skipped) + '"></span>' +
+      '</div>'
+    );
+  }
+
+  // Small labelled column chart for a short series (accuracy or score per attempt, oldest → latest).
+  // Every bar carries its value; zero is a hairline on the axis, never a stub that reads as data.
+  function buildBarTrend(values, options) {
+    options = options || {};
+    var series = (values || []).map(function (value) { return Number(value) || 0; });
+    var max = Number(options.max) > 0 ? Number(options.max) : Math.max.apply(null, series.concat([1]));
+    var format = options.format || function (value) { return Math.round(value * 10) / 10 + "%"; };
+    var labels = series.map(format);
+    return (
+      '<div class="bar-trend" role="img" aria-label="' + escapeAttribute((options.label || "Trend, oldest to latest") + ": " + labels.join(", ")) + '">' +
+      series.map(function (value, index) {
+        var ratio = Math.max(0, Math.min(1, value / max));
+        return (
+          '<span class="bar-trend-col' + (index === series.length - 1 ? ' is-latest' : '') + '" aria-hidden="true">' +
+          '<b class="bar-trend-value">' + escapeHtml(labels[index]) + '</b>' +
+          '<i class="bar-trend-bar" style="height:max(2px, calc((100% - 18px) * ' + ratio.toFixed(3) + '))"></i>' +
+          '</span>'
+        );
+      }).join("") +
+      '</div>'
+    );
   }
 
   function activateAnalysisAnimations(root) {
@@ -3918,7 +4055,7 @@
     var realTests = snapshot.tests.filter(function (t) { return !t.isPractice; });
     var practiceTests = snapshot.tests.filter(function (t) { return t.isPractice; });
 
-    var mockTestsListHtml = realTests.map(function (t, idx) {
+    function renderCatalogRow(t, idx) {
       var numTag = (idx + 1 < 10 ? '0' + (idx + 1) : (idx + 1));
       var isLocked = isTestLocked(t, user);
       var cta = isLocked
@@ -3926,19 +4063,23 @@
         : '<button class="button button-primary js-open-instructions" data-id="' + t.id + '" aria-label="Start test ' + escapeAttribute(t.title) + '">Start Test →</button>';
 
       return (
-        '<div class="dashboard-test-row" style="padding:16px 0; border-bottom:1px solid rgba(20,17,15,0.08); display:flex; align-items:center; justify-content:space-between;">' +
-        '<div style="display:flex; align-items:center; gap:16px;">' +
+        '<div class="dashboard-test-row exam-catalog-row">' +
+        '<div class="exam-catalog-main">' +
         '<span class="editorial-num-tag">' + numTag + '</span>' +
         '<div>' +
-        '<h3 style="margin:0 0 4px; font-size:1.1rem; font-weight:700;">' + escapeHtml(t.title) + '</h3>' +
+        '<h3 class="exam-catalog-title">' + escapeHtml(t.title) + '</h3>' +
         '<span class="meta-chip">' + escapeHtml(t.isFree ? "FREE MOCK" : "PAID MOCK") + '</span> &bull; ' +
-        '<span style="font-size:0.82rem; color:var(--ink-soft);">' + getTotalDuration(t) + ' MINS &bull; ' + (Number(t.questionCount || 0) || t.questionIds.length) + ' QUESTIONS</span>' +
+        '<span class="exam-catalog-meta">' + getTotalDuration(t) + ' MINS &bull; ' + (Number(t.questionCount || 0) || t.questionIds.length) + ' QUESTIONS</span>' +
         '</div>' +
         '</div>' +
         '<div>' + cta + '</div>' +
         '</div>'
       );
-    }).join("");
+    }
+
+    var mockTestsListHtml = realTests.length
+      ? realTests.map(renderCatalogRow).join("")
+      : '<div class="portal-empty-card"><h4 class="portal-empty-title">No mock tests published yet</h4><p class="portal-empty-text">New papers appear here as soon as they go live.</p><a href="#exams/practice" class="button button-primary">Start a practice session</a></div>';
 
     var practiceHighlightsHtml = (function() {
       var attemptsByTest = {};
@@ -3948,7 +4089,7 @@
       });
       
       return practiceTests.length
-        ? '<div class="attempt-list list-scroll-card" style="max-height: calc(100vh - 150px); overflow-y: auto;">' + practiceTests.slice().reverse().map(function (t) {
+        ? '<div class="attempt-list list-scroll-card practice-session-list">' + practiceTests.slice().reverse().map(function (t) {
             var attempts = attemptsByTest[t.id] || [];
             var inProgress = attempts.find(function (a) { return a.status === "in_progress"; });
             var submitted = attempts.find(function (a) { return a.status === "submitted"; });
@@ -3969,11 +4110,13 @@
                    '<div class="button-row">' + actionHtml + '</div>' +
                    '</div>';
           }).join("") + '</div>'
-        : '<p style="font-size:0.9rem; color:var(--ink-soft); line-height:1.5;">Practice mode allows targeted topic drill without affecting your official UGEE benchmark ranks. Your generated practice sessions will appear here.</p>';
+        : '<p class="pi-muted">Practice mode allows targeted topic drill without affecting your official UGEE benchmark ranks. Your generated practice sessions will appear here.</p>';
     })();
 
+    // Generator and session list side by side under the full-width header, equal height.
     var practiceHtml = (
-      '<div class="generator-card" style="max-width: 100%;">' +
+      '<div class="practice-layout">' +
+      '<div class="generator-card">' +
       '<span class="section-label">CUSTOM PRACTICE SESSION</span>' +
       '<h3 style="margin:4px 0 16px;">Configure Questions & Subject Focus</h3>' +
       '<form id="practice-gen-form" class="generator-form-grid">' +
@@ -3985,35 +4128,23 @@
       '<button type="button" class="button button-primary" id="start-practice-btn">Start Practice Session →</button>' +
       '</div>' +
       '</form>' +
+      '</div>' +
+      '<aside class="generator-card practice-sessions-card">' +
+      '<span class="section-label">YOUR PRACTICE SESSIONS</span>' +
+      practiceHighlightsHtml +
+      '</aside>' +
       '</div>'
     );
 
-    var liveTestsHtml = (function() {
-      var liveTestId = realTests[0] ? realTests[0].id : '';
-      var isLiveTestLocked = !!realTests[0] && isTestLocked(realTests[0], user);
-      var liveTestBtn = isLiveTestLocked
-        ? '<button class="button button-primary is-pseudo-disabled js-buy-series" data-id="' + liveTestId + '">Locked 🔒</button>'
-        : '<button class="button button-primary js-open-instructions" data-id="' + liveTestId + '">Join Live Exam →</button>';
-
-      return '<div style="display:flex; flex-direction:column; gap:16px;">' +
-      '<div style="background:var(--surface); border:1px solid rgba(200,150,62,0.4); border-left:4px solid var(--gold-strong); padding:24px; border-radius:8px;">' +
-      '<div style="display:flex; align-items:center; justify-content:space-between;">' +
-      '<div>' +
-      '<span class="meta-chip text-success">LIVE NOW</span>' +
-      '<h3 style="margin:8px 0 4px; font-size:1.2rem;">ACEIIIT ALL-INDIA UGEE LIVE MOCK 01</h3>' +
-      '<p style="margin:0; font-size:0.85rem; color:var(--ink-soft);">Official scheduled exam window. Server time sync active.</p>' +
-      '</div>' +
-      '<div>' +
-      liveTestBtn +
-      '</div>' +
-      '</div>' +
-      '</div>' +
-      '</div>';
-    })();
+    // Live tests are the admin-scheduled papers (test.type "scheduled"), not a placeholder card.
+    var scheduledTests = realTests.filter(function (t) { return t.type === "scheduled"; });
+    var liveTestsHtml = scheduledTests.length
+      ? scheduledTests.map(renderCatalogRow).join("")
+      : '<div class="portal-empty-card"><h4 class="portal-empty-title">No live exams scheduled right now</h4><p class="portal-empty-text">Scheduled all-India mocks appear here when they are announced. Meanwhile, every published mock is open to attempt.</p><a href="#exams/mock-tests" class="button button-primary">Browse mock tests</a></div>';
 
     var activeContentHtml = subTab === "practice" ? practiceHtml : (subTab === "live-tests" ? liveTestsHtml : mockTestsListHtml);
 
-    var shellHtml = '<div class="page-section-shell' + (subTab === "practice" ? ' exams-grid-wrapper' : '') + '">';
+    var shellHtml = '<div class="page-section-shell">';
     shellHtml += '<div>';
     shellHtml += '<header class="section-page-header">' +
       '<span class="section-label">EXAMINATIONS</span>' +
@@ -4026,14 +4157,6 @@
       '</header>';
     shellHtml += '<main>' + activeContentHtml + '</main>';
     shellHtml += '</div>';
-
-    if (subTab === "practice") {
-      shellHtml += '<aside class="dashboard-sidebar" style="position: sticky; top: 100px;">' +
-        '<span class="section-label">PRACTICE HIGHLIGHTS</span>' +
-        practiceHighlightsHtml +
-        '</aside>';
-    }
-    
     shellHtml += '</div>';
 
     app.innerHTML = buildShell(
@@ -4110,60 +4233,79 @@
   }
 
   function renderProgress(user, subTab) {
-    subTab = subTab || "performance";
+    subTab = subTab === "reports" ? "reports" : "performance";
     var snapshot = store.getDashboardSnapshot(user.id);
-    var submittedAttempts = snapshot.attempts.filter(function (a) { return a.status === "submitted" && a.result; });
+    var stats = summarizeAttempts(snapshot.attempts);
+    var newestFirst = stats.submitted.slice().reverse();
+    var testTitle = function (attempt) {
+      var test = store.getTestById ? store.getTestById(attempt.testId) : null;
+      return (test && test.title) || "Practice session";
+    };
+    var emptyHtml =
+      '<div class="portal-empty-card">' +
+      '<h4 class="portal-empty-title">No reports yet</h4>' +
+      '<p class="portal-empty-text">Submit a mock test and your scores, accuracy and section trends appear here.</p>' +
+      '<a href="#exams/mock-tests" class="button button-primary">Browse mock tests</a>' +
+      '</div>';
+    var kpi = function (label, value) {
+      return '<div class="progress-kpi"><strong class="metric-val">' + escapeHtml(value) + '</strong><span class="metric-label">' + escapeHtml(label) + '</span></div>';
+    };
 
-    var submittedRows = submittedAttempts.length
-      ? submittedAttempts.map(function (a, idx) {
-        return (
-          '<tr>' +
-          '<td><strong>#' + (idx + 1) + '</strong></td>' +
-          '<td>' + formatDateOnly(a.submittedAt) + '</td>' +
-          '<td><strong>' + (a.result ? a.result.score : 0) + '</strong></td>' +
-          '<td>' + (a.result ? a.result.percentile + '%ile' : '—') + '</td>' +
-          '<td>' + (a.result ? a.result.accuracy + '%' : '—') + '</td>' +
-          '<td><button class="button button-secondary button-compact js-open-result" data-id="' + a.id + '">View Analysis</button></td>' +
-          '</tr>'
-        );
-      }).join("")
-      : '<tr><td colspan="6" class="empty-state">No submitted test reports yet. Complete a mock paper to view report metrics.</td></tr>';
+    var performanceHtml = !stats.count ? emptyHtml : (
+      '<div class="progress-kpis">' +
+      kpi("Mocks completed", String(stats.count)) +
+      kpi("Average score", String(stats.averageScore)) +
+      kpi("Best score", String(stats.bestScore)) +
+      kpi("Average accuracy", stats.averageAccuracy + "%") +
+      kpi("Best percentile", stats.bestPercentile ? stats.bestPercentile + "%ile" : "—") +
+      kpi("Time per question", stats.secondsPerQuestion ? stats.secondsPerQuestion + "s" : "—") +
+      '</div>' +
+      '<div class="progress-row">' +
+      '<section class="progress-card">' +
+      '<p class="section-label">SCORE TREND</p>' +
+      (stats.count > 1
+        ? buildBarTrend(stats.submitted.slice(-10).map(function (a) { return Number(a.result.score) || 0; }), {
+            max: Math.max(1, stats.bestScore),
+            format: function (value) { return String(Math.round(value * 10) / 10); },
+            label: "Score in your recent attempts, oldest to latest"
+          }) + '<p class="pi-muted">Score per attempt, oldest → latest (last ' + Math.min(10, stats.count) + ').</p>'
+        : '<p class="pi-muted">Your trend appears after your second submitted mock.</p>') +
+      '</section>' +
+      '<section class="progress-card">' +
+      '<p class="section-label">SECTION ACCURACY</p>' +
+      (stats.sections.length
+        ? '<div class="progress-sections">' + stats.sections.map(function (row) {
+            return '<div class="progress-section">' +
+              '<div class="progress-section-top"><strong>' + escapeHtml(row.key) + '</strong><span>' + escapeHtml(String(row.accuracy)) + '% accuracy</span></div>' +
+              buildOutcomeBar(row.correct, row.wrong, row.skipped) +
+              '<div class="rs-meta"><span><i class="rs-dot is-correct"></i>' + row.correct + ' correct</span><span><i class="rs-dot is-wrong"></i>' + row.wrong + ' wrong</span><span><i class="rs-dot is-skipped"></i>' + row.skipped + ' skipped</span></div>' +
+              '</div>';
+          }).join("") + '</div>'
+        : '<p class="pi-muted">Section breakdowns appear for attempts submitted on the current scoring pipeline.</p>') +
+      '</section>' +
+      '</div>' +
+      '<section class="progress-card progress-topic-note">' +
+      '<div><p class="section-label">TOPIC ANALYSIS</p><p class="pi-muted">Topic-wise accuracy, net marks and priorities are worked out per paper in each report.</p></div>' +
+      '<button type="button" class="button button-secondary js-open-result" data-id="' + escapeAttribute(newestFirst[0].id) + '">Open latest report →</button>' +
+      '</section>'
+    );
 
-    var activeContentHtml = (
-      '<div>' +
-      '<span class="section-label">PERFORMANCE BENCHMARK COMPARISON</span>' +
-      '<h3 style="margin:4px 0 16px;">YOU vs AVERAGE vs TOP PERFORMERS</h3>' +
+    var reportsHtml = !stats.count ? emptyHtml : (
       '<div class="comparison-table-wrap">' +
       '<table class="comparison-table">' +
-      '<thead>' +
-      '<tr><th>METRIC</th><th>YOUR PERFORMANCE</th><th>AVERAGE BATCH</th><th>TOP 10% PERFORMERS</th></tr>' +
-      '</thead>' +
-      '<tbody>' +
-      '<tr class="highlight-you"><td>Average Score</td><td><strong>' + (snapshot.bestScore ? Math.round(snapshot.bestScore * 0.85) : '78') + ' / 100</strong></td><td>64 / 100</td><td>89 / 100</td></tr>' +
-      '<tr class="highlight-you"><td>Accuracy Rate</td><td><strong>82%</strong></td><td>71%</td><td>94%</td></tr>' +
-      '<tr class="highlight-you"><td>Time / Question</td><td><strong>1.4 mins</strong></td><td>1.7 mins</td><td>1.2 mins</td></tr>' +
-      '</tbody>' +
+      '<thead><tr><th>#</th><th>TEST</th><th>DATE</th><th>SCORE</th><th>ACCURACY</th><th>PERCENTILE</th><th><span class="sr-only">Action</span></th></tr></thead>' +
+      '<tbody>' + newestFirst.map(function (a, idx) {
+        return '<tr>' +
+          '<td><strong>' + (stats.count - idx) + '</strong></td>' +
+          '<td>' + escapeHtml(testTitle(a)) + '</td>' +
+          '<td>' + escapeHtml(formatDateOnly(a.submittedAt)) + '</td>' +
+          '<td><strong>' + escapeHtml(String(a.result.score)) + '</strong></td>' +
+          '<td>' + escapeHtml(String(a.result.accuracy)) + '%</td>' +
+          '<td>' + (Number(a.result.percentile) > 0 ? escapeHtml(String(a.result.percentile)) + '%ile' : '—') + '</td>' +
+          '<td><button class="button button-secondary button-compact js-open-result" data-id="' + escapeAttribute(a.id) + '">View analysis</button></td>' +
+          '</tr>';
+      }).join("") + '</tbody>' +
       '</table>' +
-      '</div>' +
-      '<div style="margin-top:36px;">' +
-      '<span class="section-label">TOPIC WISE ACCURACY</span>' +
-      '<h3 style="margin:4px 0 16px;">Strengths & Weaknesses</h3>' +
-      '<div style="display:grid; grid-template-columns:1fr 1fr; gap:20px;">' +
-      '<div><span>Algebra & Calculus</span><div class="topic-progress-bar-wrap"><div class="topic-progress-bar" style="width:86%;"></div></div></div>' +
-      '<div><span>Logical Reasoning</span><div class="topic-progress-bar-wrap"><div class="topic-progress-bar" style="width:74%;"></div></div></div>' +
-      '<div><span>Reading Comprehension</span><div class="topic-progress-bar-wrap"><div class="topic-progress-bar" style="width:91%;"></div></div></div>' +
-      '<div><span>Data Interpretation</span><div class="topic-progress-bar-wrap"><div class="topic-progress-bar" style="width:68%;"></div></div></div>' +
-      '</div>' +
-      '</div>' +
-      '<div style="margin-top:36px;">' +
-      '<span class="section-label">SUBMITTED TEST TIMELINE</span>' +
-      '<div class="comparison-table-wrap">' +
-      '<table class="comparison-table">' +
-      '<thead><tr><th>#</th><th>DATE</th><th>SCORE</th><th>PERCENTILE</th><th>ACCURACY</th><th>ACTION</th></tr></thead>' +
-      '<tbody>' + submittedRows + '</tbody>' +
-      '</table>' +
-      '</div>' +
-      '</div>' +
       '</div>'
     );
 
@@ -4178,7 +4320,7 @@
       '<a href="#progress/reports" class="sub-tab-btn' + (subTab === "reports" ? ' is-active' : '') + '">REPORTS</a>' +
       '</div>' +
       '</header>' +
-      '<main>' + activeContentHtml + '</main>' +
+      '<main>' + (subTab === "reports" ? reportsHtml : performanceHtml) + '</main>' +
       '</div>',
       { fluid: true }
     );
@@ -4188,31 +4330,109 @@
         navigate("results/" + button.dataset.id);
       });
     });
+    activateAnalysisAnimations(app);
   }
 
   function renderResources(user, subTab) {
     subTab = subTab || "bookmarks";
     var bookmarks = store.getBookmarks ? store.getBookmarks(user.id) : [];
+    // Newest first: the question saved last is the one being revised now.
+    bookmarks = bookmarks.slice().reverse();
+    var bookmarkSections = bookmarks.reduce(function (list, b) {
+      var key = String(b.section || "").toUpperCase();
+      if (key && list.indexOf(key) === -1) list.push(key);
+      return list;
+    }, []);
+    var bookmarkFilter = runtime.bookmarkSectionFilter && bookmarkSections.indexOf(runtime.bookmarkSectionFilter) !== -1
+      ? runtime.bookmarkSectionFilter
+      : "all";
+    var visibleBookmarks = bookmarks.filter(function (b) {
+      return bookmarkFilter === "all" || String(b.section || "").toUpperCase() === bookmarkFilter;
+    });
+
+    function renderBookmarkCard(b) {
+      var options = Array.isArray(b.options) ? b.options : [];
+      var hasAnswer = options.length && b.correctOption !== undefined && b.correctOption !== null && b.correctOption !== "";
+      var correctIndex = Number(b.correctOption);
+      var sourceBits = [];
+      if (b.testTitle) sourceBits.push(escapeHtml(b.testTitle));
+      if (b.questionNumber) sourceBits.push("Q" + escapeHtml(String(b.questionNumber)));
+      var savedOn = b.createdAt ? "Saved " + escapeHtml(formatDateOnly(b.createdAt)) : "";
+      var optionsHtml = options.length
+        ? '<ol class="bookmark-options">' + options.map(function (option, index) {
+          return '<li class="bookmark-option" data-correct="' + (hasAnswer && index === correctIndex ? "1" : "0") + '">' +
+            '<span class="bookmark-option-letter" aria-hidden="true">' + String.fromCharCode(65 + index) + '</span>' +
+            '<span class="rich-text">' + formatRichText(option) + '</span>' +
+            '</li>';
+        }).join("") + '</ol>'
+        : "";
+      var imagesHtml = (b.imageUrls || []).length
+        ? '<div class="bookmark-images">' + b.imageUrls.map(function (url) {
+          return '<button class="bookmark-image js-open-image-lightbox" type="button" data-url="' + escapeAttribute(url) + '" aria-label="View question image"><img src="' + escapeAttribute(url) + '" alt="Question diagram" loading="lazy"></button>';
+        }).join("") + '</div>'
+        : "";
+      var answerHtml = (hasAnswer || b.explanation)
+        ? '<details class="bookmark-solution">' +
+          '<summary>Show answer &amp; solution</summary>' +
+          (hasAnswer ? '<p class="bookmark-answer"><strong>Answer:</strong> Option ' + String.fromCharCode(65 + correctIndex) + '</p>' : '') +
+          (b.explanation ? '<div class="rich-text bookmark-explanation">' + formatRichText(b.explanation) + '</div>' : '<p class="bookmark-muted">No solution was provided for this question.</p>') +
+          '</details>'
+        : "";
+      return (
+        '<article class="bookmark-card">' +
+        '<header class="bookmark-meta">' +
+        '<span class="meta-chip">' + escapeHtml([String(b.section || "").toUpperCase(), b.topic || "General"].filter(Boolean).join(" · ")) + '</span>' +
+        (sourceBits.length ? '<span class="bookmark-source">' + sourceBits.join(" · ") + '</span>' : '') +
+        (savedOn ? '<span class="bookmark-saved">' + savedOn + '</span>' : '') +
+        '</header>' +
+        (b.passage ? '<div class="rich-text bookmark-passage">' + formatRichText(b.passage) + '</div>' : '') +
+        '<div class="rich-text bookmark-prompt">' + formatRichText(b.prompt || "Question prompt") + '</div>' +
+        imagesHtml +
+        optionsHtml +
+        answerHtml +
+        '<footer class="bookmark-actions">' +
+        (b.attemptId ? '<button type="button" class="button button-secondary button-compact js-open-result" data-id="' + escapeAttribute(b.attemptId) + '">Open report</button>' : '') +
+        '<button type="button" class="button button-ghost button-compact js-remove-bookmark" data-qid="' + escapeAttribute(b.id) + '">Remove</button>' +
+        '</footer>' +
+        '</article>'
+      );
+    }
+
+    var latestReport = (store.getDashboardSnapshot ? store.getDashboardSnapshot(user.id).attempts : []).filter(function (a) {
+      return a.status === "submitted" && a.result;
+    }).sort(function (a, b) { return new Date(b.submittedAt) - new Date(a.submittedAt); })[0];
+    var bookmarksEmptyHtml =
+      '<div class="portal-empty-card">' +
+      '<h4 class="portal-empty-title">No bookmarks yet</h4>' +
+      '<p class="portal-empty-text">Open a submitted report, load the question review and tap Save on any question to revise it here.</p>' +
+      (latestReport
+        ? '<button type="button" class="button button-primary js-open-result" data-id="' + escapeAttribute(latestReport.id) + '">Open latest report</button>'
+        : '<a href="#exams/mock-tests" class="button button-primary">Browse mock tests</a>') +
+      '</div>';
 
     var bookmarksHtml = bookmarks.length
-      ? '<div class="study-materials-grid">' + bookmarks.map(function (b, idx) {
-        return (
-          '<div class="study-material-card" style="display:block;">' +
-          '<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">' +
-          '<span class="meta-chip">BOOKMARK #' + (idx + 1) + '</span>' +
-          '<span style="font-size:0.75rem; color:var(--ink-soft);">' + escapeHtml(b.topic || "General") + '</span>' +
-          '</div>' +
-          '<div class="rich-text" style="font-weight:600; margin:0 0 12px; font-size:0.95rem;">' + formatRichText(b.prompt || "Question prompt") + '</div>' +
-          '<div class="rich-text" style="font-size:0.85rem; color:var(--ink-soft); border-top:1px solid rgba(255,255,255,0.1); padding-top:8px;"><strong>Explanation:</strong> ' + formatRichText(b.explanation || "No explanation provided.") + '</div>' +
-          '</div>'
-        );
-      }).join("") + '</div>'
-      : '<div class="empty-state">No saved bookmarks yet. Click the bookmark icon during mock paper review to store questions here.</div>';
+      ? '<div class="bookmark-toolbar">' +
+        '<p class="bookmark-count">' + visibleBookmarks.length + (visibleBookmarks.length === 1 ? ' saved question' : ' saved questions') + '</p>' +
+        (bookmarkSections.length > 1
+          ? '<div class="test-filter-tabs" role="group" aria-label="Filter bookmarks by section">' +
+            ["all"].concat(bookmarkSections).map(function (key) {
+              return '<button type="button" class="filter-tab-btn js-bookmark-filter' + (bookmarkFilter === key ? ' is-active' : '') + '" data-filter="' + escapeAttribute(key) + '" aria-pressed="' + (bookmarkFilter === key) + '">' + escapeHtml(key === "all" ? "ALL" : key) + '</button>';
+            }).join("") +
+            '</div>'
+          : '') +
+        '</div>' +
+        '<div class="bookmark-grid">' + visibleBookmarks.map(renderBookmarkCard).join("") + '</div>'
+      : bookmarksEmptyHtml;
 
     var studyData = store.getStudyMaterials ? store.getStudyMaterials() : { folders: [], files: [] };
     var materialsHtml = "";
     if (studyData.folders.length === 0 && studyData.files.length === 0) {
-      materialsHtml = '<div class="empty-state">No study materials available yet. Instructors can add them from the Admin panel.</div>';
+      materialsHtml =
+        '<div class="portal-empty-card">' +
+        '<h4 class="portal-empty-title">No study material yet</h4>' +
+        '<p class="portal-empty-text">Notes and formula sheets appear here as soon as your instructors publish them.</p>' +
+        '<a href="#resources/bookmarks" class="button button-secondary">Revise your bookmarks</a>' +
+        '</div>';
     } else {
       materialsHtml += '<div style="display:flex; flex-direction:column; gap:32px;">';
       studyData.folders.forEach(function(folder) {
@@ -4272,6 +4492,35 @@
         document.body.removeChild(a);
       });
     });
+
+    app.querySelectorAll(".js-bookmark-filter").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        runtime.bookmarkSectionFilter = btn.dataset.filter === "all" ? "" : btn.dataset.filter;
+        renderResources(user, subTab);
+      });
+    });
+
+    app.querySelectorAll(".js-remove-bookmark").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        if (store.removeBookmark) store.removeBookmark(user.id, btn.dataset.qid);
+        if (typeof window.showSaveChip === "function") window.showSaveChip("Bookmark removed.");
+        renderResources(user, subTab);
+      });
+    });
+
+    app.querySelectorAll(".js-open-result").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        navigate("results/" + btn.dataset.id);
+      });
+    });
+
+    app.querySelectorAll(".js-open-image-lightbox").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        openImageLightbox(btn.dataset.url);
+      });
+    });
+
+    renderLatexInElement(app.querySelector(".page-section-shell main"));
   }
 
   function renderUpdates(user, subTab) {
@@ -4283,7 +4532,7 @@
       '<div style="display:flex; flex-direction:column; gap:16px;">' +
       '<div style="background:var(--surface); border:1px solid rgba(200,150,62,0.35); border-left:4px solid var(--gold-strong); border-radius:8px; padding:24px;">' +
       '<span class="meta-chip" style="margin-bottom:8px;">IMPORTANT NOTICE</span>' +
-      '<h3 style="margin:4px 0 8px; font-size:1.15rem;">' + escapeHtml(appConfig.noticeTitle || "UGEE 2026 Examination Portal Update") + '</h3>' +
+      '<h3 style="margin:4px 0 8px; font-size:1.15rem;">' + escapeHtml(appConfig.noticeTitle || (targetExamLabel() + " Examination Portal Update")) + '</h3>' +
       '<p style="margin:0; font-size:0.9rem; color:var(--ink-soft); line-height:1.5; white-space:pre-wrap; word-break:break-word;">' + escapeHtml(appConfig.noticeBody || "Official mock test series registrations are live. Complete all practice papers before final UGEE dates.") + '</p>' +
       '</div>' +
       '</div>'
@@ -4308,7 +4557,6 @@
       '</div>',
       { fluid: true }
     );
-    bindAccountDataActions(user);
   }
 
   function bindAccountDataActions(user) {
@@ -4361,47 +4609,62 @@
 
   function renderAccount(user, subTab) {
     subTab = subTab || "profile";
+    var examLabel = targetExamLabel();
 
     var profileHtml = (
-      '<div style="background:var(--surface); border:1px solid rgba(20,17,15,0.08); border-radius:8px; padding:28px;">' +
+      '<div class="account-panel">' +
       '<span class="section-label">STUDENT IDENTITY</span>' +
-      '<h3 style="margin:4px 0 20px;">' + escapeHtml(user.name) + '</h3>' +
+      '<h3 class="account-panel-title">' + escapeHtml(user.name) + '</h3>' +
       '<div class="account-identity-grid">' +
-      '<div><strong style="display:block; color:var(--ink-soft);">Email Address</strong><span>' + escapeHtml(user.email) + '</span></div>' +
-      '<div><strong style="display:block; color:var(--ink-soft);">Role</strong><span>' + escapeHtml(user.role.toUpperCase()) + '</span></div>' +
-      '<div><strong style="display:block; color:var(--ink-soft);">Target Exam</strong><span>UGEE 2026</span></div>' +
-      '<div><strong style="display:block; color:var(--ink-soft);">Account Status</strong><span class="meta-chip text-success">' + escapeHtml(user.status || "ACTIVE") + '</span></div>' +
+      '<div><strong>Email Address</strong><span>' + escapeHtml(user.email) + '</span></div>' +
+      '<div><strong>Role</strong><span>' + escapeHtml(String(user.role || "student").toUpperCase()) + '</span></div>' +
+      '<div><strong>Target Exam</strong><span>' + escapeHtml(examLabel) + '</span></div>' +
+      '<div><strong>Account Status</strong><span class="meta-chip text-success">' + escapeHtml(user.status || "ACTIVE") + '</span></div>' +
       '</div>' +
       '</div>'
     );
 
+    var included = user.isPaid
+      ? ["Every full-length " + examLabel + " SUPR and REAP mock", "Unlimited custom practice sessions", "Rank, percentile and topic-wise analysis", "Question review with solutions and bookmarks"]
+      : ["Free practice mocks", "One custom practice session", "Score, accuracy and question review on free mocks"];
     var packageHtml = (
-      '<div style="background:var(--surface); border:1px solid rgba(20,17,15,0.08); border-radius:8px; padding:28px;">' +
+      '<div class="account-panel-grid">' +
+      '<div class="account-panel">' +
       '<span class="section-label">ACTIVE ENROLLMENT</span>' +
-      '<h3 style="margin:4px 0 16px;">' + (user.isPaid ? 'ACEIIIT PRO TEST SERIES' : 'ACEIIIT FREE TIER') + '</h3>' +
-      '<p style="font-size:0.9rem; color:var(--ink-soft);">' + (user.isPaid ? 'Full access unlocked to all UGEE SUPR and REAP full-length mock papers and detailed rank analytical breakdown.' : 'Access limited to free practice mocks. Upgrade to Pro for full test series access.') + '</p>' +
-      (!user.isPaid ? '<a href="' + escapeAttribute(BUY_SERIES_URL) + '" target="_blank" class="button button-primary" style="margin-top:16px; display:inline-block; text-decoration:none;">Upgrade to Pro Series →</a>' : '') +
+      '<h3 class="account-panel-title">' + (user.isPaid ? 'ACEIIIT PRO TEST SERIES' : 'ACEIIIT FREE TIER') + '</h3>' +
+      '<p class="account-panel-text">' + (user.isPaid ? 'Full access is unlocked for all ' + escapeHtml(examLabel) + ' SUPR and REAP full-length mock papers and the detailed rank breakdown.' : 'Access is limited to free practice mocks. Upgrade to Pro for the full test series.') + '</p>' +
+      (!user.isPaid ? '<a href="' + escapeAttribute(BUY_SERIES_URL) + '" target="_blank" rel="noopener" class="button button-primary account-panel-cta">Upgrade to Pro Series →</a>' : '') +
+      '</div>' +
+      '<div class="account-panel">' +
+      '<span class="section-label">' + (user.isPaid ? 'INCLUDED IN YOUR PLAN' : 'INCLUDED FREE') + '</span>' +
+      '<ul class="account-feature-list">' + included.map(function (item) { return '<li>' + escapeHtml(item) + '</li>'; }).join("") + '</ul>' +
+      '</div>' +
       '</div>'
     );
 
     var securityHtml = (
-      '<div style="background:var(--surface); border:1px solid rgba(20,17,15,0.08); border-radius:8px; padding:28px; max-width:480px;">' +
+      '<div class="account-panel-grid">' +
+      '<div class="account-panel">' +
       '<span class="section-label">SECURITY & PASSWORD</span>' +
-      '<h3 style="margin:4px 0 16px;">Change Password</h3>' +
-      '<form id="account-pwd-form" style="display:flex; flex-direction:column; gap:16px;">' +
-      (user.hasPassword ? '<div class="field"><label>Current Password</label><input type="password" id="pwd-current" required autocomplete="current-password"></div>' : '') +
-      '<div class="field"><label>New Password</label><input type="password" id="pwd-new" required minlength="8" autocomplete="new-password"></div>' +
+      '<h3 class="account-panel-title">' + (user.hasPassword ? 'Change Password' : 'Set a Password') + '</h3>' +
+      '<form id="account-pwd-form" class="account-pwd-form">' +
+      (user.hasPassword ? '<div class="field"><label for="pwd-current">Current Password</label><input type="password" id="pwd-current" required autocomplete="current-password"></div>' : '') +
+      '<div class="field"><label for="pwd-new">New Password</label><input type="password" id="pwd-new" required minlength="8" autocomplete="new-password" aria-describedby="pwd-new-hint"><span class="helper-text" id="pwd-new-hint">At least 8 characters.</span></div>' +
       '<div class="button-row"><button type="submit" class="button button-primary" id="pwd-submit-btn">Update Password</button></div>' +
       '</form>' +
       '</div>' +
-      '<div style="background:var(--surface); border:1px solid rgba(20,17,15,0.08); border-radius:8px; padding:28px; max-width:480px; margin-top:20px;">' +
+      '<div class="account-panel">' +
       '<span class="section-label">YOUR DATA & PRIVACY</span>' +
-      '<h3 style="margin:4px 0 8px;">Download or delete your data</h3>' +
-      '<p style="font-size:0.88rem; color:var(--ink-soft);">Download a copy of your profile, attempts, reminders, payments and exam records. See the <a href="/privacy.html" target="_blank" rel="noopener">privacy policy</a> and <a href="/terms.html" target="_blank" rel="noopener">terms</a>.</p>' +
-      '<div class="button-row" style="flex-wrap:wrap; gap:10px;">' +
+      '<h3 class="account-panel-title">Download or delete your data</h3>' +
+      '<p class="account-panel-text">Download a copy of your profile, attempts, reminders, payments and exam records. See the <a href="/privacy.html" target="_blank" rel="noopener">privacy policy</a> and <a href="/terms.html" target="_blank" rel="noopener">terms</a>.</p>' +
+      '<div class="button-row account-actions">' +
       '<button type="button" class="button button-secondary" id="account-export-btn">Download my data</button>' +
       '<button type="button" class="button button-secondary" id="account-logout-all-btn">Sign out of all devices</button>' +
+      '</div>' +
+      '<div class="account-danger-row">' +
+      '<p class="account-panel-text"><strong>Delete account.</strong> Permanently removes your account; exam history is anonymized.</p>' +
       '<button type="button" class="button button-danger" id="account-delete-btn">Delete my account</button>' +
+      '</div>' +
       '</div>' +
       '</div>'
     );
@@ -4424,6 +4687,8 @@
       '</div>',
       { fluid: true }
     );
+    // The export / sign-out-everywhere / delete buttons live on this page; bind them here.
+    bindAccountDataActions(user);
   }
 
   function renderGoogleCalendarControl() {
@@ -4514,7 +4779,7 @@
         (hasAttempted ? escapeHtml(describeQotdResult(qotdAttempt)) : '') + '</div>' +
         (hasAttempted && qotdAttempt.explanation ? '<div class="qotd-explanation rich-text">' + formatRichText(qotdAttempt.explanation) + '</div>' : '');
 
-      qotdHtml = '<div class="rail-block qotd-block" style="border-top: 1px solid var(--border-color); padding-top: 24px; margin-top: auto;">' +
+      qotdHtml = '<div class="rail-block qotd-block" style="border-top: 1px solid var(--border-color); padding-top: 24px;">' +
         '<div class="rail-header">' +
         '<span class="editorial-num-tag"><svg class="editorial-traced-icon" xmlns="http://www.w3.org/2000/svg" width="72" height="90" viewBox="0 0 72 90"><g shape-rendering="geometricPrecision"><path fill="#ffed92" fill-rule="evenodd" d="M 26 48 26 51 27 52 27 54 31 58 31 75 48 75 49 74 49 69 50 68 50 61 51 60 51 55 52 54 52 52 53 51 52 50 52 48 Z M 34 52 45 52 47 54 47 63 42 68 33 68 32 67 32 66 31 65 31 55 Z"/><path fill="#000000" fill-rule="evenodd" d="M 41 62 41 66 42 65 41 64 Z M 46 56 46 61 45 62 46 61 Z M 45 54 34 54 33 55 33 65 33 55 34 54 Z M 22 43 22 45 24 47 25 46 53 46 54 47 54 49 54 47 55 46 23 46 22 45 Z M 48 33 48 35 49 35 48 34 Z M 50 28 49 29 49 31 49 29 Z M 29 28 30 28 31 29 31 30 31 29 30 28 Z M 43 27 43 35 43 32 45 30 44 31 43 30 Z M 21 25 21 26 22 27 21 26 Z M 29 20 29 22 28 23 29 23 30 24 30 25 30 24 29 23 Z M 36 21 38 19 41 19 43 21 41 19 38 19 Z"/><path fill="#b3d8fb" fill-rule="evenodd" d="M 44 55 35 55 35 65 39 65 39 62 41 60 44 60 Z M 38 21 37 22 37 29 38 30 38 34 41 34 41 29 42 28 42 22 41 21 Z"/><path fill="#8795da" fill-rule="evenodd" d="M 16 66 16 75 28 75 28 66 Z M 38 37 38 40 41 40 41 37 Z"/><path fill="#50423a" fill-rule="evenodd" d="M 14 59 15 60 15 63 16 64 28 64 16 64 15 63 15 60 Z M 45 25 46 26 46 27 46 26 Z M 37 16 38 17 38 18 38 17 Z"/><path fill="#ff85ae" fill-rule="evenodd" d="M 16 59 16 63 28 63 28 60 27 59 27 58 26 57 18 57 Z M 28 21 27 20 27 19 26 19 25 20 22 20 21 21 21 22 22 23 24 23 25 22 27 22 Z"/><path fill="#d69d69" fill-rule="evenodd" d="M 24 43 24 45 54 45 55 44 55 43 Z"/><path fill="#616b68" fill-rule="evenodd" d="M 45 55 45 60 44 61 41 61 44 61 45 60 Z"/><path fill="#8cb07a" fill-rule="evenodd" d="M 57 20 55 20 54 19 53 19 53 20 54 20 56 22 55 23 52 23 54 25 53 26 52 26 51 27 53 27 54 28 54 29 53 30 50 30 52 32 51 33 50 33 49 34 51 34 52 35 52 36 51 37 49 37 50 38 50 39 49 40 48 40 52 40 52 39 53 38 53 35 54 34 54 31 55 30 55 27 56 26 56 24 57 23 Z"/><path fill="#0f100e" fill-rule="evenodd" d="M 44 62 44 63 43 64 44 63 Z"/><path fill="#21221f" fill-rule="evenodd" d="M 15 59 14 60 14 64 15 64 14 63 14 60 Z M 43 23 43 24 44 24 Z"/><path fill="#151616" fill-rule="evenodd" d="M 38 16 37 17 37 18 37 17 Z"/><path fill="#3a2f31" fill-rule="evenodd" d="M 19 56 25 56 26 55 25 56 24 55 20 55 Z M 36 37 36 40 37 40 37 37 Z M 30 27 31 28 31 27 Z M 42 17 41 17 41 18 Z"/><path fill="#f0db7c" fill-rule="evenodd" d="M 24 31 25 32 25 34 26 35 26 38 27 39 27 40 28 40 27 39 27 36 26 35 26 32 25 31 Z M 28 30 29 31 29 33 30 34 30 37 31 38 31 40 32 40 32 39 31 38 31 35 30 34 30 31 29 30 Z"/><path fill="#f1efde" fill-rule="evenodd" d="M 28 26 27 25 26 25 25 26 23 26 24 27 24 28 25 27 28 27 Z"/><path fill="#070706" fill-rule="evenodd" d="M 22 29 23 30 23 31 23 30 Z"/></g></svg></span>' +
         '<p class="section-label">DAILY MICRO-QUIZ</p>' +
@@ -4530,7 +4795,7 @@
 
     if (!qotdHtml) {
       // Fallback empty state if no valid questions exist in the DB
-      qotdHtml = '<div class="rail-block qotd-block" style="border-top: 1px solid var(--border-color); padding-top: 24px; margin-top: auto;">' +
+      qotdHtml = '<div class="rail-block qotd-block" style="border-top: 1px solid var(--border-color); padding-top: 24px;">' +
         '<div class="rail-header">' +
         '<span class="editorial-num-tag"><svg class="editorial-traced-icon" xmlns="http://www.w3.org/2000/svg" width="72" height="90" viewBox="0 0 72 90"><g shape-rendering="geometricPrecision"><path fill="#ffed92" fill-rule="evenodd" d="M 26 48 26 51 27 52 27 54 31 58 31 75 48 75 49 74 49 69 50 68 50 61 51 60 51 55 52 54 52 52 53 51 52 50 52 48 Z M 34 52 45 52 47 54 47 63 42 68 33 68 32 67 32 66 31 65 31 55 Z"/><path fill="#000000" fill-rule="evenodd" d="M 41 62 41 66 42 65 41 64 Z M 46 56 46 61 45 62 46 61 Z M 45 54 34 54 33 55 33 65 33 55 34 54 Z M 22 43 22 45 24 47 25 46 53 46 54 47 54 49 54 47 55 46 23 46 22 45 Z M 48 33 48 35 49 35 48 34 Z M 50 28 49 29 49 31 49 29 Z M 29 28 30 28 31 29 31 30 31 29 30 28 Z M 43 27 43 35 43 32 45 30 44 31 43 30 Z M 21 25 21 26 22 27 21 26 Z M 29 20 29 22 28 23 29 23 30 24 30 25 30 24 29 23 Z M 36 21 38 19 41 19 43 21 41 19 38 19 Z"/><path fill="#b3d8fb" fill-rule="evenodd" d="M 44 55 35 55 35 65 39 65 39 62 41 60 44 60 Z M 38 21 37 22 37 29 38 30 38 34 41 34 41 29 42 28 42 22 41 21 Z"/><path fill="#8795da" fill-rule="evenodd" d="M 16 66 16 75 28 75 28 66 Z M 38 37 38 40 41 40 41 37 Z"/><path fill="#50423a" fill-rule="evenodd" d="M 14 59 15 60 15 63 16 64 28 64 16 64 15 63 15 60 Z M 45 25 46 26 46 27 46 26 Z M 37 16 38 17 38 18 38 17 Z"/><path fill="#ff85ae" fill-rule="evenodd" d="M 16 59 16 63 28 63 28 60 27 59 27 58 26 57 18 57 Z M 28 21 27 20 27 19 26 19 25 20 22 20 21 21 21 22 22 23 24 23 25 22 27 22 Z"/><path fill="#d69d69" fill-rule="evenodd" d="M 24 43 24 45 54 45 55 44 55 43 Z"/><path fill="#616b68" fill-rule="evenodd" d="M 45 55 45 60 44 61 41 61 44 61 45 60 Z"/><path fill="#8cb07a" fill-rule="evenodd" d="M 57 20 55 20 54 19 53 19 53 20 54 20 56 22 55 23 52 23 54 25 53 26 52 26 51 27 53 27 54 28 54 29 53 30 50 30 52 32 51 33 50 33 49 34 51 34 52 35 52 36 51 37 49 37 50 38 50 39 49 40 48 40 52 40 52 39 53 38 53 35 54 34 54 31 55 30 55 27 56 26 56 24 57 23 Z"/><path fill="#0f100e" fill-rule="evenodd" d="M 44 62 44 63 43 64 44 63 Z"/><path fill="#21221f" fill-rule="evenodd" d="M 15 59 14 60 14 64 15 64 14 63 14 60 Z M 43 23 43 24 44 24 Z"/><path fill="#151616" fill-rule="evenodd" d="M 38 16 37 17 37 18 37 17 Z"/><path fill="#3a2f31" fill-rule="evenodd" d="M 19 56 25 56 26 55 25 56 24 55 20 55 Z M 36 37 36 40 37 40 37 37 Z M 30 27 31 28 31 27 Z M 42 17 41 17 41 18 Z"/><path fill="#f0db7c" fill-rule="evenodd" d="M 24 31 25 32 25 34 26 35 26 38 27 39 27 40 28 40 27 39 27 36 26 35 26 32 25 31 Z M 28 30 29 31 29 33 30 34 30 37 31 38 31 40 32 40 32 39 31 38 31 35 30 34 30 31 29 30 Z"/><path fill="#f1efde" fill-rule="evenodd" d="M 28 26 27 25 26 25 25 26 23 26 24 27 24 28 25 27 28 27 Z"/><path fill="#070706" fill-rule="evenodd" d="M 22 29 23 30 23 31 23 30 Z"/></g></svg></span>' +
         '<p class="section-label">DAILY MICRO-QUIZ</p>' +
@@ -4553,11 +4818,7 @@
     var submittedAttempts = snapshot.attempts.filter(function (a) { return a.status === "submitted" && a.result; });
     var attemptedCount = snapshot.attempts.length;
     var completedCount = snapshot.completedCount || submittedAttempts.length;
-    var bestScore = snapshot.bestScore || 0;
-    var bestPercentile = snapshot.bestPercentile || 0;
-    var averageScore = submittedAttempts.length
-      ? Math.round(submittedAttempts.reduce(function (acc, a) { return acc + (a.result ? (Number(a.result.score) || 0) : 0); }, 0) / submittedAttempts.length)
-      : 0;
+    var attemptStats = summarizeAttempts(snapshot.attempts);
 
     // Determine "NEXT UP" Test
     var dashboardTests = snapshot.tests.filter(function (t) { return !t.isPractice; });
@@ -4599,7 +4860,7 @@
         '<div class="dashboard-next-up-hero animate-fade-in-up" style="animation-delay: 60ms;">' +
         '<div class="next-up-meta-bar">' +
         '<div class="next-up-eyebrow-group">' +
-        '<span class="editorial-num-tag"><svg class="editorial-traced-icon" xmlns="http://www.w3.org/2000/svg" width="72" height="90" viewBox="0 0 72 90"><g shape-rendering="geometricPrecision"><path fill="#f3e7d7" fill-rule="evenodd" d="M 13 28 13 46 14 47 14 48 17 51 54 51 54 28 Z M 43 46 44 45 51 45 52 46 52 47 51 48 44 48 43 47 Z M 23 46 24 45 31 45 32 46 32 47 31 48 24 48 23 47 Z M 36 43 37 42 40 42 41 43 41 46 40 47 37 47 36 46 Z M 16 43 17 42 20 42 21 43 21 46 20 47 17 47 16 46 Z M 43 42 44 41 51 41 52 42 52 43 51 44 44 44 43 43 Z M 23 42 24 41 31 41 32 42 32 43 31 44 24 44 23 43 Z M 43 36 44 35 51 35 52 36 52 37 51 38 44 38 43 37 Z M 23 36 24 35 31 35 32 36 32 37 31 38 24 38 23 37 Z M 36 33 37 32 40 32 41 33 41 36 40 37 37 37 36 36 Z M 16 33 17 32 20 32 21 33 21 36 20 37 17 37 16 36 Z M 43 32 44 31 51 31 52 32 52 33 51 34 44 34 43 33 Z M 23 32 24 31 31 31 32 32 32 33 31 34 24 34 23 33 Z"/><path fill="#929292" fill-rule="evenodd" d="M 62 21 60 21 59 20 55 20 55 23 59 23 60 24 60 55 59 56 25 56 26 57 27 57 28 58 29 58 30 59 31 59 32 60 32 59 33 58 34 58 35 59 35 61 38 61 39 62 47 62 48 63 60 63 61 62 62 62 62 61 63 60 63 24 62 23 Z M 12 20 8 20 7 21 5 21 5 28 6 29 6 32 7 33 7 34 7 24 8 23 12 23 Z"/><path fill="#68c06b" fill-rule="evenodd" d="M 38 18 37 17 36 18 36 19 38 19 Z M 13 12 13 14 14 15 14 17 15 18 15 19 16 20 16 21 18 23 18 15 19 14 24 14 25 25 16 24 17 21 17 21 18 24 18 25 19 25 20 24 21 21 21 21 22 24 22 25 23 25 24 24 25 21 25 22 25 23 26 25 26 26 27 54 27 54 12 Z M 42 14 43 14 45 16 45 17 46 17 46 16 48 14 49 14 50 15 50 24 49 25 48 25 47 24 47 23 46 24 45 24 44 23 44 24 43 25 42 25 41 24 41 15 Z M 35 14 39 14 41 16 41 24 40 25 39 25 38 24 38 22 36 22 36 24 35 25 34 25 33 24 33 16 Z M 26 14 28 14 29 15 29 16 29 15 30 14 32 14 33 15 33 16 32 17 32 18 31 19 31 20 32 21 32 22 33 23 33 24 32 25 30 25 29 24 29 23 29 24 28 25 26 25 25 24 25 23 26 22 26 21 27 20 27 19 26 18 26 17 25 16 25 15 Z"/><path fill="#94eafc" fill-rule="evenodd" d="M 59 25 58 24 55 24 55 51 54 52 19 52 21 54 22 54 23 55 58 55 59 54 Z M 9 24 8 25 8 38 9 39 9 40 11 42 11 43 12 44 12 24 Z"/><path fill="#686868" fill-rule="evenodd" d="M 4 28 4 60 7 63 39 63 36 63 35 62 33 62 32 61 30 61 29 60 28 60 27 59 26 59 24 57 23 57 22 56 8 56 7 55 7 38 6 37 6 35 5 34 5 32 4 31 Z"/><path fill="#606060" fill-rule="evenodd" d="M 44 46 44 47 51 47 51 46 Z M 24 46 24 47 31 47 31 46 Z M 44 42 44 43 51 43 51 42 Z M 24 42 24 43 31 43 31 42 Z M 44 36 44 37 51 37 51 36 Z M 24 36 24 37 31 37 31 36 Z M 44 32 44 33 51 33 51 32 Z M 24 32 24 33 31 33 31 32 Z"/><path fill="#494949" fill-rule="evenodd" d="M 23 71 44 71 39 66 39 65 38 64 29 64 29 65 Z"/><path fill="#5ed2f2" fill-rule="evenodd" d="M 8 40 8 54 9 55 21 55 20 55 17 52 13 52 12 51 12 46 10 44 10 43 8 41 Z"/><path fill="#fe8d3c" fill-rule="evenodd" d="M 37 43 37 46 40 46 40 43 Z M 17 43 17 46 20 46 20 43 Z M 37 33 37 36 40 36 40 33 Z M 17 33 17 36 20 36 20 33 Z"/><path fill="#57b15e" fill-rule="evenodd" d="M 13 15 13 27 25 27 23 27 22 26 21 26 20 25 19 25 15 21 15 20 14 19 14 18 13 17 Z"/><path fill="#ced9c4" fill-rule="evenodd" d="M 13 47 13 51 16 51 13 48 Z"/><path fill="#2e2e2e" fill-rule="evenodd" d="M 33 59 33 60 34 60 34 59 Z"/></g></svg></span>' +
+        '<span class="editorial-num-tag"><svg class="editorial-traced-icon" xmlns="http://www.w3.org/2000/svg" width="72" height="90" viewBox="0 0 72 90"><g shape-rendering="geometricPrecision"><path fill="#f3e7d7" fill-rule="evenodd" d="M 13 28 13 46 14 47 14 48 17 51 54 51 54 28 Z M 43 46 44 45 51 45 52 46 52 47 51 48 44 48 43 47 Z M 23 46 24 45 31 45 32 46 32 47 31 48 24 48 23 47 Z M 36 43 37 42 40 42 41 43 41 46 40 47 37 47 36 46 Z M 16 43 17 42 20 42 21 43 21 46 20 47 17 47 16 46 Z M 43 42 44 41 51 41 52 42 52 43 51 44 44 44 43 43 Z M 23 42 24 41 31 41 32 42 32 43 31 44 24 44 23 43 Z M 43 36 44 35 51 35 52 36 52 37 51 38 44 38 43 37 Z M 23 36 24 35 31 35 32 36 32 37 31 38 24 38 23 37 Z M 36 33 37 32 40 32 41 33 41 36 40 37 37 37 36 36 Z M 16 33 17 32 20 32 21 33 21 36 20 37 17 37 16 36 Z M 43 32 44 31 51 31 52 32 52 33 51 34 44 34 43 33 Z M 23 32 24 31 31 31 32 32 32 33 31 34 24 34 23 33 Z"/><path fill="#929292" fill-rule="evenodd" d="M 62 21 60 21 59 20 55 20 55 23 59 23 60 24 60 55 59 56 25 56 26 57 27 57 28 58 29 58 30 59 31 59 32 60 32 59 33 58 34 58 35 59 35 61 38 61 39 62 47 62 48 63 60 63 61 62 62 62 62 61 63 60 63 24 62 23 Z M 12 20 8 20 7 21 5 21 5 28 6 29 6 32 7 33 7 34 7 24 8 23 12 23 Z"/><path fill="#68c06b" fill-rule="evenodd" d="M 38 18 37 17 36 18 36 19 38 19 Z M 13 12 13 14 14 15 14 17 15 18 15 19 16 20 16 21 18 23 18 15 19 14 24 14 25 16 24 17 21 17 21 18 24 18 25 19 25 20 24 21 21 21 21 22 24 22 25 23 25 24 24 25 21 25 22 25 23 26 25 26 26 27 54 27 54 12 Z M 42 14 43 14 45 16 45 17 46 17 46 16 48 14 49 14 50 15 50 24 49 25 48 25 47 24 47 23 46 24 45 24 44 23 44 24 43 25 42 25 41 24 41 15 Z M 35 14 39 14 41 16 41 24 40 25 39 25 38 24 38 22 36 22 36 24 35 25 34 25 33 24 33 16 Z M 26 14 28 14 29 15 29 16 29 15 30 14 32 14 33 15 33 16 32 17 32 18 31 19 31 20 32 21 32 22 33 23 33 24 32 25 30 25 29 24 29 23 29 24 28 25 26 25 25 24 25 23 26 22 26 21 27 20 27 19 26 18 26 17 25 16 25 15 Z"/><path fill="#94eafc" fill-rule="evenodd" d="M 59 25 58 24 55 24 55 51 54 52 19 52 21 54 22 54 23 55 58 55 59 54 Z M 9 24 8 25 8 38 9 39 9 40 11 42 11 43 12 44 12 24 Z"/><path fill="#686868" fill-rule="evenodd" d="M 4 28 4 60 7 63 39 63 36 63 35 62 33 62 32 61 30 61 29 60 28 60 27 59 26 59 24 57 23 57 22 56 8 56 7 55 7 38 6 37 6 35 5 34 5 32 4 31 Z"/><path fill="#606060" fill-rule="evenodd" d="M 44 46 44 47 51 47 51 46 Z M 24 46 24 47 31 47 31 46 Z M 44 42 44 43 51 43 51 42 Z M 24 42 24 43 31 43 31 42 Z M 44 36 44 37 51 37 51 36 Z M 24 36 24 37 31 37 31 36 Z M 44 32 44 33 51 33 51 32 Z M 24 32 24 33 31 33 31 32 Z"/><path fill="#494949" fill-rule="evenodd" d="M 23 71 44 71 39 66 39 65 38 64 29 64 29 65 Z"/><path fill="#5ed2f2" fill-rule="evenodd" d="M 8 40 8 54 9 55 21 55 20 55 17 52 13 52 12 51 12 46 10 44 10 43 8 41 Z"/><path fill="#fe8d3c" fill-rule="evenodd" d="M 37 43 37 46 40 46 40 43 Z M 17 43 17 46 20 46 20 43 Z M 37 33 37 36 40 36 40 33 Z M 17 33 17 36 20 36 20 33 Z"/><path fill="#57b15e" fill-rule="evenodd" d="M 13 15 13 27 25 27 23 27 22 26 21 26 20 25 19 25 15 21 15 20 14 19 14 18 13 17 Z"/><path fill="#ced9c4" fill-rule="evenodd" d="M 13 47 13 51 16 51 13 48 Z"/><path fill="#2e2e2e" fill-rule="evenodd" d="M 33 59 33 60 34 60 34 59 Z"/></g></svg></span>' +
         '<span class="next-up-eyebrow">NEXT UP</span>' +
         '</div>' +
         '<span class="next-up-type">' + escapeHtml(nextUpTest.isFree ? "FREE MOCK" : "PAID MOCK") + '</span>' +
@@ -4728,15 +4989,15 @@
       }).join("") + '</div>'
       : '<div class="portal-empty-card"><div class="portal-empty-icon" aria-hidden="true">⏱</div><h4 class="portal-empty-title">No Attempts Yet</h4><p class="portal-empty-text">Complete your first mock test to track performance metrics and score history here.</p></div>';
 
+    // The rail header already names the block, so the card carries only the notice itself.
     var noticeBoardHtml = appConfig && (appConfig.noticeTitle || appConfig.noticeBody)
       ? (
         '<div class="dashboard-notice-card">' +
-        '<p class="section-label">Notice Board</p>' +
         (appConfig.noticeTitle ? '<h3>' + escapeHtml(appConfig.noticeTitle) + '</h3>' : "") +
         (appConfig.noticeBody ? '<p>' + escapeHtml(appConfig.noticeBody).replace(/\n/g, "<br>") + '</p>' : "") +
         '</div>'
       )
-      : '<div class="dashboard-notice-card"><p class="section-label">Notice Board</p><div class="portal-empty-card"><div class="portal-empty-icon" aria-hidden="true">📌</div><h4 class="portal-empty-title">No Announcements</h4><p class="portal-empty-text">Check back later for portal updates, exam schedules, and news.</p></div></div>';
+      : '<div class="portal-empty-card"><div class="portal-empty-icon" aria-hidden="true">📌</div><h4 class="portal-empty-title">No announcements</h4><p class="portal-empty-text">Portal updates, exam schedules and news will appear here.</p><a href="#updates/events" class="button button-secondary button-compact">Open exam calendar</a></div>';
 
     var reportsHtml = snapshot.attempts.filter(function (attempt) {
       return attempt.status === "submitted" && attempt.resultSnapshot;
@@ -4824,7 +5085,7 @@
             '<div class="planner-tab-panel planner-main-panel">' +
             '<div class="planner-summary-strip">' +
             '<div class="planner-countdown-card">' +
-            '<p class="section-label" style="margin:0;">UGEE 2026</p>' +
+            '<p class="section-label" style="margin:0;">' + escapeHtml(targetExamLabel()) + '</p>' +
             '<strong>' + escapeHtml(countdownDays === null ? "Date pending" : (String(countdownDays) + " Days Left")) + '</strong>' +
             '<span>' + escapeHtml(countdownDays === null ? "Admin will set the final date soon." : (String(suggestedMocksRemaining) + " mocks left this week at your current pace.")) + '</span>' +
             '</div>' +
@@ -4937,7 +5198,7 @@
       '<div class="hero-eyebrow-row">' +
       '<span class="section-label">DASHBOARD</span>' +
       '<span class="aceiiit-signature-dot">&bull;</span>' +
-      '<span class="editorial-meta-date">' + escapeHtml(formatDateOnly(new Date()).toUpperCase()) + ' &bull; UGEE 2027 PREPARATION</span>' +
+      '<span class="editorial-meta-date">' + escapeHtml(formatDateOnly(new Date()).toUpperCase()) + ' &bull; ' + escapeHtml(targetExamLabel()) + ' PREPARATION</span>' +
       '</div>' +
       '<h1 class="hero-title">' + escapeHtml(getDashboardGreeting()) + '<br>' + escapeHtml(firstName(user.name)) + '</h1>' +
       '<p class="hero-subtitle">Your preparation, ' +
@@ -4970,14 +5231,14 @@
       '</div>' +
       '<div class="dashboard-editorial-list" id="available-tests-list" style="margin-bottom: 48px;">' + cards + '</div>' +
 
-      '<div class="rail-block" style="border-top: 1px solid var(--border-color); padding-top: 24px; margin-top: auto;">' +
+      '<div class="rail-block" style="border-top: 1px solid var(--border-color); padding-top: 24px;">' +
       '<div class="rail-header">' +
       '<span class="editorial-num-tag"><svg class="editorial-traced-icon" xmlns="http://www.w3.org/2000/svg" width="72" height="90" viewBox="0 0 72 90"><g shape-rendering="geometricPrecision"><path fill="#000000" fill-rule="evenodd" d="M 10 75 10 76 19 76 11 76 Z M 62 71 63 71 64 72 64 74 64 72 63 71 Z M 9 63 9 64 8 65 9 64 Z M 22 36 21 37 21 38 20 39 18 39 19 40 19 42 20 43 21 42 20 43 19 42 19 41 22 38 23 38 23 37 Z M 42 30 41 29 40 29 39 28 34 28 33 27 31 27 30 26 30 25 30 26 31 27 29 29 28 29 27 28 26 28 26 29 25 30 26 31 25 32 23 32 21 34 24 34 25 35 26 35 25 34 25 33 26 32 27 32 28 33 29 33 30 34 29 35 30 36 30 40 32 38 32 37 33 36 38 36 39 35 41 35 41 34 42 33 Z M 37 33 38 34 36 36 35 36 34 35 36 33 Z M 38 30 39 29 40 30 39 31 Z M 26 31 28 29 29 29 30 30 30 31 29 32 27 32 Z M 33 30 33 29 34 28 38 28 39 29 37 31 36 31 35 30 34 31 Z M 29 29 30 28 31 29 30 30 Z"/><path fill="#125fa4" fill-rule="evenodd" d="M 25 65 26 65 27 66 32 66 31 66 30 65 28 65 27 66 26 65 Z M 19 47 14 52 14 53 13 54 14 54 15 53 16 53 17 54 16 55 16 57 15 58 15 59 14 60 14 61 12 63 11 62 11 60 12 59 11 59 11 64 10 65 10 71 11 72 11 74 25 74 25 73 23 73 22 72 21 72 18 69 18 68 16 66 17 65 18 65 19 64 20 65 19 64 19 63 18 62 18 61 19 60 23 64 23 62 21 60 21 59 20 58 20 57 19 58 18 57 18 50 19 49 Z M 13 65 14 66 14 67 13 68 14 69 14 70 12 72 11 71 11 70 10 69 10 68 Z"/><path fill="#b4783e" fill-rule="evenodd" d="M 38 74 55 74 56 73 63 73 47 73 46 74 Z M 64 69 55 69 54 70 36 70 36 71 41 71 42 70 64 70 Z M 6 59 5 60 5 67 6 68 6 72 7 73 7 75 8 75 8 73 7 72 7 66 6 65 Z M 40 58 40 59 41 60 40 59 Z M 49 31 49 32 51 34 52 34 51 34 49 32 Z M 60 19 64 23 64 30 59 35 54 35 59 35 60 34 61 34 62 33 62 32 64 30 64 23 Z M 58 18 54 18 53 19 52 19 49 22 49 24 48 25 48 29 48 25 49 24 49 22 51 20 52 20 54 18 Z"/><path fill="#0082c9" fill-rule="evenodd" d="M 18 66 19 67 19 68 22 71 23 71 24 72 25 72 26 73 26 74 28 74 28 73 29 72 29 70 28 69 26 69 25 68 24 68 23 67 22 67 21 66 Z M 20 49 19 50 20 51 19 52 19 55 20 55 22 57 22 59 24 61 25 61 27 63 29 63 30 64 32 64 33 65 33 66 32 67 34 67 35 66 36 66 37 65 37 62 34 62 33 61 30 61 29 60 26 60 25 59 24 59 21 56 21 55 20 54 21 53 22 53 25 56 26 56 27 57 28 57 28 56 26 54 25 54 Z"/><path fill="#d3a274" fill-rule="evenodd" d="M 43 64 41 64 40 63 40 66 39 67 41 67 43 65 Z M 41 38 40 37 39 37 38 38 34 38 33 39 33 40 31 42 24 42 23 41 23 43 22 44 22 45 21 46 22 47 22 48 23 48 22 47 22 44 23 43 24 43 25 44 25 46 28 49 31 49 30 48 30 47 31 46 31 45 32 44 33 45 33 46 34 47 34 48 35 48 36 47 37 47 38 46 39 46 40 47 41 47 39 45 39 43 40 42 40 41 41 40 Z M 37 39 39 41 39 43 38 44 36 44 35 43 35 41 Z"/><path fill="#65523f" fill-rule="evenodd" d="M 38 76 39 75 44 75 39 75 Z M 51 68 52 68 53 69 52 68 Z M 62 64 61 65 61 66 61 65 Z M 5 59 4 60 4 62 3 63 4 62 4 60 Z M 39 56 39 57 40 57 40 56 Z M 27 40 26 41 25 41 26 41 Z M 59 33 59 34 60 35 59 34 Z M 48 24 49 25 50 24 49 25 Z M 57 22 57 24 56 25 56 26 56 25 57 24 Z M 50 20 51 21 50 22 51 22 51 21 Z M 61 19 63 21 64 20 63 19 62 20 Z M 62 20 63 19 64 20 63 21 Z"/><path fill="#513928" fill-rule="evenodd" d="M 9 75 7 77 8 77 8 76 Z M 61 74 60 74 59 75 60 75 Z M 36 72 37 72 38 73 40 73 39 73 38 72 Z M 65 69 65 70 66 71 65 70 Z M 53 68 52 69 43 69 52 69 Z M 39 68 38 67 38 68 37 69 36 69 35 70 34 69 35 70 36 69 38 69 Z M 7 62 7 63 8 63 Z M 41 59 40 60 41 61 40 60 Z M 29 39 28 40 29 40 Z M 57 16 56 17 55 17 57 17 Z"/><path fill="#242726" fill-rule="evenodd" d="M 38 60 38 61 39 61 Z M 27 26 28 27 28 28 29 27 28 27 Z"/><path fill="#1e1915" fill-rule="evenodd" d="M 56 71 55 71 54 72 51 72 55 72 Z M 40 61 41 62 42 62 41 62 Z M 22 39 21 40 22 40 Z M 51 32 52 33 53 33 52 33 Z M 25 29 22 32 21 32 22 32 Z M 23 27 22 26 21 27 22 26 Z"/><path fill="#d6d6d1" fill-rule="evenodd" d="M 51 29 51 30 52 31 54 31 53 30 53 29 Z M 61 23 59 21 58 21 57 20 56 20 55 21 54 21 53 22 52 22 51 23 51 27 51 25 55 21 56 21 57 20 58 21 58 22 60 24 61 24 Z"/><path fill="#b5b5b4" fill-rule="evenodd" d="M 66 72 65 73 65 74 65 73 Z M 58 25 58 26 59 25 60 25 61 26 60 27 61 26 60 25 Z"/><path fill="#080808" fill-rule="evenodd" d="M 47 31 48 32 48 33 48 32 Z M 20 28 20 29 19 30 19 31 20 31 19 30 20 29 Z"/><path fill="#0e1518" fill-rule="evenodd" d="M 22 65 23 66 23 65 Z M 29 57 28 58 29 59 Z M 14 55 13 56 14 57 13 58 14 57 13 56 Z M 28 53 28 54 29 54 Z M 35 27 36 27 37 26 36 27 35 26 Z"/><path fill="#164568" fill-rule="evenodd" d="M 24 63 24 65 25 64 26 64 27 65 26 66 27 65 26 64 26 63 Z M 19 61 19 62 20 62 22 64 Z M 15 54 15 55 13 57 14 58 12 60 13 61 13 60 14 59 14 58 15 57 14 56 15 55 Z M 13 57 14 56 15 57 14 58 Z"/><path fill="#868684" fill-rule="evenodd" d="M 31 69 33 69 34 70 33 69 Z M 52 66 51 67 52 67 Z M 59 27 59 28 57 30 59 28 Z"/><path fill="#010101" fill-rule="evenodd" d="M 21 33 20 33 20 34 Z M 23 28 22 29 22 30 23 29 Z"/><path fill="#846d56" fill-rule="evenodd" d="M 50 67 49 68 48 68 50 68 Z M 44 67 44 68 46 68 45 68 Z"/><path fill="#cf9f72" fill-rule="evenodd" d="M 23 49 24 50 25 50 26 51 24 49 Z M 22 43 23 44 23 47 23 45 24 44 23 44 Z M 26 36 28 38 27 39 28 38 28 37 27 37 Z"/><path fill="#0b5f9e" fill-rule="evenodd" d="M 11 69 12 69 13 70 12 71 13 70 12 69 Z M 22 54 24 56 23 57 24 56 Z"/><path fill="#0772b6" fill-rule="evenodd" d="M 19 57 20 56 21 57 21 58 21 57 22 56 21 57 20 56 19 56 Z"/></g></svg></span>' +
       '<p class="section-label">NOTICE BOARD</p>' +
       '</div>' +
       noticeBoardHtml +
       '</div>' +
-
+      qotdHtml +
       '</div>' + // end dashboard-main-col
       '<aside class="dashboard-sidebar-rail">' +
       '<div class="rail-block">' +
@@ -5012,16 +5273,15 @@
       '<span class="metric-label">Attempted</span>' +
       '</div>' +
       '<div class="progress-rail-col">' +
-      '<strong class="metric-val">' + (averageScore > 0 ? (averageScore + '%') : '—') + '</strong>' +
-      '<span class="metric-label">Average</span>' +
+      '<strong class="metric-val">' + (attemptStats.count ? escapeHtml(String(attemptStats.averageScore)) : '—') + '</strong>' +
+      '<span class="metric-label">Avg score</span>' +
       '</div>' +
       '<div class="progress-rail-col">' +
-      '<strong class="metric-val">' + (bestScore > 0 ? bestScore : '—') + '</strong>' +
-      '<span class="metric-label">Best (' + (bestPercentile > 0 ? (bestPercentile + '%ile') : '—') + ')</span>' +
+      '<strong class="metric-val">' + (attemptStats.count ? escapeHtml(String(attemptStats.bestScore)) : '—') + '</strong>' +
+      '<span class="metric-label">Best score' + (attemptStats.bestScorePercentile ? ' (' + escapeHtml(String(attemptStats.bestScorePercentile)) + '%ile)' : '') + '</span>' +
       '</div>' +
       '</div>' +
       '</div>' +
-      qotdHtml +
       '</aside>' +
       '</section>' +
       '</div>' +
@@ -5969,8 +6229,8 @@
       '<div class="question-panel exam-mainpanel">' +
       '<article class="question-card exam-questioncard">' +
       '<div class="question-titlebar">Question No. ' + sectionQuestionNumber + '</div>' +
-      '<div class="exam-questionbody' + (currentQuestion.passage ? ' has-passage' : '') + '">' +
-      (currentQuestion.passage ? '<div class="passage exam-passage rich-text">' + formatRichText(currentQuestion.passage) + '</div>' : "") +
+      '<div class="exam-questionbody' + (isLongPassage(currentQuestion.passage) ? ' has-passage' : '') + '">' +
+      (currentQuestion.passage ? '<div class="passage exam-passage rich-text' + (isLongPassage(currentQuestion.passage) ? '' : ' is-lead-in') + '">' + formatRichText(currentQuestion.passage) + '</div>' : "") +
       '<div class="exam-questionmain">' +
       '<p class="exam-questiontext rich-text">' + formatRichText(currentQuestion.prompt) + '</p>' +
       renderQuestionFigures(currentQuestion) +
@@ -6654,19 +6914,6 @@
       return html;
     }
 
-    // Correct / wrong / skipped as one proportional bar.
-    function outcomeBar(correct, wrong, skipped, extraClass) {
-      var total = Math.max(1, Number(correct || 0) + Number(wrong || 0) + Number(skipped || 0));
-      return (
-        '<div class="rs-stackbar' + (extraClass ? ' ' + extraClass : '') + '" role="img" aria-label="' +
-        escapeAttribute(correct + ' correct, ' + wrong + ' wrong, ' + skipped + ' skipped') + '">' +
-        '<span class="is-correct" data-width="' + roundTo((correct / total) * 100, 2) + '%"></span>' +
-        '<span class="is-wrong" data-width="' + roundTo((wrong / total) * 100, 2) + '%"></span>' +
-        '<span class="is-skipped" data-width="' + roundTo((skipped / total) * 100, 2) + '%"></span>' +
-        '</div>'
-      );
-    }
-
     function sectionRowsFor(summary) {
       if (summary && Array.isArray(summary.sectionInsights) && summary.sectionInsights.length) {
         return summary.sectionInsights;
@@ -6695,7 +6942,7 @@
             '<span class="rs-section-score">Score <b>' + escapeHtml(String(roundTo(section.score, 2))) + '</b></span>' +
             '<span class="rs-pill ' + accuracyTone(section.accuracy) + '">' + escapeHtml(String(roundTo(section.accuracy, 1))) + '% accuracy</span>' +
             '</div>' +
-            outcomeBar(Number(section.correct || 0), Number(section.wrong || 0), Number(section.skipped || 0)) +
+            buildOutcomeBar(Number(section.correct || 0), Number(section.wrong || 0), Number(section.skipped || 0)) +
             '<div class="rs-meta">' +
             '<span><i class="rs-dot is-correct"></i>' + escapeHtml(String(section.correct || 0)) + ' correct</span>' +
             '<span><i class="rs-dot is-wrong"></i>' + escapeHtml(String(section.wrong || 0)) + ' wrong</span>' +
@@ -6948,9 +7195,11 @@
             '</div>';
         }
 
-        var passageHtml = review.passage
-          ? '<div class="analysis-review-passage"><strong>Passage:</strong><div class="rich-text">' + formatRichText(review.passage) + '</div></div>'
-          : '';
+        var passageHtml = !review.passage
+          ? ''
+          : isLongPassage(review.passage)
+            ? '<div class="analysis-review-passage"><strong>Passage:</strong><div class="rich-text">' + formatRichText(review.passage) + '</div></div>'
+            : '<div class="analysis-review-lead rich-text">' + formatRichText(review.passage) + '</div>';
 
         var explanationHtml = review.explanation
           ? '<div class="analysis-explanation-card">' +
@@ -6961,16 +7210,27 @@
           '</div>'
           : '';
 
-        var isBookmarked = store.hasBookmark && store.hasBookmark(user.id, review.id);
+        // The result API sends questionId; locally scored practice attempts carry the question's id.
+        var reviewQuestionId = String(review.questionId || review.id || "");
+        var isBookmarked = store.hasBookmark && store.hasBookmark(user.id, reviewQuestionId);
         var bookmarkIconFilled = '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" style="vertical-align:text-bottom;"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>';
         var bookmarkIconEmpty = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:text-bottom;"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>';
         var bookmarkBtnClass = isBookmarked ? "button button-secondary is-bookmarked js-bookmark-toggle" : "button button-secondary js-bookmark-toggle";
         var bookmarkBtnContent = isBookmarked ? bookmarkIconFilled + " Saved" : bookmarkIconEmpty + " Save";
+        // Everything the Resources → Bookmarks card needs to stand on its own for revision.
         var bookmarkDataPayload = {
-           id: review.id,
-           topic: review.topic,
-           prompt: review.prompt,
-           explanation: review.explanation
+          id: reviewQuestionId,
+          section: review.section || "",
+          topic: review.topic,
+          prompt: review.prompt,
+          passage: review.passage || "",
+          options: review.options || [],
+          correctOption: review.correctOption,
+          imageUrls: review.imageUrls || [],
+          explanation: review.explanation,
+          questionNumber: offset + index + 1,
+          testTitle: (test && test.title) || "",
+          attemptId: attempt.id
         };
 
         return (
@@ -6983,7 +7243,7 @@
           '<div class="analysis-review-badges" style="display:flex; align-items:center; gap:8px;">' +
           statusLabel +
           '<span class="analysis-pill" aria-label="Time spent: ' + formatTime(Number(review.timeSpent || 0)) + '">⏱ ' + escapeHtml(formatTime(Number(review.timeSpent || 0))) + '</span>' +
-          '<button class="' + bookmarkBtnClass + '" data-qid="' + escapeAttribute(review.id) + '" data-qpayload="' + encodeURIComponent(JSON.stringify(bookmarkDataPayload)) + '" aria-label="Bookmark this question" style="padding:4px 10px; font-size:0.9rem; color:var(--brand-accent); border-color:rgba(200,150,62,0.3);">' + bookmarkBtnContent + '</button>' +
+          '<button class="' + bookmarkBtnClass + '" data-qid="' + escapeAttribute(reviewQuestionId) + '" data-qpayload="' + encodeURIComponent(JSON.stringify(bookmarkDataPayload)) + '" aria-label="Bookmark this question" style="padding:4px 10px; font-size:0.9rem; color:var(--brand-accent); border-color:rgba(200,150,62,0.3);">' + bookmarkBtnContent + '</button>' +
           '</div>' +
           '</div>' +
           passageHtml +
@@ -7060,7 +7320,7 @@
           paperSeconds ? 'of ' + formatTime(paperSeconds) + ' allowed' : '') +
         '</div>' +
         '<div class="rs-outcome analysis-stage"' + stageStyle(0) + '>' +
-        outcomeBar(correctCount, wrongCount, skippedCount, "is-large") +
+        buildOutcomeBar(correctCount, wrongCount, skippedCount, "is-large") +
         '<div class="rs-legend">' +
         '<span><i class="rs-dot is-correct"></i>Correct <b>' + correctCount + '</b></span>' +
         '<span><i class="rs-dot is-wrong"></i>Wrong <b>' + wrongCount + '</b></span>' +
@@ -7147,13 +7407,7 @@
             if (payloadStr && store.addBookmark) {
               try {
                 var qObj = JSON.parse(decodeURIComponent(payloadStr));
-                store.addBookmark(user.id, {
-                  id: qObj.id,
-                  testId: attempt.testId,
-                  topic: qObj.topic,
-                  prompt: qObj.prompt,
-                  explanation: qObj.explanation
-                });
+                store.addBookmark(user.id, Object.assign({}, qObj, { testId: attempt.testId }));
                 button.classList.add("is-bookmarked");
                 button.innerHTML = bookmarkIconFilled + " Saved";
                 if (typeof window.showSaveChip === 'function') window.showSaveChip("Question bookmarked.");
@@ -7278,43 +7532,68 @@
     var result = data.result || {};
     var isAi = data.source === "ai";
     var profile = data.profile || {};
-    var list = function (items) {
-      return (items && items.length)
-        ? '<ul class="pi-list">' + items.map(function (item) { return '<li>' + escapeHtml(item) + '</li>'; }).join("") + '</ul>'
-        : '<p class="pi-muted">Nothing stood out here this time.</p>';
+    var previous = profile.previous || null;
+    var normalize = function (text) {
+      return String(text || "").toLowerCase().replace(/[^a-z0-9%.]+/g, " ").replace(/[.\s]+$/, "").trim();
     };
-    var changed = profile.previous
-      ? '<p>Accuracy ' + (profile.previous.accuracyPctDelta >= 0 ? "up " : "down ") + escapeHtml(String(Math.abs(profile.previous.accuracyPctDelta))) + '% since your previous attempt' +
-        (profile.previous.sameTest && profile.previous.scoreDelta !== null ? '; score ' + (profile.previous.scoreDelta >= 0 ? "+" : "") + escapeHtml(String(profile.previous.scoreDelta)) + ' on this test' : '') + '.</p>'
-      : '<p class="pi-muted">This is your first attempt, so there is nothing to compare yet.</p>';
-    var trajectory = (profile.trajectory || []).length > 1
-      ? '<div class="pi-trajectory">' + profile.trajectory.map(function (value) {
-        var height = Math.max(6, Math.min(100, Number(value) || 0));
-        return '<span class="pi-bar" style="height:' + height + '%;" title="' + escapeAttribute(String(value)) + '% accuracy"></span>';
-      }).join("") + '</div><p class="pi-muted">Accuracy across your recent attempts (oldest → latest).</p>'
-      : '<p class="pi-muted">Take a few more mocks to see your trajectory.</p>';
+    var summaryKey = normalize(result.summary);
+    // The summary already quotes the leading pattern and the Trend card states the change since the
+    // previous attempt, so the fingerprint list does not repeat either.
+    var patterns = (result.behaviorPatterns || []).filter(function (item) {
+      var key = normalize(item);
+      if (!key) return false;
+      if (summaryKey && summaryKey.indexOf(key) !== -1) return false;
+      if (previous && /previous attempt/i.test(item)) return false;
+      return true;
+    });
+    var strengths = (result.strengths || []).filter(Boolean);
+    var leaks = (result.priorityAreas || []).filter(function (area) { return area && area.topic; });
+    var nextMoves = (result.nextTestStrategy || []).filter(Boolean);
+    var list = function (items) {
+      return '<ul class="pi-list">' + items.map(function (item) { return '<li>' + escapeHtml(item) + '</li>'; }).join("") + '</ul>';
+    };
+
+    var changeHtml = previous
+      ? '<p class="pi-change">Accuracy <strong class="' + (previous.accuracyPctDelta >= 0 ? 'is-up' : 'is-down') + '">' +
+        (previous.accuracyPctDelta >= 0 ? "up " : "down ") + escapeHtml(String(Math.abs(previous.accuracyPctDelta))) + '%</strong> since your previous attempt' +
+        (previous.sameTest && previous.scoreDelta !== null ? '; score ' + (previous.scoreDelta >= 0 ? "+" : "") + escapeHtml(String(previous.scoreDelta)) + ' on this test' : '') + '.</p>'
+      : '';
+    var trajectory = profile.trajectory || [];
+    var chartHtml = trajectory.length > 1
+      ? buildBarTrend(trajectory, { max: 100, label: "Accuracy across your recent attempts, oldest to latest" }) +
+        '<p class="pi-muted">Accuracy per attempt, oldest → latest.</p>'
+      : '';
+    var trendHtml = changeHtml + chartHtml ||
+      '<p class="pi-muted">This is your first attempt. Your trend appears after the next mock.</p>';
+
+    var diagnosis = [];
+    if (leaks.length) {
+      diagnosis.push('<section class="pi-block"><h4>Where Marks Leak</h4><ul class="pi-list">' + leaks.map(function (area) {
+        return '<li><strong>' + escapeHtml(area.topic) + '</strong>: ' + escapeHtml(area.reason || "") + (area.action ? ' <em>' + escapeHtml(area.action) + '</em>' : '') + '</li>';
+      }).join("") + '</ul></section>');
+    }
+    if (patterns.length) diagnosis.push('<section class="pi-block"><h4>Your Error Fingerprint</h4>' + list(patterns) + '</section>');
+    if (strengths.length) diagnosis.push('<section class="pi-block"><h4>Your Edge</h4>' + list(strengths) + '</section>');
+
     root.innerHTML =
       '<div class="pi-header">' +
       '<p class="section-label">Performance Intelligence</p>' +
       '<span class="pi-badge ' + (isAi ? 'is-ai' : 'is-deterministic') + '">' + (isAi ? 'AI interpretation' : 'Rule-based interpretation') + '</span>' +
-      (data.pending ? '<span class="pi-muted"> · AI analysis in progress…</span>' : '') +
+      (data.pending ? '<span class="pi-muted">AI analysis in progress…</span>' : '') +
       '</div>' +
-      '<p class="pi-verified-note">Score, accuracy, rank and percentile above are verified metrics calculated by the portal. The interpretation below explains them; it never changes them.</p>' +
-      '<h3 class="pi-headline">' + escapeHtml(result.headline || "") + '</h3>' +
-      '<div class="pi-grid">' +
-      '<section><h4>What Changed?</h4>' + changed + '</section>' +
-      '<section><h4>The Pattern</h4><p>' + escapeHtml(result.summary || "") + '</p></section>' +
-      '<section><h4>Your Edge</h4>' + list(result.strengths) + '</section>' +
-      '<section><h4>Where Marks Leak</h4>' + ((result.priorityAreas && result.priorityAreas.length)
-        ? '<ul class="pi-list">' + result.priorityAreas.map(function (area) {
-          return '<li><strong>' + escapeHtml(area.topic) + '</strong>: ' + escapeHtml(area.reason) + ' <em>' + escapeHtml(area.action) + '</em></li>';
-        }).join("") + '</ul>'
-        : '<p class="pi-muted">No clear weak spot this time.</p>') + '</section>' +
-      '<section><h4>Your Error Fingerprint</h4>' + list(result.behaviorPatterns) + '</section>' +
-      '<section><h4>Your Next Move</h4>' + list(result.nextTestStrategy) + '</section>' +
-      '<section><h4>Your Trajectory</h4>' + trajectory + '</section>' +
+      (result.headline ? '<h3 class="pi-headline">' + escapeHtml(result.headline) + '</h3>' : '') +
+      (result.summary ? '<p class="pi-lead">' + escapeHtml(result.summary) + '</p>' : '') +
+      '<div class="pi-row-primary">' +
+      '<section class="pi-block pi-next"><h4>Your Next Move</h4>' +
+      (nextMoves.length ? list(nextMoves) : '<p class="pi-muted">Keep the same approach and take a timed mock to confirm it.</p>') +
+      '</section>' +
+      '<section class="pi-block pi-trend"><h4>Trend</h4>' + trendHtml + '</section>' +
       '</div>' +
-      '<p class="pi-disclosure">' + escapeHtml(data.disclosure || "") + '</p>';
+      (diagnosis.length
+        ? '<div class="pi-row-diagnosis">' + diagnosis.join("") + '</div>'
+        : '<p class="pi-muted pi-diagnosis-empty">No standout strengths or weak spots in this attempt.</p>') +
+      '<p class="pi-footnote">Score, accuracy, rank and percentile above are verified metrics calculated by the portal; this interpretation explains them and never changes them.' +
+      (data.disclosure ? ' ' + escapeHtml(data.disclosure) : '') + '</p>';
   }
 
   function mountPerformanceIntelligence(attemptId) {
@@ -7702,7 +7981,7 @@
           '</div>' +
           '</form>' +
           '</div>' +
-          '<aside class="admin-card">' +
+          '<aside class="admin-card admin-sticky-side">' +
           activePaperSummaryHtml +
           '<div class="divider"></div>' +
           '<p class="section-label">Quick Actions</p>' +
@@ -7735,7 +8014,7 @@
           '</div>' +
 
           '<div class="admin-grid" style="grid-template-columns: minmax(0, 1.2fr) minmax(360px, 0.8fr);">' +
-          '<div class="admin-card">' +
+          '<div class="admin-card admin-fill-side">' +
           '<div class="button-row" style="justify-content: space-between; align-items: center; margin-bottom: 12px;">' +
           '<p class="section-label" style="margin:0;">Compact Question List & Navigator</p>' +
           '<button class="button button-secondary button-compact" type="button" id="open-question-editor">Open Broad Editor</button>' +
@@ -7973,7 +8252,9 @@
                 '</div>';
             }).join("") +
             '</div>'
-          ) : '<div class="empty-state">No seasons configured yet. Click "+ Create New Season" to set up UGEE 2026.</div>') +
+          ) : '<div class="empty-state">' + (runtime.adminSeasonsError
+            ? 'Could not load seasons: ' + escapeHtml(runtime.adminSeasonsError)
+            : Array.isArray(runtime.adminSeasonsList) ? 'No seasons configured yet. Click "+ Create New Season" to set up UGEE 2026.' : 'Loading seasons…') + '</div>') +
           '</div>';
       } else if (activeTab === "audit") {
         var logsList = (runtime.adminAuditLogsList || []);
@@ -7998,7 +8279,9 @@
                 '</div>';
             }).join("") +
             '</div>'
-          ) : '<div class="empty-state">No audit logs recorded yet.</div>') +
+          ) : '<div class="empty-state">' + (runtime.adminAuditLogsError
+            ? 'Could not load audit logs: ' + escapeHtml(runtime.adminAuditLogsError)
+            : Array.isArray(runtime.adminAuditLogsList) ? 'No audit logs recorded yet.' : 'Loading audit logs…') + '</div>') +
           '</div>';
       } else if (activeTab === "materials") {
         var studyData = store.getStudyMaterials ? store.getStudyMaterials() : { folders: [], files: [] };
@@ -8037,12 +8320,12 @@
             }).join("");
 
         activeTabContent = 
-          '<div class="admin-grid">' +
-            '<div>' +
+          '<div class="admin-materials-layout">' +
+            '<div class="admin-materials-folders">' +
               '<h3 style="margin-bottom:16px;">Study Materials Folders</h3>' +
               folderListHtml +
             '</div>' +
-            '<aside>' +
+            '<aside class="admin-sticky-side">' +
               '<div class="admin-card">' +
                 '<h4 style="margin-top:0;">Create New Folder</h4>' +
                 '<form id="admin-create-folder-form">' +
@@ -9315,6 +9598,9 @@
           var targetTab = button.getAttribute("data-tab");
           if (targetTab) {
             runtime.adminStudioTab = targetTab;
+            // Reopening a tab retries a failed first load of its list.
+            runtime.adminSeasonsError = "";
+            runtime.adminAuditLogsError = "";
             rerenderAdminPreserveScroll(user, selectedTestId);
           }
         });
@@ -9804,6 +10090,23 @@
         });
       }
 
+      // Seasons and audit logs load the first time their tab opens; before, they stayed empty
+      // until an action on the tab (or Refresh) happened to fetch them.
+      [
+        { tab: "seasons", listKey: "adminSeasonsList", errorKey: "adminSeasonsError", load: function () { return store.listSeasons(); }, pick: function (res) { return res.seasons; } },
+        { tab: "audit", listKey: "adminAuditLogsList", errorKey: "adminAuditLogsError", load: function () { return store.getAuditLogs(); }, pick: function (res) { return res.logs; } }
+      ].forEach(function (source) {
+        if (runtime.adminStudioTab !== source.tab || Array.isArray(runtime[source.listKey]) || runtime[source.errorKey] || runtime[source.listKey + "Loading"]) return;
+        runtime[source.listKey + "Loading"] = true;
+        source.load()
+          .then(function (res) { runtime[source.listKey] = (res && source.pick(res)) || []; })
+          .catch(function (err) { runtime[source.errorKey] = (err && err.message) || String(err); })
+          .finally(function () {
+            runtime[source.listKey + "Loading"] = false;
+            if (runtime.adminStudioTab === source.tab && (routeParts()[0] || "") === "admin") rerenderAdminPreserveScroll(user, selectedTestId);
+          });
+      });
+
       var refreshAuditBtn = document.getElementById("refresh-audit-logs");
       if (refreshAuditBtn) {
         refreshAuditBtn.addEventListener("click", async function () {
@@ -9811,6 +10114,7 @@
           try {
             var aRes = await store.getAuditLogs();
             runtime.adminAuditLogsList = aRes.logs || [];
+            runtime.adminAuditLogsError = "";
             rerenderAdminPreserveScroll(user, selectedTestId);
           } catch (err) {
             window.alert("Failed to load audit logs: " + (err.message || String(err)));

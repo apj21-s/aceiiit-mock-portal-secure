@@ -1,6 +1,9 @@
 @import url("https://fonts.googleapis.com/css2?family=Archivo:wght@500;700;800;900&family=Manrope:wght@400;500;600;700&display=swap");
 
 :root {
+  /* Motion tokens (animate skill): strong ease-out for UI, hover feedback stays near-instant. */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --dur-hover: 200ms;
   --paper: #f3ecdf;
   --surface: #fffaf0;
   --surface-soft: #f6efe2;
@@ -71,6 +74,10 @@ body {
   background:
     radial-gradient(circle at top left, rgba(197, 160, 40, 0.18), transparent 28%),
     linear-gradient(180deg, var(--paper), #efe6d7 60%, #eadfcd);
+  /* html is pinned to 100% height, so a repeating gradient tiled once per viewport and left a
+     hard seam on long pages. Paint it once; the page continues in the gradient's end colour. */
+  background-repeat: no-repeat;
+  background-color: #eadfcd;
   color: var(--ink);
   font-family: var(--font-body);
   transition: background 0.25s ease, color 0.25s ease;
@@ -92,6 +99,8 @@ body[data-theme="dark"] {
   background:
     radial-gradient(circle at top left, rgba(215, 179, 74, 0.14), transparent 28%),
     linear-gradient(180deg, #111111, #161616 56%, #1c1c1c);
+  background-repeat: no-repeat;
+  background-color: #1c1c1c;
 }
 
 body[data-theme="dark"] .panel,
@@ -1369,9 +1378,9 @@ body[data-theme="dark"] {
 }
 
 .filter-tab-btn {
+  position: relative;
   background: transparent;
   border: none;
-  border-bottom: 2px solid transparent;
   font-family: var(--font-body);
   font-size: 0.75rem;
   font-weight: 800;
@@ -1379,16 +1388,17 @@ body[data-theme="dark"] {
   color: var(--ink-soft);
   padding: 4px 0 8px;
   cursor: pointer;
-  transition: border-color 150ms ease, color 150ms ease;
+  transition: color 150ms ease;
 }
 
-.filter-tab-btn:hover {
-  color: var(--ink);
-}
-
+.filter-tab-btn:hover,
+.filter-tab-btn:focus-visible,
 .filter-tab-btn.is-active {
-  border-bottom-color: var(--gold-strong, #C8963E);
   color: var(--ink);
+}
+
+.filter-tab-btn::after {
+  bottom: 0;
 }
 
 /* Editorial Test Rows Catalogue */
@@ -1409,6 +1419,30 @@ body[data-theme="dark"] {
 
 .dashboard-test-row:last-child {
   border-bottom: none;
+}
+
+/* Exams catalogue rows (Mock Tests / Live Tests). */
+.exam-catalog-row {
+  justify-content: space-between;
+  padding: 16px 12px;
+}
+
+.exam-catalog-main {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-width: 0;
+}
+
+.exam-catalog-title {
+  margin: 0 0 4px;
+  font-size: 1.1rem;
+  font-weight: 700;
+}
+
+.exam-catalog-meta {
+  font-size: 0.82rem;
+  color: var(--ink-soft);
 }
 
 .dashboard-test-row:hover {
@@ -1656,7 +1690,6 @@ body[data-theme="dark"] .available-tests-header {
 }
 
 body[data-theme="dark"] .filter-tab-btn.is-active {
-  border-bottom-color: var(--gold);
   color: var(--ink);
 }
 
@@ -3457,6 +3490,11 @@ body[data-theme="dark"] .analysis-explanation-title {
   line-height: 1.6;
 }
 
+.analysis-review-lead {
+  margin-bottom: -4px;
+  font-weight: 600;
+}
+
 .analysis-review-passage {
   padding: 12px 16px;
   border-left: 4px solid var(--gold-strong, #c5a028);
@@ -3634,6 +3672,21 @@ body[data-theme="dark"] .katex-display {
 .users-table .table-row {
   grid-template-columns: 1.2fr 1.6fr 0.8fr 1.3fr 1.6fr;
   align-items: center;
+}
+
+/* Six cells per season row; the default four-column template wrapped them onto two lines. */
+.seasons-table .table-row {
+  grid-template-columns: 1.4fr 0.7fr 0.6fr 0.8fr 1fr 1.8fr;
+}
+
+@media (max-width: 780px) {
+  .seasons-table .table-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .seasons-table .table-row.header {
+    display: none;
+  }
 }
 
 .tests-table .table-row span:last-child,
@@ -4944,6 +4997,18 @@ body[data-theme="dark"] .support-chat-button {
   border: 1px solid #dfcfb5;
   border-radius: 0;
   background: #f8f2e6;
+}
+
+/* Short passages read as the question's opening line, not a boxed side panel. */
+.exam-questionbody .exam-passage.is-lead-in {
+  margin: 0 0 6px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: #201b17;
+  font-size: 1.12rem;
+  font-weight: 600;
+  line-height: 1.75;
 }
 
 .exam-options {
@@ -6797,7 +6862,7 @@ body[data-theme="dark"] .auth-card-footer p {
   color: var(--accent-color, #6366f1);
   font-weight: 700;
   cursor: pointer;
-  text-decoration: underline;
+  text-decoration: none;
   font-size: inherit;
 }
 
@@ -7006,7 +7071,7 @@ body[data-theme="dark"] .auth-terms-notice {
 .auth-terms-notice a {
   color: #2563eb;
   font-weight: 600;
-  text-decoration: underline;
+  text-decoration: none;
 }
 
 .auth-divider-v2 {
@@ -7108,7 +7173,7 @@ body[data-theme="dark"] .auth-footer-v2 p {
   color: #ea580c;
   font-weight: 700;
   cursor: pointer;
-  text-decoration: underline;
+  text-decoration: none;
   font-size: inherit;
 }
 
@@ -7975,8 +8040,6 @@ body[data-theme="dark"] .aceiiit-input-field {
 
 .aceiiit-link:hover {
   color: var(--gold);
-  text-decoration: underline;
-  transform: translateY(-1px);
 }
 
 .aceiiit-btn-primary {
@@ -8530,14 +8593,8 @@ body[data-theme="dark"] .dashboard-header.is-pinned {
   color: var(--ink);
 }
 
-.nav-tab-link.is-active::after {
-  content: "";
-  position: absolute;
+.nav-tab-link::after {
   bottom: -16px;
-  left: 0;
-  right: 0;
-  height: 2px;
-  background: var(--gold-strong, #C8963E);
 }
 
 /* Touch devices: compact controls get a 44px hit area (desktop mouse users see no change). */
@@ -8863,17 +8920,6 @@ body.is-scroll-locked {
   padding: 20px 24px 48px;
 }
 
-.exams-grid-wrapper {
-  display: grid;
-  grid-template-columns: 1fr 340px;
-  gap: 32px;
-  align-items: start;
-}
-@media (max-width: 900px) {
-  .exams-grid-wrapper {
-    grid-template-columns: 1fr;
-  }
-}
 
 .section-page-header {
   margin-bottom: 28px;
@@ -8907,6 +8953,7 @@ body.is-scroll-locked {
   font-weight: 700;
   letter-spacing: 0.06em;
   color: var(--ink-soft);
+  text-decoration: none;
   padding: 4px 0;
   cursor: pointer;
   position: relative;
@@ -8914,18 +8961,14 @@ body.is-scroll-locked {
 }
 
 .sub-tab-btn:hover,
+.sub-tab-btn:focus-visible,
 .sub-tab-btn.is-active {
   color: var(--ink);
 }
 
-.sub-tab-btn.is-active::after {
-  content: "";
-  position: absolute;
+/* The indicator bar sits on the tab row's divider; hover/active styling is shared below. */
+.sub-tab-btn::after {
   bottom: -9px;
-  left: 0;
-  right: 0;
-  height: 2px;
-  background: var(--gold-strong, #C8963E);
 }
 
 /* Practice Generator */
@@ -8949,10 +8992,156 @@ body.is-scroll-locked {
   margin-top: 20px;
 }
 
+@media (max-width: 480px) {
+  .generator-form-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.practice-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.7fr) minmax(280px, 1fr);
+  gap: 20px;
+  align-items: stretch;
+}
+
+@media (max-width: 900px) {
+  .practice-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+.practice-sessions-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.practice-sessions-card .pi-muted {
+  margin: 0;
+}
+
+.practice-session-list {
+  max-height: 420px;
+  overflow-y: auto;
+}
+
 /* Progress & Reports Tables */
 .comparison-table-wrap {
   overflow-x: auto;
   margin: 20px 0;
+}
+
+/* Progress → Performance: KPI strip, then two equal-height cards, then the topic pointer. */
+.progress-kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 160px), 1fr));
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.progress-kpi {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 14px 16px;
+  border: 1px solid rgba(20, 17, 15, 0.08);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.progress-kpi .metric-val {
+  font-family: var(--font-display);
+  font-size: 1.6rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.progress-kpi .metric-label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+/* Phones: two tiles per row instead of six full-width ones. */
+@media (max-width: 480px) {
+  .progress-kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .progress-kpi {
+    padding: 12px 14px;
+  }
+
+  .progress-kpi .metric-val {
+    font-size: 1.35rem;
+  }
+}
+
+.progress-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr));
+  gap: 16px;
+  align-items: stretch;
+  margin-bottom: 16px;
+}
+
+.progress-card {
+  min-width: 0;
+  padding: 20px 22px;
+  border: 1px solid rgba(20, 17, 15, 0.08);
+  border-radius: 8px;
+  background: var(--surface);
+  --rs-line: color-mix(in srgb, var(--ink) 10%, transparent);
+  --rs-correct: #239442;
+  --rs-wrong: #c4452f;
+  --rs-skipped: color-mix(in srgb, var(--ink) 16%, transparent);
+}
+
+.progress-sections {
+  display: grid;
+  gap: 16px;
+  margin-top: 8px;
+}
+
+.progress-section {
+  display: grid;
+  gap: 8px;
+}
+
+.progress-section-top {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 0.9rem;
+}
+
+.progress-section-top span {
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+.progress-topic-note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px 20px;
+}
+
+.progress-topic-note .pi-muted {
+  margin: 4px 0 0;
+}
+
+body[data-theme="dark"] .progress-kpi,
+body[data-theme="dark"] .progress-card {
+  background: #1b1917;
+  border-color: rgba(244, 237, 226, 0.1);
 }
 
 .comparison-table {
@@ -9051,10 +9240,203 @@ body.is-scroll-locked {
 /* Bookmarks & Study Materials */
 .bookmarks-grid,
 .study-materials-grid {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr));
   gap: 16px;
   margin-top: 20px;
+}
+
+.study-material-card > div {
+  gap: 12px;
+}
+
+.study-material-card h4 {
+  overflow-wrap: anywhere;
+}
+
+/* Resources → Bookmarks: a revision deck. Cards sit in a fluid grid, equal height per row,
+   actions pinned to the card foot; the answer stays folded until asked for. */
+.bookmark-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px 24px;
+  margin-bottom: 16px;
+}
+
+.bookmark-count {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.bookmark-toolbar .test-filter-tabs {
+  display: flex;
+  gap: 20px;
+}
+
+.bookmark-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 460px), 1fr));
+  gap: 16px;
+  align-items: stretch;
+}
+
+.bookmark-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  padding: 18px 20px;
+  border: 1px solid rgba(20, 17, 15, 0.08);
+  border-radius: 8px;
+  background: var(--surface);
+  transition: border-color 140ms ease;
+}
+
+.bookmark-card:hover {
+  border-color: rgba(200, 150, 62, 0.4);
+}
+
+.bookmark-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  font-size: 0.75rem;
+  color: var(--ink-soft);
+}
+
+.bookmark-saved {
+  margin-left: auto;
+}
+
+.bookmark-passage {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--ink-soft);
+}
+
+.bookmark-prompt {
+  font-size: 0.95rem;
+  font-weight: 600;
+  line-height: 1.6;
+  color: var(--ink);
+}
+
+.bookmark-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.bookmark-image {
+  padding: 0;
+  border: 1px solid rgba(20, 17, 15, 0.1);
+  border-radius: 6px;
+  background: #fff;
+  cursor: zoom-in;
+  overflow: hidden;
+}
+
+.bookmark-image img {
+  display: block;
+  max-width: 220px;
+  max-height: 140px;
+  object-fit: contain;
+}
+
+.bookmark-options {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.bookmark-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid rgba(20, 17, 15, 0.08);
+  border-radius: 6px;
+  font-size: 0.88rem;
+  line-height: 1.5;
+}
+
+.bookmark-option-letter {
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 1px solid currentColor;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+/* The correct option lights up only once the solution is opened. */
+.bookmark-card:has(.bookmark-solution[open]) .bookmark-option[data-correct="1"] {
+  border-color: rgba(21, 115, 71, 0.55);
+  background: rgba(21, 115, 71, 0.08);
+}
+
+.bookmark-solution {
+  border-top: 1px solid rgba(20, 17, 15, 0.08);
+  padding-top: 10px;
+  font-size: 0.86rem;
+}
+
+.bookmark-solution summary {
+  cursor: pointer;
+  font-weight: 700;
+  color: var(--gold-strong);
+}
+
+.bookmark-answer {
+  margin: 10px 0 6px;
+}
+
+.bookmark-explanation {
+  color: var(--ink-soft);
+  line-height: 1.6;
+}
+
+.bookmark-muted {
+  margin: 8px 0 0;
+  color: var(--ink-soft);
+}
+
+.bookmark-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 4px;
+}
+
+body[data-theme="dark"] .bookmark-card {
+  background: #1b1917;
+  border-color: rgba(244, 237, 226, 0.1);
+}
+
+body[data-theme="dark"] .bookmark-option,
+body[data-theme="dark"] .bookmark-solution {
+  border-color: rgba(244, 237, 226, 0.1);
+}
+
+body[data-theme="dark"] .bookmark-card:has(.bookmark-solution[open]) .bookmark-option[data-correct="1"] {
+  border-color: rgba(70, 195, 123, 0.5);
+  background: rgba(70, 195, 123, 0.1);
+}
+
+body[data-theme="dark"] .bookmark-solution summary {
+  color: var(--gold);
 }
 
 .bookmark-card,
@@ -10193,7 +10575,7 @@ body[data-theme="dark"] .portal-action-desc {
 
 /* Question of the Day */
 .qotd-block {
-  margin-top: 48px;
+  margin-top: 24px;
 }
 @keyframes qotd-pulse {
   0% { box-shadow: 0 4px 20px rgba(0, 0, 0, 0.05), 0 0 0 0 rgba(215, 179, 74, 0.4); }
@@ -10764,26 +11146,118 @@ body.exam-integrity-active textarea {
   color: #524c46;
 }
 
-.pi-verified-note,
-.pi-disclosure,
 .pi-muted {
   font-size: 0.82rem;
   color: var(--ink-soft, #6b635b);
 }
 
+/* Reading order: headline → summary → (next move | trend) → diagnosis → footnote.
+   Rows stretch so neighbouring cards end level; empty diagnosis cards are not rendered. */
 .pi-headline {
-  margin: 12px 0 16px;
+  margin: 12px 0 6px;
 }
 
-.pi-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  gap: 18px 24px;
+.pi-lead {
+  max-width: 75ch;
+  margin: 0 0 16px;
+  line-height: 1.55;
 }
 
-.pi-grid h4 {
+.pi-block h4 {
   margin: 0 0 6px;
   font-size: 0.95rem;
+}
+
+.pi-row-primary {
+  display: grid;
+  grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
+  gap: 12px;
+  align-items: stretch;
+}
+
+.pi-row-diagnosis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+  gap: 12px;
+  align-items: stretch;
+  margin-top: 12px;
+}
+
+.pi-next {
+  border-left: 3px solid var(--gold-strong, #a88411);
+}
+
+.pi-change {
+  margin: 0 0 10px;
+}
+
+.pi-change .is-up {
+  color: var(--green, #157347);
+}
+
+.pi-change .is-down {
+  color: var(--red, #b42318);
+}
+
+.pi-diagnosis-empty {
+  margin: 12px 0 0;
+}
+
+.pi-footnote {
+  margin: 14px 0 0;
+  font-size: 0.78rem;
+  color: var(--ink-soft, #6b635b);
+}
+
+@media (max-width: 900px) {
+  .pi-row-primary {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Labelled mini column chart (buildBarTrend). */
+.bar-trend {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  height: 84px;
+  margin: 4px 0 6px;
+  border-bottom: 1px solid color-mix(in srgb, var(--ink) 18%, transparent);
+}
+
+.bar-trend-col {
+  flex: 1 1 0;
+  max-width: 40px;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+
+.bar-trend-value {
+  font-size: 0.68rem;
+  font-weight: 700;
+  line-height: 16px;
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.bar-trend-bar {
+  display: block;
+  width: 100%;
+  border-radius: 3px 3px 0 0;
+  background: color-mix(in srgb, var(--gold, #c5a028) 40%, transparent);
+}
+
+.bar-trend-col.is-latest .bar-trend-bar {
+  background: var(--gold, #c5a028);
+}
+
+.bar-trend-col.is-latest .bar-trend-value {
+  color: var(--ink);
 }
 
 .pi-list {
@@ -10796,31 +11270,65 @@ body.exam-integrity-active textarea {
   line-height: 1.45;
 }
 
-.pi-trajectory {
-  display: flex;
-  align-items: flex-end;
-  gap: 6px;
-  height: 64px;
-  margin: 6px 0;
-}
-
-.pi-bar {
-  flex: 1 1 0;
-  max-width: 28px;
-  border-radius: 4px 4px 0 0;
-  background: linear-gradient(180deg, #d7b34a, #b08d2b);
-}
 
 /* M8 responsive audit: the Studio stepper has 9 tabs, which overflowed the page at every
    width (even 1440px). Let them wrap. The compact question row's fixed grid squeezed the
    prompt to a single character; a wrapping flex row keeps the prompt readable. */
+/* Wrapped rows keep each tab at its own width and centre the row, so a short second row
+   doesn't stretch three tabs (and the active pill) across the whole bar. */
 .studio-stepper {
   flex-wrap: wrap;
-  justify-content: flex-start;
+  justify-content: center;
 }
 
 .studio-step-btn {
-  flex: 1 1 auto;
+  flex: 0 1 auto;
+}
+
+/* Short admin side cards (paper summary, new-folder form) stay in view beside a long form
+   instead of ending halfway down an empty column. */
+.admin-sticky-side {
+  position: sticky;
+  top: 16px;
+}
+
+.admin-materials-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 360px);
+  gap: 20px;
+  align-items: start;
+  margin-top: 20px;
+}
+
+.admin-materials-folders {
+  min-width: 0;
+}
+
+/* Questions Studio: the navigator card runs the height of the authoring form and its
+   question list grows into that space, instead of stopping at 520px beside an empty column.
+   Only while the two cards sit side by side; stacked, the list keeps its bounded height. */
+@media (min-width: 1024px) {
+  .admin-grid > .admin-card.admin-fill-side {
+    align-self: stretch;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .admin-fill-side > .question-bank.bank-flow-list {
+    flex: 1 1 0;
+    min-height: 0;
+    max-height: none;
+  }
+}
+
+@media (max-width: 900px) {
+  .admin-materials-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-sticky-side {
+    position: static;
+  }
 }
 
 .studio-compact-row {
@@ -10905,6 +11413,7 @@ body.exam-integrity-active textarea {
 
   .studio-stepper {
     flex-wrap: nowrap;
+    justify-content: flex-start;
     overflow-x: auto;
     scroll-snap-type: x proximity;
     scrollbar-width: none;
@@ -10999,12 +11508,107 @@ body.exam-integrity-active textarea {
 }
 
 /* Account > Profile identity fields. */
+/* Account: panels share one card style and sit in a fluid grid instead of a fixed 480px
+   column, so wide screens use the full row and phones stack. */
+.account-panel-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr));
+  gap: 20px;
+  align-items: stretch;
+}
+
+.account-panel {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 28px;
+  border: 1px solid rgba(20, 17, 15, 0.08);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+body[data-theme="dark"] .account-panel {
+  border-color: rgba(244, 237, 226, 0.1);
+}
+
+.account-panel-title {
+  margin: 4px 0 16px;
+}
+
+.account-panel-text {
+  margin: 0 0 16px;
+  max-width: 75ch;
+  font-size: 0.88rem;
+  color: var(--ink-soft);
+}
+
+.account-panel-cta {
+  align-self: flex-start;
+  margin-top: auto;
+  text-decoration: none;
+}
+
+.account-feature-list {
+  display: grid;
+  gap: 10px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 0.9rem;
+}
+
+.account-feature-list li {
+  position: relative;
+  padding-left: 22px;
+}
+
+.account-feature-list li::before {
+  content: "✓";
+  position: absolute;
+  left: 0;
+  color: var(--green, #157347);
+  font-weight: 700;
+}
+
+.account-pwd-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.account-actions {
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.account-danger-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px 16px;
+  margin-top: auto;
+  padding-top: 16px;
+  border-top: 1px solid rgba(207, 106, 84, 0.25);
+}
+
+.account-danger-row .account-panel-text {
+  flex: 1 1 240px;
+  margin: 0;
+}
+
 .account-identity-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr));
   gap: 20px;
   font-size: 0.9rem;
   overflow-wrap: anywhere;
+}
+
+.account-identity-grid strong {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--ink-soft);
 }
 
 @media (max-width: 480px) {
@@ -11311,7 +11915,7 @@ body.exam-integrity-active textarea {
 
 .rs-row {
   display: grid;
-  align-items: start;
+  align-items: stretch;
   gap: 18px;
 }
 
@@ -11328,6 +11932,19 @@ body.exam-integrity-active textarea {
   display: grid;
   gap: 18px;
   min-width: 0;
+}
+
+/* Two-column rows end level: the stacked column's last card takes up the slack instead of
+   leaving a blank area beside the taller neighbour. */
+@media (min-width: 961px) {
+  .rs-side-stack {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .rs-side-stack > :last-child {
+    flex: 1 1 auto;
+  }
 }
 
 .rs-card,
@@ -11666,19 +12283,15 @@ body[data-theme="dark"] .rs-page .is-focus { --rs-tone: #ef7f73; }
   font-weight: 600;
 }
 
-.rs-page .pi-grid {
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-  gap: 12px;
-}
-
-.rs-page .pi-grid > section {
+.rs-page .pi-block {
+  min-width: 0;
   padding: 14px 16px;
   border-radius: var(--radius-sm);
   background: var(--rs-soft);
 }
 
 .rs-page .pi-headline {
-  margin: 8px 0 14px;
+  margin: 8px 0 6px;
 }
 
 @media (max-width: 1100px) {
@@ -11778,26 +12391,16 @@ body[data-theme="dark"] .rs-page .is-focus { --rs-tone: #ef7f73; }
   }
 }
 
-/* Results refinements: masonry-style interpretation cards (no stretched empty boxes) and the
-   readable sans body font for long interpretation text. */
-.rs-page .pi-grid {
-  display: block;
-  columns: 3 280px;
-  column-gap: 12px;
-}
-
-.rs-page .pi-grid > section {
-  margin: 0 0 12px;
-  break-inside: avoid;
-}
-
-.rs-page .pi-grid p,
-.rs-page .pi-grid li,
-.rs-page .pi-verified-note,
-.rs-page .pi-disclosure {
+/* Readable sans body font for long interpretation text. */
+.rs-page .pi-card p,
+.rs-page .pi-card li {
   font-family: var(--font-body);
   font-size: 0.88rem;
   line-height: 1.55;
+}
+
+.rs-page .pi-card .pi-footnote {
+  font-size: 0.78rem;
 }
 
 /* Exam sidebar refinements: the caption repeats the section header; one-line progress note;
@@ -11828,5 +12431,122 @@ body[data-theme="dark"] .rs-page .is-focus { --rs-tone: #ef7f73; }
 @media (max-height: 720px) {
   .exam-sidebar .exam-candidatecard {
     display: none;
+  }
+}
+
+/* ===================== Tab indicators & link underlines =====================
+   No permanent underlines. Tabs share one indicator bar: it draws in from the left on hover or
+   keyboard focus and leaves to the right; the active tab keeps it in gold. Inline links are
+   marked by weight + colour (not colour alone) and their underline draws in on hover/focus.
+   Transform/background-size only, 200ms strong ease-out, hover gated to fine pointers. */
+.sub-tab-btn::after,
+.nav-tab-link::after,
+.filter-tab-btn::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  border-radius: 2px;
+  background: currentColor;
+  opacity: 0.45;
+  transform: scaleX(0);
+  transform-origin: right center;
+  transition: transform var(--dur-hover) var(--ease-out), opacity var(--dur-hover) ease;
+  pointer-events: none;
+}
+
+.sub-tab-btn:focus-visible::after,
+.nav-tab-link:focus-visible::after,
+.filter-tab-btn:focus-visible::after {
+  transform: scaleX(1);
+  transform-origin: left center;
+}
+
+.sub-tab-btn.is-active::after,
+.nav-tab-link.is-active::after,
+.filter-tab-btn.is-active::after {
+  background: var(--gold-strong, #c8963e);
+  opacity: 1;
+  transform: scaleX(1);
+  transform-origin: left center;
+}
+
+body[data-theme="dark"] .filter-tab-btn.is-active::after {
+  background: var(--gold);
+}
+
+.app-footer a,
+.app-footer-inline a,
+.page-section-shell p a,
+.auth-terms-notice a,
+.link-button,
+.link-button-v2,
+.aceiiit-link {
+  font-weight: 600;
+  text-decoration: none;
+  background-image: linear-gradient(currentColor, currentColor);
+  background-position: 0 100%;
+  background-repeat: no-repeat;
+  background-size: 0 1px;
+  transition: background-size var(--dur-hover) var(--ease-out), color 150ms ease;
+}
+
+.app-footer a,
+.page-section-shell p a {
+  color: var(--ink);
+}
+
+.app-footer-inline a {
+  color: inherit;
+}
+
+.link-button,
+.link-button-v2,
+.aceiiit-link {
+  font-weight: 700;
+}
+
+.app-footer a:focus-visible,
+.app-footer-inline a:focus-visible,
+.page-section-shell p a:focus-visible,
+.auth-terms-notice a:focus-visible,
+.link-button:focus-visible,
+.link-button-v2:focus-visible,
+.aceiiit-link:focus-visible {
+  background-size: 100% 1px;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .sub-tab-btn:hover::after,
+  .nav-tab-link:hover::after,
+  .filter-tab-btn:hover::after {
+    transform: scaleX(1);
+    transform-origin: left center;
+  }
+
+  .app-footer a:hover,
+  .app-footer-inline a:hover,
+  .page-section-shell p a:hover,
+  .auth-terms-notice a:hover,
+  .link-button:hover,
+  .link-button-v2:hover,
+  .aceiiit-link:hover {
+    background-size: 100% 1px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sub-tab-btn::after,
+  .nav-tab-link::after,
+  .filter-tab-btn::after,
+  .app-footer a,
+  .app-footer-inline a,
+  .page-section-shell p a,
+  .auth-terms-notice a,
+  .link-button,
+  .link-button-v2,
+  .aceiiit-link {
+    transition: none;
   }
 }

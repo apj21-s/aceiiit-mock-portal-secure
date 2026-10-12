@@ -218,9 +218,9 @@ async function beginExam(page) {
     check(apiResult.attempt && apiResult.attempt.score === 8, `server scored 8 (SUPR q1 + REAP q1) → ${apiResult.attempt && apiResult.attempt.score}`);
     check(apiResult.attempt && apiResult.attempt.rank === 1, "rank computed on read");
     check(/8/.test(resultText), "result page renders the score");
-    await page2.waitForFunction(() => /Where Marks Leak/.test((document.getElementById("performance-intelligence-root") || {}).textContent || ""), { timeout: 15000 }).catch(() => null);
+    await page2.waitForFunction(() => /Your Next Move/.test((document.getElementById("performance-intelligence-root") || {}).textContent || ""), { timeout: 15000 }).catch(() => null);
     const piText = await page2.evaluate(() => (document.getElementById("performance-intelligence-root") || {}).textContent || "");
-    check(/Where Marks Leak/.test(piText) && /verified metrics/i.test(piText) && /does not calculate or alter scores/.test(piText), "Performance Intelligence card renders with verified-vs-interpretation labelling and disclosure");
+    check(/Your Next Move/.test(piText) && /verified metrics/i.test(piText) && /does not calculate or alter scores/.test(piText), "Performance Intelligence card renders with verified-vs-interpretation labelling and disclosure");
     if (process.env.SHOTS) {
       await page2.evaluate(() => document.getElementById("performance-intelligence-root").scrollIntoView());
       await sleep(400);
