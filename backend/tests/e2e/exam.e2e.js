@@ -218,13 +218,22 @@ async function beginExam(page) {
     check(apiResult.attempt && apiResult.attempt.score === 8, `server scored 8 (SUPR q1 + REAP q1) → ${apiResult.attempt && apiResult.attempt.score}`);
     check(apiResult.attempt && apiResult.attempt.rank === 1, "rank computed on read");
     check(/8/.test(resultText), "result page renders the score");
-    await page2.waitForFunction(() => /Your Next Move/.test((document.getElementById("performance-intelligence-root") || {}).textContent || ""), { timeout: 15000 }).catch(() => null);
-    const piText = await page2.evaluate(() => (document.getElementById("performance-intelligence-root") || {}).textContent || "");
-    check(/Your Next Move/.test(piText) && /verified metrics/i.test(piText) && /does not calculate or alter scores/.test(piText), "Performance Intelligence card renders with verified-vs-interpretation labelling and disclosure");
+    await page2.waitForSelector(".rs-plan .rs-plan-step", { timeout: 15000 }).catch(() => null);
+    const plan = await page2.evaluate(() => {
+      const root = document.querySelector(".rs-plan");
+      const disclosure = document.getElementById("rs-plan-disclosure");
+      return {
+        title: root ? (root.querySelector("#rs-plan-title") || {}).textContent || "" : "",
+        steps: root ? root.querySelectorAll(".rs-plan-step").length : 0,
+        disclosureShown: !!(disclosure && !disclosure.hidden),
+      };
+    });
+    // The e2e server runs with AI off: rule-based plan only, so no AI disclosure line.
+    check(/Your plan for the next mock/i.test(plan.title) && plan.steps >= 1 && plan.steps <= 3 && !plan.disclosureShown, `results show the plan for the next mock (${plan.steps} steps, no AI disclosure without AI notes)`);
     if (process.env.SHOTS) {
-      await page2.evaluate(() => document.getElementById("performance-intelligence-root").scrollIntoView());
+      await page2.evaluate(() => document.querySelector(".rs-plan").scrollIntoView());
       await sleep(400);
-      await page2.screenshot({ path: path.join(SHOTS_DIR, "performance-intelligence.png") });
+      await page2.screenshot({ path: path.join(SHOTS_DIR, "results-plan.png") });
     }
   } catch (err) {
     failures.push(`exception: ${err.message}`);

@@ -2096,7 +2096,10 @@
   function removeBookmark(userId, questionId) {
     if (!userId) return false;
     if (!state.db.bookmarks[userId]) return false;
-    state.db.bookmarks[userId] = state.db.bookmarks[userId].filter(function(b) { return b.id !== questionId; });
+    // Bookmarks saved before review cards carried the question id have no id; they render with
+    // an empty data-qid, so an empty key removes them.
+    var key = String(questionId || "");
+    state.db.bookmarks[userId] = state.db.bookmarks[userId].filter(function(b) { return String(b.id || "") !== key; });
     saveState();
     return true;
   }

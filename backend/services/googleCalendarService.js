@@ -28,9 +28,10 @@ function readRefreshToken(connection) {
 
 /** Best-effort revocation at Google so a disconnected portal can't keep calendar access. */
 async function revokeRefreshToken(connection) {
-  const token = readRefreshToken(connection);
-  if (!token) return false;
   try {
+    // Inside the try: a token that no longer decrypts (key rotated) must not block local removal.
+    const token = readRefreshToken(connection);
+    if (!token) return false;
     const oauth2Client = getOAuth2Client();
     await oauth2Client.revokeToken(token);
     return true;

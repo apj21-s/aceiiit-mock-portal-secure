@@ -53,7 +53,8 @@ Uses `puppeteer-core` with a locally installed Chrome (`CHROME_PATH`, default
   hidden until submit and persisted; paid test locked without an entitlement; server
   timer; A–D options and number keys; watermark; copy attempt recorded; autosave and
   reload recovery; second tab → 409 → takeover (old token revoked); REAP advance; server
-  score and rank; Performance Intelligence card with disclosure.
+  score and rank; the results page's plan for the next mock (1–3 steps; the AI disclosure line
+  appears only alongside AI-written notes).
 - **`admin.e2e.js`** (19 checks): all nine Studio tabs render without errors; question bank
   pagination, server search with focus kept, drawer excludes attached questions and
   attaches; integrity settings; Add Payment grants an entitlement.

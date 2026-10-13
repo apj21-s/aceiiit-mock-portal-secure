@@ -17,6 +17,7 @@ const { createApp } = require("./app");
 const { connectDb } = require("./config/db");
 const { reminderService } = require("./services/reminderService");
 const { attemptSweeper } = require("./services/attemptSweeper");
+const { accountPurger } = require("./services/accountPurgeService");
 const { interpretationWorker } = require("./services/aiInterpretationService");
 
 const SHUTDOWN_TIMEOUT_MS = Number(process.env.SHUTDOWN_TIMEOUT_MS || 10000);
@@ -27,6 +28,7 @@ let dbRetryTimer = null;
 function stopJobs() {
   reminderService.stop();
   attemptSweeper.stop();
+  accountPurger.stop();
   interpretationWorker.stop();
   if (dbRetryTimer) clearTimeout(dbRetryTimer);
 }
@@ -77,6 +79,7 @@ async function main() {
         logger.info("MongoDB connected");
         reminderService.start();
         attemptSweeper.start();
+        accountPurger.start();
         interpretationWorker.start();
         // Production runs with autoIndex off: warn loudly if required indexes are missing.
         require("./services/indexCheck").warnOnMissingIndexes().catch((err) => logger.warn({ err: err.message }, "index check failed"));

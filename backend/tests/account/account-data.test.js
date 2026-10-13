@@ -2,6 +2,8 @@
 // deletion needs confirmation (and the password for password accounts), signs out every
 // session immediately, cancels reminders, and is refused for admins.
 const AuditLog = require("../../models/AuditLog");
+const GoogleCalendarConnection = require("../../models/GoogleCalendarConnection");
+const GoogleCalendarEvent = require("../../models/GoogleCalendarEvent");
 const Reminder = require("../../models/Reminder");
 const User = require("../../models/User");
 const { createApp } = require("../../app");
@@ -117,6 +119,23 @@ describe("DELETE /api/account", () => {
     // Can't log back in.
     const relogin = await second.post("/api/auth/login", { email: "student1@test.local", password: DEFAULT_PASSWORD });
     expect(relogin.status).not.toBe(200);
+  });
+
+  test("Google Calendar access and its data are removed at deletion, not after the grace period", async () => {
+    const { client, user } = await studentWithAttempt();
+    const reminder = await Reminder.findOne({ userId: user._id });
+    // No stored token, so no call to Google is attempted in the test.
+    await GoogleCalendarConnection.create({ userId: user._id, googleAccountId: "google-sub-1", refreshToken: "" });
+    await GoogleCalendarEvent.create({ reminderId: reminder._id, userId: user._id, googleEventId: "evt-1" });
+    const res = await client.agent
+      .delete("/api/account")
+      .set("X-CSRF-Token", client.csrf)
+      .send({ confirm: "DELETE MY ACCOUNT", password: DEFAULT_PASSWORD });
+    expect(res.status).toBe(200);
+    expect(await GoogleCalendarConnection.countDocuments({ userId: user._id })).toBe(0);
+    expect(await GoogleCalendarEvent.countDocuments({ userId: user._id })).toBe(0);
+    // The account itself waits out the grace period in trash.
+    expect((await User.findById(user._id)).deletedAt).toBeInstanceOf(Date);
   });
 
   test("admins can't self-delete", async () => {

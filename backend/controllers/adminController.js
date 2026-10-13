@@ -20,6 +20,7 @@ const { getRanksForAttempts, invalidateRankCache } = require("../services/rankSe
 const { escapeRegex } = require("../utils/escapeRegex");
 const IntegrityEvent = require("../models/IntegrityEvent");
 const { getActiveSeason } = require("../services/seasonService");
+const { purgeUserCascade } = require("../services/accountPurgeService");
 const { logger, errorSummary } = require("../utils/logger");
 
 // Student exam attempts only: excludes admin test runs and private practice papers.
@@ -484,34 +485,6 @@ async function updateQuestion(req, res, next) {
 // historical attempts reference it.
 function liveTestsUsingQuestion(questionId) {
   return Test.find({ questionIds: questionId, status: "live", deletedAt: null }).select("_id title").lean();
-}
-
-/**
- * Explicit, audited user purge. Instead of a silent TTL delete, personal data is removed or
- * anonymized and dependent records are cleaned up so nothing is left orphaned.
- */
-async function purgeUserCascade(user, actorUserId) {
-  const userId = user._id;
-  const AttemptSession = require("../models/AttemptSession");
-  const Reminder = require("../models/Reminder");
-  const GoogleCalendarConnection = require("../models/GoogleCalendarConnection");
-  const GoogleCalendarEvent = require("../models/GoogleCalendarEvent");
-  await Promise.all([
-    Attempt.updateMany({ userId }, { $set: { userEmail: "" } }),
-    Entitlement.updateMany({ userId }, { $set: { userId: null } }),
-    AttemptSession.deleteMany({ userId }),
-    Reminder.deleteMany({ userId }),
-    GoogleCalendarConnection.deleteMany({ userId }),
-    GoogleCalendarEvent.deleteMany({ userId }),
-  ]);
-  await User.deleteOne({ _id: userId });
-  await logAuditEvent({
-    actorUserId,
-    action: "USER_PURGED",
-    entityType: "User",
-    entityId: String(userId),
-    metadata: { anonymizedAttempts: true },
-  });
 }
 
 async function deleteQuestion(req, res, next) {

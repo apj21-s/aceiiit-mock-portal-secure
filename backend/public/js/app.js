@@ -982,6 +982,61 @@
     renderRoute();
   }
 
+  // Theme switch curtain: a full-screen panel in the next theme's colour drops from the top, the
+  // theme changes while the page is covered, then it pulls back up. Reduced motion: a short fade.
+  var THEME_CURTAIN_MS = 600;
+  var THEME_CURTAIN_REDUCED_MS = 200;
+  var themeCurtainBusy = false;
+
+  // Lives on <body>, outside #app, so renderRoute() never replaces it mid-animation.
+  function ensureThemeCurtain() {
+    var curtain = document.getElementById("theme-curtain");
+    if (!curtain && document.body) {
+      curtain = document.createElement("div");
+      curtain.id = "theme-curtain";
+      curtain.className = "theme-curtain";
+      curtain.setAttribute("aria-hidden", "true");
+      document.body.appendChild(curtain);
+    }
+    return curtain;
+  }
+
+  function switchThemeWithCurtain(trigger) {
+    if (themeCurtainBusy || isThemeForcedLight()) return;
+    var curtain = ensureThemeCurtain();
+    if (!curtain) {
+      toggleThemePreference();
+      return;
+    }
+    var reduceMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    var duration = reduceMotion ? THEME_CURTAIN_REDUCED_MS : THEME_CURTAIN_MS;
+    var restoreFocus = !!trigger && document.activeElement === trigger;
+    themeCurtainBusy = true;
+    curtain.setAttribute("data-to", getStoredThemePreference() === "dark" ? "light" : "dark");
+    curtain.style.transitionDuration = duration + "ms";
+    curtain.classList.add("is-active", "is-covering");
+    // Timers rather than transitionend, so the switch still completes when transitions are off.
+    window.setTimeout(function () {
+      toggleThemePreference();
+      if (restoreFocus) {
+        var toggles = document.querySelectorAll("[data-theme-toggle='true']");
+        for (var i = 0; i < toggles.length; i++) {
+          if (toggles[i].offsetParent !== null) {
+            toggles[i].focus();
+            break;
+          }
+        }
+      }
+      window.requestAnimationFrame(function () {
+        curtain.classList.remove("is-covering");
+        window.setTimeout(function () {
+          curtain.classList.remove("is-active");
+          themeCurtainBusy = false;
+        }, duration + 60);
+      });
+    }, duration);
+  }
+
   function escapeHtml(value) {
     if (ui.escapeHtml) {
       return ui.escapeHtml(value);
@@ -1189,25 +1244,157 @@
 
   // Small labelled column chart for a short series (accuracy or score per attempt, oldest → latest).
   // Every bar carries its value; zero is a hairline on the axis, never a stub that reads as data.
+  // Optional: options.xLabels names each bar under the axis; options.highlightIndex picks the
+  // gold bar (default: the latest).
   function buildBarTrend(values, options) {
     options = options || {};
     var series = (values || []).map(function (value) { return Number(value) || 0; });
     var max = Number(options.max) > 0 ? Number(options.max) : Math.max.apply(null, series.concat([1]));
     var format = options.format || function (value) { return Math.round(value * 10) / 10 + "%"; };
     var labels = series.map(format);
+    var xLabels = Array.isArray(options.xLabels) ? options.xLabels : null;
+    var highlight = options.highlightIndex !== undefined && options.highlightIndex !== null ? Number(options.highlightIndex) : series.length - 1;
+    var described = labels.map(function (label, index) { return xLabels ? xLabels[index] + " " + label : label; });
     return (
-      '<div class="bar-trend" role="img" aria-label="' + escapeAttribute((options.label || "Trend, oldest to latest") + ": " + labels.join(", ")) + '">' +
+      '<div class="bar-trend' + (xLabels ? ' has-x-labels' : '') + '" role="img" aria-label="' + escapeAttribute((options.label || "Trend, oldest to latest") + ": " + described.join(", ")) + '">' +
       series.map(function (value, index) {
         var ratio = Math.max(0, Math.min(1, value / max));
         return (
-          '<span class="bar-trend-col' + (index === series.length - 1 ? ' is-latest' : '') + '" aria-hidden="true">' +
+          '<span class="bar-trend-col' + (index === highlight ? ' is-latest' : '') + '" aria-hidden="true">' +
           '<b class="bar-trend-value">' + escapeHtml(labels[index]) + '</b>' +
           '<i class="bar-trend-bar" style="height:max(2px, calc((100% - 18px) * ' + ratio.toFixed(3) + '))"></i>' +
+          (xLabels ? '<small class="bar-trend-x">' + escapeHtml(String(xLabels[index])) + '</small>' : '') +
           '</span>'
         );
       }).join("") +
       '</div>'
     );
+  }
+
+  // Report formatting: marks keep up to two decimals (2.25, never rounded to 2); percentages keep
+  // one; durations read as 24s / 4m 10s / 2h 05m.
+  function formatMarks(value) {
+    return String(Math.round(Number(value || 0) * 100) / 100);
+  }
+
+  function formatSignedMarks(value) {
+    var number = Math.round(Number(value || 0) * 100) / 100;
+    return number > 0 ? "+" + number : number < 0 ? "\u2212" + Math.abs(number) : "0";
+  }
+
+  function formatPct(value) {
+    return String(Math.round(Number(value || 0) * 10) / 10) + "%";
+  }
+
+  function decimalsFor(value, maxDigits) {
+    var number = Number(value || 0);
+    for (var digits = 0; digits < maxDigits; digits++) {
+      var factor = Math.pow(10, digits);
+      if (Math.abs(Math.round(number * factor) - number * factor) < 1e-9) return digits;
+    }
+    return maxDigits;
+  }
+
+  function formatDurationShort(totalSeconds) {
+    var safe = Math.max(0, Math.round(Number(totalSeconds || 0)));
+    if (safe < 60) return safe + "s";
+    var hours = Math.floor(safe / 3600);
+    var minutes = Math.floor((safe % 3600) / 60);
+    var seconds = safe % 60;
+    if (hours) return hours + "h" + (minutes ? " " + String(minutes).padStart(2, "0") + "m" : "");
+    return minutes + "m" + (seconds ? " " + seconds + "s" : "");
+  }
+
+  function ordinal(value) {
+    var n = Math.round(Number(value || 0));
+    var mod100 = n % 100;
+    var suffix = mod100 >= 11 && mod100 <= 13 ? "th" : ({ 1: "st", 2: "nd", 3: "rd" }[n % 10] || "th");
+    return n + suffix;
+  }
+
+  // Display-only title case for topic tags typed in admin ("basic physics" → "Basic Physics",
+  // "3d geo" → "3D Geo"); words already in capitals are left alone.
+  var TOPIC_MINOR_WORDS = { and: 1, of: 1, the: 1, in: 1, on: 1, for: 1, to: 1, with: 1 };
+  function formatTopicName(name) {
+    return String(name || "General").trim().split(/\s+/).map(function (word, index) {
+      if (/^\d+[a-z]$/i.test(word)) return word.toUpperCase();
+      if (index > 0 && TOPIC_MINOR_WORDS[word]) return word;
+      return word.charAt(0).toUpperCase() + word.slice(1);
+    }).join(" ");
+  }
+
+  // Dashboard mascot: short advice for the signed-in student, most relevant first. Each tip is
+  // grounded in their own attempts, the next mock or the exam date. Returns HTML strings.
+  function buildMascotTips(ctx) {
+    var name = firstName(ctx.user && ctx.user.name);
+    var hello = '<strong>Hey ' + escapeHtml(name.charAt(0).toUpperCase() + name.slice(1)) + '!</strong> ';
+    var tests = ctx.tests || [];
+    var titleOf = function (testId) {
+      var test = tests.filter(function (t) { return t.id === testId; })[0];
+      return test && test.title ? test.title : "your mock";
+    };
+    var next = ctx.nextUpTest || null;
+    var submitted = (ctx.attempts || []).filter(function (a) { return a && a.status === "submitted" && a.result; })
+      .sort(function (a, b) { return new Date(b.submittedAt) - new Date(a.submittedAt); });
+    var tips = [];
+
+    if (ctx.inProgressAttempt) {
+      tips.push("Your " + titleOf(ctx.inProgressAttempt.testId) + " attempt is still open and your answers are saved. Resume it from Next Up.");
+    }
+
+    if (!submitted.length) {
+      if (next) {
+        var minutes = Number(next.durationMinutes || 0);
+        tips.push("Start with " + next.title + "." + (minutes ? " It runs " + formatDurationShort(minutes * 60) + ", so block the time like the real exam." : ""));
+      }
+    } else {
+      var last = submitted[0];
+      var r = last.result;
+      var correct = Number(r.correctCount || 0);
+      var wrong = Number(r.wrongCount || 0);
+      var blank = Number(r.unattemptedCount !== undefined && r.unattemptedCount !== null ? r.unattemptedCount : r.skippedCount || 0);
+      var attempted = correct + wrong;
+      var total = attempted + blank;
+      var accuracy = attempted ? (correct / attempted) * 100 : 0;
+      if (total && attempted / total < 0.1) {
+        tips.push("Your last mock ended after " + attempted + " answer" + (attempted === 1 ? "" : "s") + ". Sit a full paper next for a report you can rely on.");
+      } else if (total && attempted / total < 0.6) {
+        var target = Math.min(total, Math.max(Math.ceil(total * 0.5), Math.ceil(attempted * 1.25), attempted + 1));
+        tips.push("You left " + blank + " of " + total + " questions blank last time. Aim for at least " + target + " attempts in your next mock.");
+      } else if (attempted >= 10 && accuracy < 55) {
+        tips.push("Accuracy was " + formatPct(accuracy) + " in your last mock. Rule out two options before you commit to an answer.");
+      } else if (total && accuracy >= 75 && attempted / total >= 0.8) {
+        tips.push(formatPct(accuracy) + " accuracy last time. Keep it going" + (next ? " with " + next.title : "") + ".");
+      }
+    }
+
+    var examDate = ctx.examDate ? new Date(ctx.examDate) : null;
+    if (examDate && !isNaN(examDate.getTime())) {
+      var today = new Date();
+      today.setHours(0, 0, 0, 0);
+      var examDay = new Date(examDate.getTime());
+      examDay.setHours(0, 0, 0, 0);
+      var days = Math.round((examDay - today) / (24 * 60 * 60 * 1000));
+      var exam = targetExamLabel();
+      if (days > 1) tips.push(days + " days to " + exam + ". One full timed mock a week keeps you exam-ready.");
+      else if (days === 1) tips.push(exam + " is tomorrow. Rest well and trust your preparation.");
+      else if (days === 0) tips.push(exam + " is today. All the best!");
+      else if (days > -120) tips.push(exam + " is behind you. All the best for your results!");
+    }
+
+    if (submitted.length) {
+      var latest = submitted[0];
+      var previous = submitted.filter(function (a) { return a.testId === latest.testId && a.id !== latest.id; })[0];
+      if (previous && Number(latest.result.score) > Number(previous.result.score)) {
+        tips.push("Your score on " + titleOf(latest.testId) + " went from " + formatMarks(previous.result.score) + " to " + formatMarks(latest.result.score) + ". Keep going!");
+      }
+      tips.push("Open your latest report for a 3-step plan for your next mock.");
+    }
+
+    if (!tips.length) {
+      tips.push(next ? "Ready when you are. " + next.title + " is up next." : "Ready when you are. Pick a mock from Available tests.");
+    }
+    return tips.map(function (tip) { return hello + escapeHtml(tip); });
   }
 
   function activateAnalysisAnimations(root) {
@@ -2994,10 +3181,13 @@
     );
   }
 
+  var THEME_ICON_MOON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" focusable="false"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>';
+  var THEME_ICON_SUN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" focusable="false"><circle cx="12" cy="12" r="4"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>';
+
   function getThemeToggleMarkup() {
     var effectiveTheme = getEffectiveTheme();
     var nextThemeLabel = effectiveTheme === "dark" ? "Switch to light mode" : "Switch to dark mode";
-    var icon = effectiveTheme === "dark" ? "☀" : "☾";
+    var icon = effectiveTheme === "dark" ? THEME_ICON_SUN : THEME_ICON_MOON;
     return (
       '<button class="theme-nav-button" type="button" data-theme-toggle="true" aria-label="' + escapeAttribute(nextThemeLabel) + '" title="' + escapeAttribute(nextThemeLabel) + '">' +
       '<span class="theme-nav-icon" aria-hidden="true">' + icon + '</span>' +
@@ -4164,6 +4354,14 @@
       { fluid: true }
     );
 
+    // A results-page "Practise SUPR/REAP" action preselects that section once.
+    var practiceSubject = document.getElementById("prac-subject");
+    if (practiceSubject && runtime.practicePreset) {
+      var presetSubject = String(runtime.practicePreset.subject || "");
+      if (practiceSubject.querySelector('option[value="' + presetSubject.replace(/"/g, "") + '"]')) practiceSubject.value = presetSubject;
+      runtime.practicePreset = null;
+    }
+
     var pracBtn = document.getElementById("start-practice-btn");
     if (pracBtn) {
       pracBtn.addEventListener("click", function () {
@@ -4392,7 +4590,7 @@
         answerHtml +
         '<footer class="bookmark-actions">' +
         (b.attemptId ? '<button type="button" class="button button-secondary button-compact js-open-result" data-id="' + escapeAttribute(b.attemptId) + '">Open report</button>' : '') +
-        '<button type="button" class="button button-ghost button-compact js-remove-bookmark" data-qid="' + escapeAttribute(b.id) + '">Remove</button>' +
+        '<button type="button" class="button button-ghost button-compact js-remove-bookmark" data-qid="' + escapeAttribute(b.id || "") + '">Remove</button>' +
         '</footer>' +
         '</article>'
       );
@@ -4592,7 +4790,7 @@
     var deleteBtn = document.getElementById("account-delete-btn");
     if (deleteBtn) {
       deleteBtn.addEventListener("click", async function () {
-        var typed = window.prompt('This permanently deletes your account. Your exam history is anonymized and you will be signed out.\n\nType DELETE MY ACCOUNT to confirm.');
+        var typed = window.prompt('This closes your account and signs you out everywhere. It is permanently deleted after 30 days, and your exam history is kept only in anonymized form.\n\nType DELETE MY ACCOUNT to confirm.');
         if (typed !== "DELETE MY ACCOUNT") return;
         var password = user.hasPassword ? window.prompt("Enter your password to confirm:") : undefined;
         if (user.hasPassword && !password) return;
@@ -4662,7 +4860,7 @@
       '<button type="button" class="button button-secondary" id="account-logout-all-btn">Sign out of all devices</button>' +
       '</div>' +
       '<div class="account-danger-row">' +
-      '<p class="account-panel-text"><strong>Delete account.</strong> Permanently removes your account; exam history is anonymized.</p>' +
+      '<p class="account-panel-text"><strong>Delete account.</strong> Closes your account now and permanently deletes it after 30 days. Exam history is kept only in anonymized form.</p>' +
       '<button type="button" class="button button-danger" id="account-delete-btn">Delete my account</button>' +
       '</div>' +
       '</div>' +
@@ -4815,9 +5013,6 @@
       attemptsByTest[attempt.testId].push(attempt);
     });
 
-    var submittedAttempts = snapshot.attempts.filter(function (a) { return a.status === "submitted" && a.result; });
-    var attemptedCount = snapshot.attempts.length;
-    var completedCount = snapshot.completedCount || submittedAttempts.length;
     var attemptStats = summarizeAttempts(snapshot.attempts);
 
     // Determine "NEXT UP" Test
@@ -5190,6 +5385,27 @@
       )
       : "";
 
+    // Your progress, at the top so it is visible as soon as the dashboard opens.
+    var heroStat = function (label, value, sub) {
+      return '<div class="hero-stat"><dt>' + escapeHtml(label) + '</dt><dd><strong>' + escapeHtml(value) + '</strong>' +
+        (sub ? '<small>' + escapeHtml(sub) + '</small>' : '') + '</dd></div>';
+    };
+    var heroProgressHtml = attemptStats.count
+      ? '<section class="hero-progress" aria-labelledby="hero-progress-title">' +
+        '<div class="hero-progress-head"><h2 class="section-label" id="hero-progress-title">Your progress</h2>' +
+        '<a class="hero-progress-link" href="#progress/performance">View progress</a></div>' +
+        '<dl class="hero-progress-grid">' +
+        heroStat("Mocks completed", String(attemptStats.count)) +
+        heroStat("Avg score", formatMarks(attemptStats.averageScore)) +
+        heroStat("Best score", formatMarks(attemptStats.bestScore), attemptStats.bestScorePercentile ? ordinal(attemptStats.bestScorePercentile) + " percentile" : "") +
+        heroStat("Avg accuracy", formatPct(attemptStats.averageAccuracy)) +
+        '</dl>' +
+        '</section>'
+      : '<section class="hero-progress is-empty" aria-labelledby="hero-progress-title">' +
+        '<h2 class="section-label" id="hero-progress-title">Your progress</h2>' +
+        '<p>Your progress shows up here after your first mock.</p>' +
+        '</section>';
+
     app.innerHTML = buildShell(
       renderPrimaryNav("dashboard", user) +
       '<div class="dashboard-layout-shell">' +
@@ -5207,8 +5423,12 @@
       '<span class="t-think-text" data-text="assessed." id="t-think-active">assessed.</span>' +
       '</span></p>' +
       '</div>' +
+      heroProgressHtml +
       '<div class="dashboard-greeting-mascot">' +
-      '<img src="assets/mascot-wave.svg" width="1295" height="1214" alt="ACE IIIT Mascot Waving" fetchpriority="high" decoding="async">' +
+      '<button type="button" class="mascot-button js-mascot" aria-label="Get a study tip from the AceIIIT mascot" aria-expanded="false" aria-controls="mascot-bubble">' +
+      '<img src="assets/mascot-wave.svg" width="1295" height="1214" alt="" fetchpriority="high" decoding="async">' +
+      '</button>' +
+      '<div class="mascot-bubble" id="mascot-bubble" role="status" aria-live="polite"></div>' +
       '</div>' +
       '</section>' +
       nextUpHtml +
@@ -5231,16 +5451,17 @@
       '</div>' +
       '<div class="dashboard-editorial-list" id="available-tests-list" style="margin-bottom: 48px;">' + cards + '</div>' +
 
-      '<div class="rail-block" style="border-top: 1px solid var(--border-color); padding-top: 24px;">' +
+      qotdHtml +
+      '</div>' + // end dashboard-main-col
+      '<aside class="dashboard-sidebar-rail">' +
+      '<div class="rail-block rail-notice-block">' +
       '<div class="rail-header">' +
       '<span class="editorial-num-tag"><svg class="editorial-traced-icon" xmlns="http://www.w3.org/2000/svg" width="72" height="90" viewBox="0 0 72 90"><g shape-rendering="geometricPrecision"><path fill="#000000" fill-rule="evenodd" d="M 10 75 10 76 19 76 11 76 Z M 62 71 63 71 64 72 64 74 64 72 63 71 Z M 9 63 9 64 8 65 9 64 Z M 22 36 21 37 21 38 20 39 18 39 19 40 19 42 20 43 21 42 20 43 19 42 19 41 22 38 23 38 23 37 Z M 42 30 41 29 40 29 39 28 34 28 33 27 31 27 30 26 30 25 30 26 31 27 29 29 28 29 27 28 26 28 26 29 25 30 26 31 25 32 23 32 21 34 24 34 25 35 26 35 25 34 25 33 26 32 27 32 28 33 29 33 30 34 29 35 30 36 30 40 32 38 32 37 33 36 38 36 39 35 41 35 41 34 42 33 Z M 37 33 38 34 36 36 35 36 34 35 36 33 Z M 38 30 39 29 40 30 39 31 Z M 26 31 28 29 29 29 30 30 30 31 29 32 27 32 Z M 33 30 33 29 34 28 38 28 39 29 37 31 36 31 35 30 34 31 Z M 29 29 30 28 31 29 30 30 Z"/><path fill="#125fa4" fill-rule="evenodd" d="M 25 65 26 65 27 66 32 66 31 66 30 65 28 65 27 66 26 65 Z M 19 47 14 52 14 53 13 54 14 54 15 53 16 53 17 54 16 55 16 57 15 58 15 59 14 60 14 61 12 63 11 62 11 60 12 59 11 59 11 64 10 65 10 71 11 72 11 74 25 74 25 73 23 73 22 72 21 72 18 69 18 68 16 66 17 65 18 65 19 64 20 65 19 64 19 63 18 62 18 61 19 60 23 64 23 62 21 60 21 59 20 58 20 57 19 58 18 57 18 50 19 49 Z M 13 65 14 66 14 67 13 68 14 69 14 70 12 72 11 71 11 70 10 69 10 68 Z"/><path fill="#b4783e" fill-rule="evenodd" d="M 38 74 55 74 56 73 63 73 47 73 46 74 Z M 64 69 55 69 54 70 36 70 36 71 41 71 42 70 64 70 Z M 6 59 5 60 5 67 6 68 6 72 7 73 7 75 8 75 8 73 7 72 7 66 6 65 Z M 40 58 40 59 41 60 40 59 Z M 49 31 49 32 51 34 52 34 51 34 49 32 Z M 60 19 64 23 64 30 59 35 54 35 59 35 60 34 61 34 62 33 62 32 64 30 64 23 Z M 58 18 54 18 53 19 52 19 49 22 49 24 48 25 48 29 48 25 49 24 49 22 51 20 52 20 54 18 Z"/><path fill="#0082c9" fill-rule="evenodd" d="M 18 66 19 67 19 68 22 71 23 71 24 72 25 72 26 73 26 74 28 74 28 73 29 72 29 70 28 69 26 69 25 68 24 68 23 67 22 67 21 66 Z M 20 49 19 50 20 51 19 52 19 55 20 55 22 57 22 59 24 61 25 61 27 63 29 63 30 64 32 64 33 65 33 66 32 67 34 67 35 66 36 66 37 65 37 62 34 62 33 61 30 61 29 60 26 60 25 59 24 59 21 56 21 55 20 54 21 53 22 53 25 56 26 56 27 57 28 57 28 56 26 54 25 54 Z"/><path fill="#d3a274" fill-rule="evenodd" d="M 43 64 41 64 40 63 40 66 39 67 41 67 43 65 Z M 41 38 40 37 39 37 38 38 34 38 33 39 33 40 31 42 24 42 23 41 23 43 22 44 22 45 21 46 22 47 22 48 23 48 22 47 22 44 23 43 24 43 25 44 25 46 28 49 31 49 30 48 30 47 31 46 31 45 32 44 33 45 33 46 34 47 34 48 35 48 36 47 37 47 38 46 39 46 40 47 41 47 39 45 39 43 40 42 40 41 41 40 Z M 37 39 39 41 39 43 38 44 36 44 35 43 35 41 Z"/><path fill="#65523f" fill-rule="evenodd" d="M 38 76 39 75 44 75 39 75 Z M 51 68 52 68 53 69 52 68 Z M 62 64 61 65 61 66 61 65 Z M 5 59 4 60 4 62 3 63 4 62 4 60 Z M 39 56 39 57 40 57 40 56 Z M 27 40 26 41 25 41 26 41 Z M 59 33 59 34 60 35 59 34 Z M 48 24 49 25 50 24 49 25 Z M 57 22 57 24 56 25 56 26 56 25 57 24 Z M 50 20 51 21 50 22 51 22 51 21 Z M 61 19 63 21 64 20 63 19 62 20 Z M 62 20 63 19 64 20 63 21 Z"/><path fill="#513928" fill-rule="evenodd" d="M 9 75 7 77 8 77 8 76 Z M 61 74 60 74 59 75 60 75 Z M 36 72 37 72 38 73 40 73 39 73 38 72 Z M 65 69 65 70 66 71 65 70 Z M 53 68 52 69 43 69 52 69 Z M 39 68 38 67 38 68 37 69 36 69 35 70 34 69 35 70 36 69 38 69 Z M 7 62 7 63 8 63 Z M 41 59 40 60 41 61 40 60 Z M 29 39 28 40 29 40 Z M 57 16 56 17 55 17 57 17 Z"/><path fill="#242726" fill-rule="evenodd" d="M 38 60 38 61 39 61 Z M 27 26 28 27 28 28 29 27 28 27 Z"/><path fill="#1e1915" fill-rule="evenodd" d="M 56 71 55 71 54 72 51 72 55 72 Z M 40 61 41 62 42 62 41 62 Z M 22 39 21 40 22 40 Z M 51 32 52 33 53 33 52 33 Z M 25 29 22 32 21 32 22 32 Z M 23 27 22 26 21 27 22 26 Z"/><path fill="#d6d6d1" fill-rule="evenodd" d="M 51 29 51 30 52 31 54 31 53 30 53 29 Z M 61 23 59 21 58 21 57 20 56 20 55 21 54 21 53 22 52 22 51 23 51 27 51 25 55 21 56 21 57 20 58 21 58 22 60 24 61 24 Z"/><path fill="#b5b5b4" fill-rule="evenodd" d="M 66 72 65 73 65 74 65 73 Z M 58 25 58 26 59 25 60 25 61 26 60 27 61 26 60 25 Z"/><path fill="#080808" fill-rule="evenodd" d="M 47 31 48 32 48 33 48 32 Z M 20 28 20 29 19 30 19 31 20 31 19 30 20 29 Z"/><path fill="#0e1518" fill-rule="evenodd" d="M 22 65 23 66 23 65 Z M 29 57 28 58 29 59 Z M 14 55 13 56 14 57 13 58 14 57 13 56 Z M 28 53 28 54 29 54 Z M 35 27 36 27 37 26 36 27 35 26 Z"/><path fill="#164568" fill-rule="evenodd" d="M 24 63 24 65 25 64 26 64 27 65 26 66 27 65 26 64 26 63 Z M 19 61 19 62 20 62 22 64 Z M 15 54 15 55 13 57 14 58 12 60 13 61 13 60 14 59 14 58 15 57 14 56 15 55 Z M 13 57 14 56 15 57 14 58 Z"/><path fill="#868684" fill-rule="evenodd" d="M 31 69 33 69 34 70 33 69 Z M 52 66 51 67 52 67 Z M 59 27 59 28 57 30 59 28 Z"/><path fill="#010101" fill-rule="evenodd" d="M 21 33 20 33 20 34 Z M 23 28 22 29 22 30 23 29 Z"/><path fill="#846d56" fill-rule="evenodd" d="M 50 67 49 68 48 68 50 68 Z M 44 67 44 68 46 68 45 68 Z"/><path fill="#cf9f72" fill-rule="evenodd" d="M 23 49 24 50 25 50 26 51 24 49 Z M 22 43 23 44 23 47 23 45 24 44 23 44 Z M 26 36 28 38 27 39 28 38 28 37 27 37 Z"/><path fill="#0b5f9e" fill-rule="evenodd" d="M 11 69 12 69 13 70 12 71 13 70 12 69 Z M 22 54 24 56 23 57 24 56 Z"/><path fill="#0772b6" fill-rule="evenodd" d="M 19 57 20 56 21 57 21 58 21 57 22 56 21 57 20 56 19 56 Z"/></g></svg></span>' +
       '<p class="section-label">NOTICE BOARD</p>' +
       '</div>' +
       noticeBoardHtml +
       '</div>' +
-      qotdHtml +
-      '</div>' + // end dashboard-main-col
-      '<aside class="dashboard-sidebar-rail">' +
+      '<div class="rail-divider"></div>' +
       '<div class="rail-block">' +
       '<div class="rail-header">' +
       '<span class="editorial-num-tag"><svg class="editorial-traced-icon" xmlns="http://www.w3.org/2000/svg" width="72" height="90" viewBox="0 0 72 90"><g shape-rendering="geometricPrecision"><path fill="#000000" fill-rule="evenodd" d="M 25 67 25 68 25 67 26 66 39 66 40 67 40 68 40 67 39 66 39 63 39 65 38 66 27 66 26 65 26 63 26 66 Z M 42 61 42 63 43 63 44 64 46 62 46 61 Z M 19 61 19 62 21 64 22 63 23 63 23 61 Z M 8 40 8 42 9 42 10 43 10 68 10 59 11 58 54 58 55 59 55 68 55 43 56 42 57 42 57 40 Z M 49 35 48 34 48 32 47 31 47 29 46 28 46 26 45 25 45 24 44 23 44 21 44 28 45 29 45 30 46 31 45 32 43 32 42 31 41 31 40 30 38 30 37 31 35 31 34 30 32 30 31 29 26 29 20 35 20 36 21 37 30 37 31 36 30 35 24 35 23 34 26 31 27 32 28 32 27 31 28 30 29 30 33 34 33 35 34 36 34 37 39 37 39 33 40 32 41 33 42 33 43 34 44 34 45 35 46 35 47 36 49 36 Z M 34 17 33 18 32 18 31 19 31 21 30 22 30 23 31 24 31 25 33 27 34 27 35 28 38 28 41 25 41 24 42 23 42 21 41 20 41 19 39 17 Z M 31 24 32 23 37 23 39 25 39 26 38 27 37 27 36 26 32 26 31 25 Z M 23 12 24 13 26 13 25 12 Z M 30 10 31 11 31 12 31 11 Z"/><path fill="#cecece" fill-rule="evenodd" d="M 12 59 24 59 25 60 26 59 39 59 40 60 41 59 53 59 Z"/><path fill="#737373" fill-rule="evenodd" d="M 43 12 42 13 43 13 Z"/><path fill="#5a5a5a" fill-rule="evenodd" d="M 38 60 38 61 39 61 Z M 27 60 26 61 27 61 Z M 46 16 48 18 48 19 48 18 Z"/></g></svg></span>' +
@@ -5257,37 +5478,53 @@
       '</div>' +
       calendarHtml +
       '</div>' +
-      '<div class="rail-divider"></div>' +
-      '<div class="rail-block">' +
-      '<div class="rail-header">' +
-      '<span class="editorial-num-tag"><svg class="editorial-traced-icon" xmlns="http://www.w3.org/2000/svg" width="72" height="90" viewBox="0 0 72 90"><g shape-rendering="geometricPrecision"><path fill="#000000" fill-rule="evenodd" d="M 43 57 43 76 46 76 46 57 Z M 64 51 63 51 62 52 60 52 59 53 57 53 56 54 54 54 53 55 52 55 51 56 50 56 50 75 52 75 53 74 54 74 55 73 57 73 58 72 60 72 61 71 63 71 64 70 Z M 26 51 26 70 27 71 29 71 30 72 31 72 32 73 34 73 35 74 37 74 38 75 40 75 40 56 39 56 38 55 36 55 35 54 33 54 32 53 30 53 29 52 28 52 27 51 Z M 7 64 22 64 22 47 23 46 24 47 26 47 27 48 29 48 30 49 32 49 33 50 35 50 36 51 37 51 38 52 40 52 41 53 48 53 49 52 48 51 48 49 46 47 46 46 45 45 44 45 42 43 41 43 40 42 38 42 37 41 36 41 35 42 33 42 32 43 24 43 23 42 22 42 21 41 19 41 18 42 16 42 15 43 14 43 8 49 8 52 7 53 Z M 53 39 53 41 59 41 59 39 Z M 54 22 53 23 52 23 50 25 50 26 49 27 49 30 50 31 50 32 51 33 51 34 52 35 52 36 53 36 53 32 52 32 49 29 49 28 50 27 50 26 52 24 53 24 56 27 56 28 56 26 58 24 59 24 60 25 61 25 62 26 62 30 61 31 60 31 59 32 59 36 60 35 60 34 61 33 61 32 62 31 62 26 61 25 61 24 60 23 59 23 58 22 Z M 29 17 28 17 27 18 24 18 23 19 22 19 19 22 19 23 18 24 18 25 17 26 17 31 18 32 18 34 22 38 23 38 24 39 25 39 26 40 30 40 31 39 33 39 38 34 38 33 39 32 39 25 38 24 38 23 34 19 33 19 32 18 30 18 Z"/><path fill="#5f5f5f" fill-rule="evenodd" d="M 54 45 55 44 57 44 54 44 Z"/><path fill="#c3c3c3" fill-rule="evenodd" d="M 27 41 28 42 29 41 28 42 Z"/><path fill="#525252" fill-rule="evenodd" d="M 50 55 49 56 49 76 49 56 Z"/><path fill="#303030" fill-rule="evenodd" d="M 47 57 47 76 46 77 43 77 46 77 47 76 Z"/><path fill="#b6b6b6" fill-rule="evenodd" d="M 55 32 55 36 56 37 55 36 Z"/><path fill="#e7e7e7" fill-rule="evenodd" d="M 53 38 59 38 55 38 54 37 Z"/></g></svg></span>' +
-      '<p class="section-label">YOUR PROGRESS</p>' +
-      '</div>' +
-      '<div class="progress-rail-grid">' +
-      '<div class="progress-rail-col">' +
-      '<strong class="metric-val">' + (completedCount < 10 ? '0' + completedCount : completedCount) + '</strong>' +
-      '<span class="metric-label">Completed</span>' +
-      '</div>' +
-      '<div class="progress-rail-col">' +
-      '<strong class="metric-val">' + (attemptedCount < 10 ? '0' + attemptedCount : attemptedCount) + '</strong>' +
-      '<span class="metric-label">Attempted</span>' +
-      '</div>' +
-      '<div class="progress-rail-col">' +
-      '<strong class="metric-val">' + (attemptStats.count ? escapeHtml(String(attemptStats.averageScore)) : '—') + '</strong>' +
-      '<span class="metric-label">Avg score</span>' +
-      '</div>' +
-      '<div class="progress-rail-col">' +
-      '<strong class="metric-val">' + (attemptStats.count ? escapeHtml(String(attemptStats.bestScore)) : '—') + '</strong>' +
-      '<span class="metric-label">Best score' + (attemptStats.bestScorePercentile ? ' (' + escapeHtml(String(attemptStats.bestScorePercentile)) + '%ile)' : '') + '</span>' +
-      '</div>' +
-      '</div>' +
-      '</div>' +
       '</aside>' +
       '</section>' +
       '</div>' +
       plannerModalHtml,
       { fluid: true }
     );
+
+    // Mascot advisor: hover (mouse), keyboard focus or a tap shows a tip addressed to the
+    // student; each new showing moves on to the next relevant tip.
+    (function bindMascot() {
+      var mascot = app.querySelector(".js-mascot");
+      var bubble = document.getElementById("mascot-bubble");
+      if (!mascot || !bubble) return;
+      var tips = buildMascotTips({
+        user: user,
+        attempts: snapshot.attempts,
+        tests: snapshot.tests,
+        nextUpTest: nextUpTest,
+        inProgressAttempt: inProgressAttempt,
+        examDate: appConfig && appConfig.ugeeExamDate
+      });
+      var visible = false;
+      function showTip() {
+        var index = Number(runtime.mascotTipIndex || 0) % tips.length;
+        runtime.mascotTipIndex = index + 1;
+        visible = true;
+        mascot.setAttribute("aria-expanded", "true");
+        bubble.classList.add("is-visible");
+        // Filled after it is shown so the live region announces the tip.
+        window.requestAnimationFrame(function () { bubble.innerHTML = tips[index]; });
+      }
+      function hideTip() {
+        if (!visible) return;
+        visible = false;
+        mascot.setAttribute("aria-expanded", "false");
+        bubble.classList.remove("is-visible");
+      }
+      mascot.addEventListener("pointerenter", function (event) { if (event.pointerType === "mouse") showTip(); });
+      mascot.addEventListener("pointerleave", function (event) { if (event.pointerType === "mouse") hideTip(); });
+      mascot.addEventListener("focus", function () { if (mascot.matches(":focus-visible")) showTip(); });
+      mascot.addEventListener("blur", hideTip);
+      // Click / tap / Enter: show the next tip.
+      mascot.addEventListener("click", showTip);
+      mascot.addEventListener("keydown", function (event) {
+        if (event.key === "Escape") hideTip();
+      });
+    })();
 
     // Attach filter tab listeners
     var filterBtns = document.querySelectorAll(".js-filter-test");
@@ -6840,7 +7077,6 @@
       : questions.reduce(function (sum, q) { return sum + Number(q.marks || 0); }, 0);
     var analysis = (prefetchedSummary && prefetchedSummary.analysis) || result.analysis || null;
     var sectionScores = result.sectionScores || {};
-    var analysisHydrating = !analysis && !!store.getAttemptAnalysis && !prefetchedSummary;
 
     function buildSectionScoresFromSummary(summary) {
       var source = summary && summary.sectionWise ? summary.sectionWise : null;
@@ -6879,14 +7115,6 @@
       return ' style="animation-delay:' + String(index * 100) + 'ms"';
     }
 
-    function analysisToneClass(label) {
-      var normalized = String(label || "").toLowerCase();
-      if (normalized.indexOf("excellent") !== -1 || normalized.indexOf("on pace") !== -1) return "is-strong";
-      if (normalized.indexOf("competitive") !== -1 || normalized.indexOf("balanced") !== -1) return "is-good";
-      if (normalized.indexOf("recoverable") !== -1 || normalized.indexOf("slightly slow") !== -1) return "is-watch";
-      return "is-focus";
-    }
-
     function clampPct(value) {
       return Math.max(0, Math.min(100, Number(value || 0)));
     }
@@ -6902,16 +7130,6 @@
       if (a >= 45) return "is-good";
       if (a >= 25) return "is-watch";
       return "is-focus";
-    }
-
-    function highlightPlanText(text) {
-      var keywords = ["Accuracy", "Slow down", "Focus", "timed drills", "weakest section", "low-confidence guesses", "REAP", "SUPR", "consistency", "marks away", "benchmark range", "configured benchmark range"];
-      var html = escapeHtml(String(text));
-      keywords.forEach(function (kw) {
-        var regex = new RegExp("(" + escapeHtml(kw) + ")", "gi");
-        html = html.replace(regex, '<span class="plan-highlight">$1</span>');
-      });
-      return html;
     }
 
     function sectionRowsFor(summary) {
@@ -6939,16 +7157,16 @@
             '<div class="rs-section">' +
             '<div class="rs-section-top">' +
             '<strong class="rs-section-name">' + escapeHtml(String(section.key)) + '</strong>' +
-            '<span class="rs-section-score">Score <b>' + escapeHtml(String(roundTo(section.score, 2))) + '</b></span>' +
-            '<span class="rs-pill ' + accuracyTone(section.accuracy) + '">' + escapeHtml(String(roundTo(section.accuracy, 1))) + '% accuracy</span>' +
+            '<span class="rs-section-score">Score <b>' + escapeHtml(formatMarks(section.score)) + '</b></span>' +
+            '<span class="rs-pill ' + accuracyTone(section.accuracy) + '">' + escapeHtml(formatPct(section.accuracy)) + ' accuracy</span>' +
             '</div>' +
             buildOutcomeBar(Number(section.correct || 0), Number(section.wrong || 0), Number(section.skipped || 0)) +
             '<div class="rs-meta">' +
             '<span><i class="rs-dot is-correct"></i>' + escapeHtml(String(section.correct || 0)) + ' correct</span>' +
             '<span><i class="rs-dot is-wrong"></i>' + escapeHtml(String(section.wrong || 0)) + ' wrong</span>' +
-            '<span><i class="rs-dot is-skipped"></i>' + escapeHtml(String(section.skipped || 0)) + ' skipped</span>' +
-            (hasTime ? '<span>Time ' + escapeHtml(formatTime(Number(section.timeSpent || 0))) + '</span>' : '') +
-            (Number(section.avgTimePerAttempted || 0) > 0 ? '<span>' + escapeHtml(String(section.avgTimePerAttempted)) + 's per attempted</span>' : '') +
+            '<span><i class="rs-dot is-skipped"></i>' + escapeHtml(String(section.skipped || 0)) + ' left blank</span>' +
+            (hasTime ? '<span>' + escapeHtml(formatDurationShort(section.timeSpent)) + ' spent</span>' : '') +
+            (Number(section.avgTimePerAttempted || 0) > 0 ? '<span>' + escapeHtml(String(Math.round(Number(section.avgTimePerAttempted)))) + 's per answer</span>' : '') +
             '</div>' +
             '</div>'
           );
@@ -6958,42 +7176,196 @@
       );
     }
 
-    function buildVerdictCard(summary) {
-      if (!summary) {
-        return (
-          '<aside class="rs-card rs-verdict analysis-stage"' + stageStyle(2) + '>' +
-          '<p class="section-label">Verdict &amp; next steps</p>' +
-          '<div class="empty-state">' + (analysisHydrating
-            ? 'Loading the stored analysis for this attempt…'
-            : 'Detailed analysis is available for attempts submitted after the analysis upgrade.') + '</div>' +
-          '</aside>'
-        );
-      }
+    // ---- Plan for the next mock --------------------------------------------------------
+    // Up to three steps, each grounded in this attempt's own numbers. Every rule is guarded so the
+    // advice never contradicts the data (no "skip more" to someone who left the paper blank, no
+    // pace verdict from a handful of answers).
+    function buildActionPlan(summary) {
       var steps = [];
-      if (summary.nextBenchmark !== null && summary.nextBenchmark !== undefined) {
-        steps.push('You are ' + String(summary.benchmarkGap || 0) + ' marks away from the next benchmark (' + String(summary.nextBenchmark) + ').');
-      } else {
-        steps.push('You are already at or above the configured benchmark range for this paper.');
+      var total = totalQuestions;
+      var attempted = attemptedCount;
+      var accuracyPct = attempted ? (correctCount / attempted) * 100 : 0;
+      var sections = sectionRowsFor(summary);
+      var topics = summary && Array.isArray(summary.topicInsights) ? summary.topicInsights : [];
+      var time = summary && summary.timeAnalysis ? summary.timeAnalysis : null;
+
+      if (total && attempted / total < 0.6) {
+        var target = Math.min(total, Math.max(Math.ceil(total * 0.5), Math.ceil(attempted * 1.25), attempted + 1));
+        steps.push({
+          key: "coverage",
+          lead: "Your biggest gain is attempting more of the paper.",
+          title: "Attempt more of the paper",
+          why: endedEarly
+            ? "You answered " + attempted + " of " + total + " questions. Sit the full paper and aim for at least " + target + " attempts."
+            : "You left " + skippedCount + " of " + total + " questions blank, and unanswered questions can't score. Aim for at least " + target + " attempts next time."
+        });
       }
-      (summary.recommendations || []).forEach(function (item) { steps.push(item); });
-      if (steps.length === 1) steps.push('Keep practising with timed mixed sets to improve consistency.');
+
+      var weakTopic = topics.filter(function (t) {
+        return Number(t.attempted || 0) > 0 && (Number(t.wrong || 0) > 0 || Number(t.score || 0) < 0);
+      })[0];
+      if (weakTopic) {
+        var topicName = formatTopicName(weakTopic.topic);
+        steps.push({
+          key: "topic",
+          section: weakTopic.section,
+          lead: "Your biggest gain is " + topicName + ".",
+          title: "Revise " + topicName,
+          why: String(weakTopic.correct || 0) + " of " + String(weakTopic.attempted || 0) + " correct in " + weakTopic.section +
+            ", " + formatSignedMarks(weakTopic.score) + " marks. It's the first topic to fix from this paper.",
+          actions: weakTopic.section ? [{ label: "Practise " + weakTopic.section, practice: weakTopic.section }] : []
+        });
+      }
+
+      if (!endedEarly && attempted >= 10 && accuracyPct < 55) {
+        steps.push({
+          key: "accuracy",
+          lead: "Your biggest gain is cutting wrong answers.",
+          title: "Cut negative marks",
+          why: wrongCount + " of " + attempted + " answers were wrong. Answer only after ruling out at least two options, and leave the rest for a second pass."
+        });
+      }
+
+      var measured = sections.filter(function (row) { return Number(row.correct || 0) + Number(row.wrong || 0) >= 5; })
+        .sort(function (a, b) { return Number(a.accuracy || 0) - Number(b.accuracy || 0); });
+      if (measured.length >= 2) {
+        var weakSection = measured[0];
+        var strongSection = measured[measured.length - 1];
+        if (Number(strongSection.accuracy || 0) - Number(weakSection.accuracy || 0) >= 15) {
+          var practisedAlready = steps.some(function (step) { return step.section === weakSection.key; });
+          steps.push({
+            key: "section",
+            section: weakSection.key,
+            lead: "Your biggest gain is " + weakSection.key + ".",
+            title: "Strengthen " + weakSection.key,
+            why: weakSection.key + " accuracy was " + formatPct(weakSection.accuracy) + " against " + formatPct(strongSection.accuracy) + " in " + strongSection.key + ".",
+            actions: practisedAlready ? [] : [{ label: "Practise " + weakSection.key, practice: weakSection.key }]
+          });
+        }
+      }
+
+      if (!endedEarly && attempted >= 20 && time) {
+        var perAnswer = Math.round(Number(time.avgSecondsPerAttempted || 0));
+        var suggested = Math.round(Number(time.targetSecondsPerQuestion || 0));
+        if (time.fastButErrorProne) {
+          steps.push({
+            key: "pace",
+            lead: "Your biggest gain is slowing down to check answers.",
+            title: "Slow down and check",
+            why: "You spent " + perAnswer + "s per answer against a suggested " + suggested + "s, and " + formatPct(accuracyPct) + " were correct. Use the spare time to re-check each choice."
+          });
+        } else if (time.timePressure) {
+          steps.push({
+            key: "pace",
+            lead: "Your biggest gain is a faster first pass.",
+            title: "Speed up your first pass",
+            why: "You spent " + perAnswer + "s per answer against a suggested " + suggested + "s. Mark long questions and return to them once the quick ones are done."
+          });
+        }
+      }
+
+      if (summary && summary.nextBenchmark !== null && summary.nextBenchmark !== undefined) {
+        steps.push({
+          key: "benchmark",
+          lead: "You are " + formatMarks(summary.benchmarkGap) + " marks from the next benchmark.",
+          title: "Reach " + formatMarks(summary.nextBenchmark) + " marks",
+          why: "You are " + formatMarks(summary.benchmarkGap) + " marks short of the next benchmark for this paper."
+        });
+      }
+
+      if (!steps.length) {
+        steps.push({
+          key: "steady",
+          lead: "Keep this approach going.",
+          title: "Keep this approach",
+          why: "Nothing in this attempt is holding your score back. Take another timed mock to confirm it.",
+          actions: [{ label: "Browse mock tests", href: "#exams/mock-tests" }]
+        });
+      }
+
+      steps = steps.slice(0, 3);
+      // Wrong answers are worth reading: the accuracy or topic step links to them.
+      if (wrongCount > 0 && analysis) {
+        var reviewHost = steps.filter(function (step) { return step.key === "accuracy"; })[0] ||
+          steps.filter(function (step) { return step.key === "topic"; })[0];
+        if (reviewHost) {
+          reviewHost.actions = (reviewHost.actions || []).concat([{ label: "Review " + wrongCount + " wrong answer" + (wrongCount === 1 ? "" : "s"), review: true }]);
+        }
+      }
+      return steps;
+    }
+
+    function planActionHtml(action) {
+      if (action.href) return '<a class="button button-secondary button-compact" href="' + escapeAttribute(action.href) + '">' + escapeHtml(action.label) + '</a>';
+      var cls = action.review ? "js-jump-review" : "js-plan-practice";
+      return '<button type="button" class="button button-secondary button-compact ' + cls + '"' +
+        (action.practice ? ' data-section="' + escapeAttribute(action.practice) + '"' : '') + '>' + escapeHtml(action.label) + '</button>';
+    }
+
+    function buildWorkingLine(summary) {
+      var topics = summary && Array.isArray(summary.topicInsights) ? summary.topicInsights : [];
+      var strong = topics.filter(function (t) { return Number(t.attempted || 0) >= 2 && Number(t.accuracy || 0) >= 75; }).slice(0, 3);
+      var items = strong.map(function (t) {
+        return '<b>' + escapeHtml(formatTopicName(t.topic)) + '</b> (' + escapeHtml(String(t.correct || 0)) + ' of ' + escapeHtml(String(t.attempted || 0)) + ')';
+      });
+      if (!items.length) {
+        var bestSection = sectionRowsFor(summary).filter(function (row) {
+          return Number(row.correct || 0) + Number(row.wrong || 0) >= 5 && Number(row.accuracy || 0) >= 70;
+        }).sort(function (a, b) { return Number(b.accuracy || 0) - Number(a.accuracy || 0); })[0];
+        if (bestSection) items.push('<b>' + escapeHtml(bestSection.key) + '</b> at ' + escapeHtml(formatPct(bestSection.accuracy)) + ' accuracy');
+      }
+      return items.length ? '<p class="rs-working"><span>What\'s working:</span> ' + items.join(", ") + '</p>' : '';
+    }
+
+    function buildPlanBody(summary) {
+      var steps = buildActionPlan(summary);
       return (
-        '<aside class="rs-card rs-verdict analysis-stage"' + stageStyle(2) + '>' +
-        '<p class="section-label">Verdict &amp; next steps</p>' +
-        '<div class="rs-verdict-tags">' +
-        '<div class="rs-tag ' + analysisToneClass(summary.scoreLabel) + '"><span>Score band</span><strong>' + escapeHtml(String(summary.scoreLabel || "Balanced")) + '</strong><small>' + escapeHtml(String(summary.scorePercentage || 0)) + '% of total marks</small></div>' +
-        '<div class="rs-tag ' + analysisToneClass(summary.paceLabel) + '"><span>Pace</span><strong>' + escapeHtml(String(summary.paceLabel || "Balanced")) + '</strong><small>' + escapeHtml(String(summary.avgSecondsPerAttempted || 0)) + 's per attempted question</small></div>' +
+        '<ol class="rs-plan-steps">' +
+        steps.map(function (step, index) {
+          return (
+            '<li class="rs-plan-step">' +
+            '<span class="rs-plan-num" aria-hidden="true">' + (index + 1) + '</span>' +
+            '<h4>' + escapeHtml(step.title) + '</h4>' +
+            '<p>' + escapeHtml(step.why) + '</p>' +
+            (step.actions && step.actions.length ? '<div class="rs-plan-actions">' + step.actions.map(planActionHtml).join("") + '</div>' : '') +
+            '</li>'
+          );
+        }).join("") +
+        '</ol>' +
+        buildWorkingLine(summary)
+      );
+    }
+
+    function buildHeroSentence(summary) {
+      var steps = buildActionPlan(summary);
+      return '<strong>' + escapeHtml(firstName(user.name)) + '</strong>, you scored ' + escapeHtml(formatMarks(result.score)) +
+        (maxScore ? ' of ' + escapeHtml(formatMarks(maxScore)) : '') +
+        (rankValue ? ' and ranked ' + rankValue + (rankTotal ? ' of ' + rankTotal : '') : '') + '. ' +
+        escapeHtml(steps[0] ? steps[0].lead : "");
+    }
+
+    function buildPlanSection(summary) {
+      return (
+        '<section class="rs-card rs-plan analysis-stage"' + stageStyle(1) + ' aria-labelledby="rs-plan-title" data-attempt="' + escapeAttribute(String(attempt.id)) + '">' +
+        '<div class="rs-card-head"><h2 class="section-label" id="rs-plan-title">Your plan for the next mock</h2></div>' +
+        '<div id="rs-plan-notes" aria-live="polite"></div>' +
+        '<div id="rs-plan-body">' + buildPlanBody(summary) + '</div>' +
+        '<p class="rs-plan-disclosure" id="rs-plan-disclosure" hidden></p>' +
+        '</section>'
+      );
+    }
+
+    function buildEndedEarlyNotice() {
+      if (!endedEarly) return "";
+      return (
+        '<section class="rs-card rs-notice analysis-stage"' + stageStyle(1) + '>' +
+        '<div class="rs-notice-text">' +
+        '<h2>This attempt ended early</h2>' +
+        '<p>' + attemptedCount + ' of ' + totalQuestions + ' questions answered in ' + escapeHtml(formatDurationShort(timeTaken)) +
+        '. With so few answers, the analysis below is only a rough guide. Sit the full paper under timed conditions for a reliable report.</p>' +
         '</div>' +
-        ((summary.strongSection || summary.weakSection)
-          ? '<p class="rs-verdict-line">' +
-            (summary.strongSection ? 'Strongest <b>' + escapeHtml(String(summary.strongSection.key)) + '</b> (' + escapeHtml(String(roundTo(summary.strongSection.accuracy, 1))) + '%)' : '') +
-            (summary.strongSection && summary.weakSection && summary.weakSection.key !== summary.strongSection.key
-              ? ' · Focus <b>' + escapeHtml(String(summary.weakSection.key)) + '</b> (' + escapeHtml(String(roundTo(summary.weakSection.accuracy, 1))) + '%)'
-              : '') +
-            '</p>'
-          : '') +
-        '<ol class="rs-steps">' + steps.map(function (step) { return '<li>' + highlightPlanText(step) + '</li>'; }).join("") + '</ol>' +
-        '</aside>'
+        '<button type="button" class="button button-secondary js-retake-test">Retake test</button>' +
+        '</section>'
       );
     }
 
@@ -7001,38 +7373,62 @@
 
     function buildTopicCard(summary) {
       var topics = summary && Array.isArray(summary.topicInsights) ? summary.topicInsights : [];
+      var attemptedTopics = topics.filter(function (t) { return Number(t.attempted || 0) > 0; });
+      var untouched = topics.filter(function (t) { return !Number(t.attempted || 0); });
+      // Same tag in both sections: name the section so the two entries can be told apart.
+      var nameCounts = topics.reduce(function (counts, t) {
+        var key = formatTopicName(t.topic).toLowerCase();
+        counts[key] = (counts[key] || 0) + 1;
+        return counts;
+      }, {});
+      var UNTOUCHED_SHOWN = 8;
+      var untouchedHtml = untouched.length
+        ? '<p class="rs-untouched"><span>Not attempted:</span> ' + untouched.slice(0, UNTOUCHED_SHOWN).map(function (t) {
+            var label = formatTopicName(t.topic);
+            return escapeHtml(nameCounts[label.toLowerCase()] > 1 ? label + " (" + t.section + ")" : label);
+          }).join(", ") +
+          (untouched.length > UNTOUCHED_SHOWN ? ' and ' + (untouched.length - UNTOUCHED_SHOWN) + ' more' : '') + '</p>'
+        : '';
+      var body;
+      if (!topics.length) {
+        body = '<div class="empty-state">Topic breakdown isn\'t available for this older attempt.</div>';
+      } else if (!attemptedTopics.length) {
+        body = '<p class="rs-muted">' + (wrongCount === 0
+          ? 'No marks lost in any topic you answered.'
+          : 'Topic detail isn\'t available for the questions you answered.') + '</p>' + untouchedHtml;
+      } else {
+        body =
+          '<div class="rs-topic-table" role="table" aria-label="Topics you answered">' +
+          '<div class="rs-topic-row is-head" role="row">' +
+          '<span role="columnheader">Topic</span><span role="columnheader">Answered</span><span role="columnheader">Correct / wrong</span><span role="columnheader">Accuracy</span><span role="columnheader">Net marks</span>' +
+          '</div>' +
+          attemptedTopics.map(function (topic, index) {
+            var acc = roundTo(topic.accuracy, 1);
+            var net = roundTo(topic.score, 2);
+            var leaking = Number(topic.wrong || 0) > 0 || net < 0;
+            return (
+              '<div class="rs-topic-row' + (index >= TOPICS_VISIBLE ? ' is-extra' : '') + '" role="row">' +
+              '<span class="rs-topic-name" role="cell"><strong>' + escapeHtml(formatTopicName(topic.topic)) + '</strong>' +
+              '<em>' + escapeHtml(String(topic.section || "")) + '</em>' +
+              (index === 0 && leaking ? '<b class="rs-flag">Top priority</b>' : '') + '</span>' +
+              '<span role="cell" data-label="Answered">' + escapeHtml(String(topic.attempted || 0)) + ' of ' + escapeHtml(String(topic.total || 0)) + '</span>' +
+              '<span role="cell" data-label="Correct / wrong">' + escapeHtml(String(topic.correct || 0)) + ' / ' + escapeHtml(String(topic.wrong || 0)) + '</span>' +
+              '<span class="rs-acc" role="cell" data-label="Accuracy"><i class="' + accuracyTone(acc) + '"><b data-width="' + Math.max(3, clampPct(acc)) + '%"></b></i>' + escapeHtml(formatPct(acc)) + '</span>' +
+              '<span class="rs-net ' + (net < 0 ? 'is-neg' : (net > 0 ? 'is-pos' : '')) + '" role="cell" data-label="Net marks">' + escapeHtml(formatSignedMarks(net)) + '</span>' +
+              '</div>'
+            );
+          }).join("") +
+          '</div>' +
+          (attemptedTopics.length > TOPICS_VISIBLE
+            ? '<button type="button" class="button button-secondary button-compact rs-topic-toggle js-topic-toggle" aria-expanded="false">Show all ' + attemptedTopics.length + ' topics</button>'
+            : '') +
+          untouchedHtml;
+      }
       return (
         '<section class="rs-card rs-topics analysis-stage"' + stageStyle(3) + '>' +
-        '<div class="rs-card-head"><p class="section-label">Topic analysis</p>' +
-        (topics.length ? '<span class="rs-head-note">Highest priority first</span>' : '') + '</div>' +
-        (topics.length
-          ? '<div class="rs-topic-table" role="table" aria-label="Topic analysis">' +
-            '<div class="rs-topic-row is-head" role="row">' +
-            '<span role="columnheader">Topic</span><span role="columnheader">Attempted</span><span role="columnheader">Correct / wrong</span><span role="columnheader">Accuracy</span><span role="columnheader">Net marks</span>' +
-            '</div>' +
-            topics.map(function (topic, index) {
-              var acc = roundTo(topic.accuracy, 1);
-              var net = roundTo(topic.score, 2);
-              var attempted = Number(topic.attempted || 0);
-              return (
-                '<div class="rs-topic-row' + (index >= TOPICS_VISIBLE ? ' is-extra' : '') + '" role="row">' +
-                '<span class="rs-topic-name" role="cell"><strong>' + escapeHtml(String(topic.topic || "General")) + '</strong>' +
-                '<em>' + escapeHtml(String(topic.section || "")) + '</em>' +
-                (index === 0 && attempted ? '<b class="rs-flag">Top priority</b>' : '') + '</span>' +
-                '<span role="cell" data-label="Attempted">' + attempted + '/' + escapeHtml(String(topic.total || 0)) + '</span>' +
-                '<span role="cell" data-label="Correct / wrong">' + escapeHtml(String(topic.correct || 0)) + ' / ' + escapeHtml(String(topic.wrong || 0)) + '</span>' +
-                '<span class="rs-acc" role="cell" data-label="Accuracy">' + (attempted
-                  ? '<i class="' + accuracyTone(acc) + '"><b data-width="' + Math.max(3, clampPct(acc)) + '%"></b></i>' + escapeHtml(String(acc)) + '%'
-                  : '<span class="rs-muted">Not attempted</span>') + '</span>' +
-                '<span class="rs-net ' + (net < 0 ? 'is-neg' : (net > 0 ? 'is-pos' : '')) + '" role="cell" data-label="Net marks">' + (net > 0 ? '+' : '') + escapeHtml(String(net)) + '</span>' +
-                '</div>'
-              );
-            }).join("") +
-            '</div>' +
-            (topics.length > TOPICS_VISIBLE
-              ? '<button type="button" class="button button-secondary button-compact rs-topic-toggle js-topic-toggle" aria-expanded="false">Show all ' + topics.length + ' topics</button>'
-              : '')
-          : '<div class="empty-state">Topic insights appear for attempts submitted on the current analysis pipeline.</div>') +
+        '<div class="rs-card-head"><p class="section-label">Topics</p>' +
+        (attemptedTopics.length > 1 ? '<span class="rs-head-note">Biggest impact first</span>' : '') + '</div>' +
+        body +
         '</section>'
       );
     }
@@ -7040,75 +7436,100 @@
     function buildTimeCard(summary) {
       var t = summary && summary.timeAnalysis ? summary.timeAnalysis : null;
       if (!t) return "";
-      var stat = function (label, value) {
-        return '<div class="rs-stat"><span>' + escapeHtml(label) + '</span><strong>' + escapeHtml(value) + '</strong></div>';
+      var stat = function (label, value, sub) {
+        return '<div class="rs-stat"><span>' + escapeHtml(label) + '</span><strong>' + escapeHtml(value) + '</strong>' +
+          (sub ? '<small>' + escapeHtml(sub) + '</small>' : '') + '</div>';
       };
+      var note = "";
+      if (!endedEarly && attemptedCount >= 20) {
+        if (t.fastButErrorProne) note = "You moved faster than the suggested pace, and accuracy paid for it.";
+        else if (t.timePressure) note = "You were slower than the suggested pace, which left less time for the rest of the paper.";
+      }
       return (
-        '<section class="rs-card rs-time analysis-stage"' + stageStyle(4) + '>' +
+        '<section class="rs-card rs-time analysis-stage"' + stageStyle(2) + '>' +
         '<p class="section-label">Time &amp; pace</p>' +
         '<div class="rs-stat-grid">' +
-        stat("Total time", formatTime(Number(t.totalTimeSeconds || 0))) +
-        stat("Per question", String(t.avgSecondsPerQuestion || 0) + "s") +
-        stat("Per attempted", String(t.avgSecondsPerAttempted || 0) + "s") +
-        stat("Target pace", String(t.targetSecondsPerQuestion || 0) + "s") +
+        stat("Time used", formatDurationShort(t.totalTimeSeconds), paperSeconds ? "of " + formatDurationShort(paperSeconds) : "") +
+        stat("Per answer", Math.round(Number(t.avgSecondsPerAttempted || 0)) + "s", "") +
+        stat("Suggested pace", Math.round(Number(t.targetSecondsPerQuestion || 0)) + "s", "per question") +
         '</div>' +
-        '<ul class="rs-notes">' +
-        '<li class="' + (t.timePressure ? 'is-warn' : 'is-ok') + '">' + escapeHtml(t.timePressure ? "You were under time pressure." : "Time usage stayed under control.") + '</li>' +
-        '<li class="' + (t.fastButErrorProne ? 'is-warn' : 'is-ok') + '">' + escapeHtml(t.fastButErrorProne ? "High speed is costing accuracy." : "Speed and accuracy stayed balanced.") + '</li>' +
-        '</ul>' +
+        (note ? '<p class="rs-time-note">' + escapeHtml(note) + '</p>' : '') +
         '</section>'
       );
     }
 
-    function buildHistoryCard() {
-      var recent = attemptHistory.slice(0, 6);
-      var trend = recent.slice().reverse();
-      var maxHistoryScore = trend.reduce(function (max, item) {
-        return Math.max(max, Number(item && item.result && item.result.score || 0));
-      }, Math.max(1, Number(maxScore || 0)));
+    // Scores on this paper only, oldest to newest, each bar named by its attempt.
+    function buildProgressCard() {
+      var ordered = attemptHistory.slice().sort(function (a, b) {
+        return Number(a.attemptNumber || 0) - Number(b.attemptNumber || 0) || new Date(a.submittedAt) - new Date(b.submittedAt);
+      });
+      var currentIndex = ordered.findIndex(function (a) { return a.id === attempt.id; });
+      var chartHtml = "";
+      var compareHtml = "";
+      if (ordered.length > 1) {
+        var shown = ordered.slice(-6);
+        var scores = shown.map(function (a) { return Number(a.result && a.result.score || 0); });
+        var shortLabels = shown.length > 4;
+        chartHtml = buildBarTrend(scores, {
+          max: Math.max.apply(null, scores.concat([1])),
+          format: formatMarks,
+          xLabels: shown.map(function (a) { return (shortLabels ? "#" : "Attempt ") + (a.attemptNumber || ""); }),
+          highlightIndex: shown.findIndex(function (a) { return a.id === attempt.id; }),
+          label: "Score per attempt on this paper"
+        });
+        if (currentIndex > 0) {
+          var prev = ordered[currentIndex - 1];
+          var scoreDelta = Number(result.score || 0) - Number(prev.result.score || 0);
+          var prevAccuracy = Number(prev.result.accuracy || 0);
+          var accuracyNow = Number(result.accuracy || 0);
+          compareHtml =
+            '<p class="rs-compare">vs Attempt ' + escapeHtml(String(prev.attemptNumber || "")) + ': score <b class="' + (scoreDelta >= 0 ? 'is-up' : 'is-down') + '">' + escapeHtml(formatSignedMarks(scoreDelta)) + '</b>' +
+            ' (' + escapeHtml(formatMarks(prev.result.score)) + ' → ' + escapeHtml(formatMarks(result.score)) + ')' +
+            ' · accuracy ' + escapeHtml(formatPct(prevAccuracy)) + ' → ' + escapeHtml(formatPct(accuracyNow)) + '</p>';
+        }
+      }
+      var listed = ordered.slice().reverse().slice(0, 6);
       return (
-        '<section class="rs-card rs-history analysis-stage"' + stageStyle(5) + '>' +
-        '<div class="rs-card-head"><p class="section-label">Attempt history</p>' +
-        (attemptHistory.length ? '<span class="meta-chip">' + attemptHistory.length + ' total</span>' : '') + '</div>' +
-        (trend.length > 1
-          ? '<div class="rs-trend" role="img" aria-label="Scores of your recent attempts, oldest to latest">' + trend.map(function (item) {
-            var score = Number(item && item.result && item.result.score || 0);
-            var height = Math.max(8, Math.min(100, Math.round((Math.max(0, score) / maxHistoryScore) * 100)));
-            return '<span class="' + (item.id === attempt.id ? 'is-current' : '') + '" title="Attempt ' + escapeAttribute(String(item.attemptNumber || "")) + ': ' + escapeAttribute(String(score)) + '"><b style="height:' + height + '%"></b></span>';
-          }).join("") + '</div>'
-          : '') +
-        (recent.length
-          ? '<ul class="rs-history-list">' + recent.map(function (a) {
-            var isCurrent = a.id === attempt.id;
-            return (
-              '<li class="' + (isCurrent ? 'is-current' : '') + '">' +
-              '<span class="rs-history-label">Attempt ' + escapeHtml(String(a.attemptNumber || "")) + '</span>' +
-              '<strong>' + escapeHtml(String(a.result.score)) + (maxScore ? '<small>/' + escapeHtml(String(maxScore)) + '</small>' : '') + '</strong>' +
-              '<span class="rs-muted">' + escapeHtml(formatDateOnly(a.submittedAt)) + '</span>' +
-              (isCurrent
-                ? '<span class="meta-chip">Viewing</span>'
-                : '<button class="button button-secondary button-compact js-open-result" data-id="' + escapeAttribute(a.id) + '">Open</button>') +
-              '</li>'
-            );
-          }).join("") + '</ul>'
-          : '<div class="empty-state">No previous attempts.</div>') +
+        '<section class="rs-card rs-history' + (ordered.length > 1 ? '' : ' is-first') + ' analysis-stage"' + stageStyle(4) + '>' +
+        '<div class="rs-card-head"><p class="section-label">Progress on this paper</p>' +
+        (ordered.length > 1 ? '<span class="meta-chip">' + ordered.length + ' attempts</span>' : '') + '</div>' +
+        (ordered.length > 1
+          ? chartHtml + compareHtml +
+            '<ul class="rs-history-list">' + listed.map(function (a) {
+              var isCurrent = a.id === attempt.id;
+              return (
+                '<li class="' + (isCurrent ? 'is-current' : '') + '">' +
+                '<span class="rs-history-label">Attempt ' + escapeHtml(String(a.attemptNumber || "")) + '</span>' +
+                '<strong>' + escapeHtml(formatMarks(a.result.score)) + (maxScore ? '<small>/' + escapeHtml(formatMarks(maxScore)) + '</small>' : '') + '</strong>' +
+                '<span class="rs-muted">' + escapeHtml(formatDateOnly(a.submittedAt)) + '</span>' +
+                (isCurrent
+                  ? '<span class="meta-chip">Viewing</span>'
+                  : '<button class="button button-secondary button-compact js-open-result" data-id="' + escapeAttribute(a.id) + '">Open</button>') +
+                '</li>'
+              );
+            }).join("") + '</ul>'
+          : '<div class="rs-first-attempt"><p>First attempt at this paper. Retake it to track your progress.</p>' +
+            '<button type="button" class="button button-secondary button-compact js-retake-test">Retake test</button></div>') +
         '</section>'
       );
     }
 
     function buildQuestionReviewShell() {
       return (
-        '<section class="report-card analysis-stage" style="padding: 24px; flex: 1 1 100%; min-width: 0;"' + stageStyle(6) + '>' +
+        '<section class="report-card analysis-stage" id="question-review-section" style="padding: 24px; flex: 1 1 100%; min-width: 0;"' + stageStyle(5) + '>' +
         '<div class="analysis-review-head">' +
         '<div>' +
         '<p class="section-label">Question review</p>' +
-        '<h3>Load detailed review only when you need it</h3>' +
+        '<h3>Review your answers</h3>' +
+        '<p class="rs-review-sub">' + (analysis
+          ? 'Each question with your answer, the correct option and the full solution.'
+          : 'Question review isn\'t available for this older attempt.') + '</p>' +
         '</div>' +
         '<div class="button-row">' +
-        '<button class="button button-secondary" id="load-question-review"' + (analysis ? '' : ' disabled') + '>Load question review</button>' +
+        '<button class="button button-secondary" id="load-question-review"' + (analysis ? '' : ' disabled') + '>Review answers</button>' +
         '</div>' +
         '</div>' +
-        '<div id="question-review-status" class="helper-text">' + (analysis ? 'Summary loads first. Detailed review stays lazy to keep this page fast.' : 'Question review is available for attempts submitted after the analysis upgrade.') + '</div>' +
+        '<div id="question-review-status" class="helper-text" aria-live="polite"></div>' +
         '<div id="question-review-list" class="analysis-review-list"></div>' +
         '<div class="button-row" id="question-review-more-row" style="display:none; margin-top: 14px;">' +
         '<button class="button button-secondary" id="load-more-review">Load more questions</button>' +
@@ -7117,13 +7538,20 @@
       );
     }
 
-    // Left: sections + time (balances the taller verdict card on the right).
     function buildTopRow(summary) {
-      return '<div class="rs-side-stack">' + buildSectionsCard(summary) + buildTimeCard(summary) + '</div>' + buildVerdictCard(summary);
+      return buildSectionsCard(summary) + buildTimeCard(summary);
+    }
+
+    function hasAttemptTrend() {
+      return attemptHistory.length > 1;
     }
 
     function buildDetailRow(summary) {
-      return (summary ? buildTopicCard(summary) : "") + '<div class="rs-side-stack">' + buildHistoryCard() + '</div>';
+      return (summary ? buildTopicCard(summary) : "") + buildProgressCard();
+    }
+
+    function detailRowClass(summary) {
+      return "rs-row rs-detail" + (summary && hasAttemptTrend() ? "" : " is-solo");
     }
 
     function buildOptionRow(text, optionIndex, review) {
@@ -7268,15 +7696,6 @@
     var attemptHistory = store.listUserAttempts(user.id).filter(function (a) {
       return a.testId === attempt.testId && a.status === "submitted" && a.result;
     });
-      var wittyLines = [
-        "The server has crunched your answers, judged your life choices, and compiled your results.",
-        "Evaluation complete. The algorithms have pondered over your responses.",
-        "Your fate has been sealed by the server gods. Let's see the damage.",
-        "We fed your answers to the evaluation matrix. Here is the raw, unfiltered truth.",
-        "No client-side peeking allowed. Just pure, unadulterated performance data."
-      ];
-      var witticism = wittyLines[(attempt ? attempt.id.charCodeAt(attempt.id.length - 1) : 0) % wittyLines.length] || wittyLines[0];
-
       var correctCount = Number(result.correctCount || 0);
       var wrongCount = Number(result.wrongCount || 0);
       var skippedCount = Number(result.unattemptedCount !== undefined ? result.unattemptedCount : result.skippedCount || 0);
@@ -7286,7 +7705,13 @@
       var paperSeconds = test && test.durationMinutes ? Number(test.durationMinutes) * 60 : 0;
       var rankValue = Number(result.rank || 0);
       var rankTotal = Number(result.rankTotal || 0);
-      var cohortLabel = Number(attempt.attemptNumber || 1) > 1 ? 'among attempt ' + attempt.attemptNumber + ' takers' : 'among first attempts';
+      // Submitted after a handful of answers: pace and accuracy-habit advice can't be judged.
+      var endedEarly = totalQuestions > 0 && (attemptedCount / totalQuestions < 0.1 ||
+        (paperSeconds > 0 && timeTaken < paperSeconds * 0.1 && attemptedCount / totalQuestions < 0.5));
+      var attemptNumber = Number(attempt.attemptNumber || 1);
+      var cohortLabel = attemptNumber > 1 ? 'vs other ' + ordinal(attemptNumber) + ' attempts' : 'vs other first attempts';
+      var scoreValue = Number(result.score || 0);
+      var accuracyValue = Math.round(Number(result.accuracy || 0) * 10) / 10;
 
       function kpi(label, valueHtml, sub, extraClass) {
         return (
@@ -7301,30 +7726,30 @@
       var kpisHtml =
         '<div class="rs-kpis analysis-stage"' + stageStyle(0) + '>' +
         kpi("Score",
-          '<span data-animate-number="' + escapeAttribute(String(result.score || 0)) + '"></span>' + (maxScore ? '<small>/ ' + escapeHtml(String(maxScore)) + '</small>' : ''),
-          maxScore ? roundTo((Number(result.score || 0) / maxScore) * 100, 1) + '% of total marks' : '', "is-primary") +
+          '<span data-animate-number="' + escapeAttribute(String(scoreValue)) + '" data-decimals="' + decimalsFor(scoreValue, 2) + '"></span>' + (maxScore ? '<small>/ ' + escapeHtml(formatMarks(maxScore)) + '</small>' : ''),
+          maxScore ? formatPct((scoreValue / maxScore) * 100) + ' of total marks' : '', "is-primary") +
         kpi("Rank",
           rankValue ? '<span data-animate-number="' + rankValue + '"></span>' + (rankTotal ? '<small>of ' + rankTotal + '</small>' : '') : '—',
           rankValue ? cohortLabel : (result.invalidated ? 'Removed from ranking' : 'Not ranked')) +
         kpi("Percentile",
-          rankValue ? '<span data-animate-number="' + escapeAttribute(String(result.percentile || 0)) + '" data-suffix="%" data-decimals="2"></span>' : '—',
-          rankValue ? 'Relative standing' : '') +
+          rankValue ? escapeHtml(ordinal(result.percentile)) : '—',
+          rankValue ? (rankTotal > 1 ? 'ahead of ' + (rankTotal - rankValue) + ' of ' + (rankTotal - 1) + ' others' : 'only taker so far') : '') +
         kpi("Accuracy",
-          '<span data-animate-number="' + escapeAttribute(String(result.accuracy || 0)) + '" data-suffix="%" data-decimals="2"></span>',
-          correctCount + ' of ' + attemptedCount + ' attempted correct') +
+          '<span data-animate-number="' + escapeAttribute(String(accuracyValue)) + '" data-suffix="%" data-decimals="' + decimalsFor(accuracyValue, 1) + '"></span>',
+          correctCount + ' of ' + attemptedCount + ' answers correct') +
         kpi("Attempted",
           escapeHtml(String(attemptedCount)) + (totalQuestions ? '<small>/ ' + totalQuestions + '</small>' : ''),
-          skippedCount + ' skipped') +
+          skippedCount + ' left blank') +
         kpi("Time taken",
-          escapeHtml(formatTime(timeTaken)),
-          paperSeconds ? 'of ' + formatTime(paperSeconds) + ' allowed' : '') +
+          escapeHtml(formatDurationShort(timeTaken)),
+          paperSeconds ? 'of ' + formatDurationShort(paperSeconds) + ' allowed' : '') +
         '</div>' +
         '<div class="rs-outcome analysis-stage"' + stageStyle(0) + '>' +
         buildOutcomeBar(correctCount, wrongCount, skippedCount, "is-large") +
         '<div class="rs-legend">' +
         '<span><i class="rs-dot is-correct"></i>Correct <b>' + correctCount + '</b></span>' +
         '<span><i class="rs-dot is-wrong"></i>Wrong <b>' + wrongCount + '</b></span>' +
-        '<span><i class="rs-dot is-skipped"></i>Skipped <b>' + skippedCount + '</b></span>' +
+        '<span><i class="rs-dot is-skipped"></i>Left blank <b>' + skippedCount + '</b></span>' +
         '</div>' +
         '</div>';
 
@@ -7333,24 +7758,24 @@
         '<section class="rs-page">' +
         '<header class="rs-hero">' +
         '<div class="rs-hero-text">' +
-        '<p class="section-label">Result · Attempt ' + escapeHtml(String(attempt.attemptNumber || 1)) + ' · ' + escapeHtml(formatDateOnly(attempt.submittedAt)) + '</p>' +
+        '<p class="section-label">Result · Attempt ' + escapeHtml(String(attemptNumber)) + ' · ' + escapeHtml(formatDateOnly(attempt.submittedAt)) + '</p>' +
         '<h1>' + escapeHtml(test && test.title ? test.title : "UGEE Mock Test") + '</h1>' +
-        '<p class="rs-hero-sub"><strong>' + escapeHtml(firstName(user.name)) + '</strong>, ' + witticism + '</p>' +
+        '<p class="rs-hero-sub" id="rs-hero-sub">' + buildHeroSentence(analysis) + '</p>' +
         '</div>' +
         '<div class="rs-hero-actions">' +
-        '<button class="button button-primary" id="retake-test">Retake test</button>' +
+        (analysis ? '<button type="button" class="button button-secondary js-jump-review">Review answers</button>' : '') +
+        '<button type="button" class="button button-primary" id="retake-test">Retake test</button>' +
         '</div>' +
         '</header>' +
         kpisHtml +
-        '<div class="rs-row rs-top" id="analysis-summary-root">' + buildTopRow(analysis) + '</div>' +
-        '<div class="report-card pi-card" id="performance-intelligence-root" aria-live="polite">' +
-        '<p class="section-label">Performance Intelligence</p><p class="pi-muted">Analyzing your attempt…</p>' +
-        '</div>' +
-        '<div class="rs-row rs-detail' + (analysis ? '' : ' is-solo') + '" id="analysis-detail-root">' + buildDetailRow(analysis) + '</div>' +
+        buildEndedEarlyNotice() +
+        buildPlanSection(analysis) +
+        '<div class="rs-row rs-top' + (analysis && analysis.timeAnalysis ? '' : ' is-solo') + '" id="analysis-summary-root">' + buildTopRow(analysis) + '</div>' +
+        '<div class="' + detailRowClass(analysis) + '" id="analysis-detail-root">' + buildDetailRow(analysis) + '</div>' +
         '<div id="analysis-review-root">' + buildQuestionReviewShell() + '</div>' +
         '</section>'
       );
-    mountPerformanceIntelligence(attempt.id);
+    mountPlanNotes(attempt.id);
 
     // The results view has no dashboard button; guard so the bindings below still run.
     var resultsBackButton = document.getElementById("back-dashboard");
@@ -7367,7 +7792,35 @@
       });
     }
 
+    function jumpToReview() {
+      var section = document.getElementById("question-review-section");
+      if (section) {
+        var reduceMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+        section.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "start" });
+      }
+      var loadButton = document.getElementById("load-question-review");
+      if (loadButton && !loadButton.disabled && loadButton.style.display !== "none") loadButton.click();
+    }
+
+    function bindPlanActions(root) {
+      root.querySelectorAll(".js-jump-review").forEach(function (button) {
+        button.addEventListener("click", jumpToReview);
+      });
+      root.querySelectorAll(".js-plan-practice").forEach(function (button) {
+        button.addEventListener("click", function () {
+          runtime.practicePreset = { subject: button.dataset.section || "all" };
+          navigate("exams/practice");
+        });
+      });
+      root.querySelectorAll(".js-retake-test").forEach(function (button) {
+        button.addEventListener("click", function () {
+          navigate("instructions/" + attempt.testId);
+        });
+      });
+    }
+
     function bindDetailInteractions(root) {
+      bindPlanActions(root);
       root.querySelectorAll(".js-open-result").forEach(function (button) {
         button.addEventListener("click", function () {
           navigate("results/" + button.dataset.id);
@@ -7382,6 +7835,7 @@
         });
       });
     }
+    // Covers the hero, notice, plan and detail cards on first render.
     bindDetailInteractions(app);
 
     function bindReviewButtons() {
@@ -7426,7 +7880,6 @@
       var moreRow = document.getElementById("question-review-more-row");
       if (!loadButton || !listEl || !statusEl || !moreRow) return;
       if (!analysis) {
-        listEl.innerHTML = '<div class="empty-state">Full question review is available for attempts submitted after the upgraded analysis system was enabled.</div>';
         moreRow.style.display = "none";
         return;
       }
@@ -7444,7 +7897,7 @@
       function loadPage(reset) {
         if (loading) return;
         loading = true;
-        statusEl.textContent = "Loading question review…";
+        statusEl.textContent = "Loading questions…";
         if (reset) {
           page = 1;
           listEl.innerHTML = "";
@@ -7454,12 +7907,12 @@
             var items = payload && payload.questions ? payload.questions : [];
             var pagination = payload && payload.pagination ? payload.pagination : { hasMore: false };
             if (!items.length && page === 1) {
-              listEl.innerHTML = '<div class="empty-state">Detailed question review is not available for this attempt yet.</div>';
+              listEl.innerHTML = '<div class="empty-state">Question review isn\'t ready for this attempt yet. Check back in a minute.</div>';
             } else {
               listEl.insertAdjacentHTML("beforeend", buildQuestionReviewItems(items, (page - 1) * limit));
             }
             loadedOnce = true;
-            statusEl.textContent = items.length ? "Question review loaded." : "No more question cards.";
+            statusEl.textContent = "";
             updateButtons(Boolean(pagination.hasMore));
             bindReviewButtons();
             renderLatexInElement(listEl);
@@ -7467,7 +7920,7 @@
             page += 1;
           })
           .catch(function (error) {
-            statusEl.textContent = error && error.message ? error.message : "Could not load question review.";
+            statusEl.textContent = error && error.message ? error.message : "Couldn't load the questions. Try again.";
           })
           .finally(function () {
             loading = false;
@@ -7498,7 +7951,6 @@
         if (derivedSectionScores) {
           sectionScores = derivedSectionScores;
         }
-        analysisHydrating = false;
         result.analysis = analysis || result.analysis || null;
         if (derivedSectionScores) {
           result.sectionScores = derivedSectionScores;
@@ -7506,12 +7958,20 @@
         var summaryRoot = document.getElementById("analysis-summary-root");
         var detailRoot = document.getElementById("analysis-detail-root");
         var reviewRoot = document.getElementById("analysis-review-root");
+        var heroSub = document.getElementById("rs-hero-sub");
+        var planBody = document.getElementById("rs-plan-body");
+        if (heroSub) heroSub.innerHTML = buildHeroSentence(analysis);
+        if (planBody) {
+          planBody.innerHTML = buildPlanBody(analysis);
+          bindPlanActions(planBody);
+        }
         if (summaryRoot) {
+          summaryRoot.className = "rs-row rs-top" + (analysis && analysis.timeAnalysis ? "" : " is-solo");
           summaryRoot.innerHTML = buildTopRow(analysis);
           activateAnalysisAnimations(summaryRoot);
         }
         if (detailRoot) {
-          detailRoot.className = "rs-row rs-detail" + (analysis ? "" : " is-solo");
+          detailRoot.className = detailRowClass(analysis);
           detailRoot.innerHTML = buildDetailRow(analysis);
           activateAnalysisAnimations(detailRoot);
           bindDetailInteractions(detailRoot);
@@ -7526,93 +7986,46 @@
     renderLatexInElement(document.body);
   }
 
-  // Performance Intelligence: verified metrics come from the attempt (shown above); this
-  // card shows the interpretation (AI when ready, deterministic otherwise), clearly labelled.
-  function renderPerformanceIntelligence(root, data) {
-    var result = data.result || {};
-    var isAi = data.source === "ai";
-    var profile = data.profile || {};
-    var previous = profile.previous || null;
-    var normalize = function (text) {
-      return String(text || "").toLowerCase().replace(/[^a-z0-9%.]+/g, " ").replace(/[.\s]+$/, "").trim();
-    };
-    var summaryKey = normalize(result.summary);
-    // The summary already quotes the leading pattern and the Trend card states the change since the
-    // previous attempt, so the fingerprint list does not repeat either.
-    var patterns = (result.behaviorPatterns || []).filter(function (item) {
-      var key = normalize(item);
-      if (!key) return false;
-      if (summaryKey && summaryKey.indexOf(key) !== -1) return false;
-      if (previous && /previous attempt/i.test(item)) return false;
-      return true;
-    });
-    var strengths = (result.strengths || []).filter(Boolean);
-    var leaks = (result.priorityAreas || []).filter(function (area) { return area && area.topic; });
-    var nextMoves = (result.nextTestStrategy || []).filter(Boolean);
-    var list = function (items) {
-      return '<ul class="pi-list">' + items.map(function (item) { return '<li>' + escapeHtml(item) + '</li>'; }).join("") + '</ul>';
-    };
-
-    var changeHtml = previous
-      ? '<p class="pi-change">Accuracy <strong class="' + (previous.accuracyPctDelta >= 0 ? 'is-up' : 'is-down') + '">' +
-        (previous.accuracyPctDelta >= 0 ? "up " : "down ") + escapeHtml(String(Math.abs(previous.accuracyPctDelta))) + '%</strong> since your previous attempt' +
-        (previous.sameTest && previous.scoreDelta !== null ? '; score ' + (previous.scoreDelta >= 0 ? "+" : "") + escapeHtml(String(previous.scoreDelta)) + ' on this test' : '') + '.</p>'
-      : '';
-    var trajectory = profile.trajectory || [];
-    var chartHtml = trajectory.length > 1
-      ? buildBarTrend(trajectory, { max: 100, label: "Accuracy across your recent attempts, oldest to latest" }) +
-        '<p class="pi-muted">Accuracy per attempt, oldest → latest.</p>'
-      : '';
-    var trendHtml = changeHtml + chartHtml ||
-      '<p class="pi-muted">This is your first attempt. Your trend appears after the next mock.</p>';
-
-    var diagnosis = [];
-    if (leaks.length) {
-      diagnosis.push('<section class="pi-block"><h4>Where Marks Leak</h4><ul class="pi-list">' + leaks.map(function (area) {
-        return '<li><strong>' + escapeHtml(area.topic) + '</strong>: ' + escapeHtml(area.reason || "") + (area.action ? ' <em>' + escapeHtml(area.action) + '</em>' : '') + '</li>';
-      }).join("") + '</ul></section>');
+  // Study notes in the results plan. Only an AI interpretation adds anything: the rule-based one
+  // restates numbers the page already shows. AI-written notes always carry the disclosure line.
+  function renderPlanNotes(attemptId, data) {
+    var plan = document.querySelector(".rs-plan");
+    if (!plan || plan.getAttribute("data-attempt") !== String(attemptId)) return;
+    var notesRoot = document.getElementById("rs-plan-notes");
+    var disclosureRoot = document.getElementById("rs-plan-disclosure");
+    if (!notesRoot || !disclosureRoot) return;
+    var result = (data && data.result) || {};
+    if (!data || data.source !== "ai" || !(result.headline || result.summary)) {
+      notesRoot.innerHTML = "";
+      disclosureRoot.hidden = true;
+      disclosureRoot.textContent = "";
+      return;
     }
-    if (patterns.length) diagnosis.push('<section class="pi-block"><h4>Your Error Fingerprint</h4>' + list(patterns) + '</section>');
-    if (strengths.length) diagnosis.push('<section class="pi-block"><h4>Your Edge</h4>' + list(strengths) + '</section>');
-
-    root.innerHTML =
-      '<div class="pi-header">' +
-      '<p class="section-label">Performance Intelligence</p>' +
-      '<span class="pi-badge ' + (isAi ? 'is-ai' : 'is-deterministic') + '">' + (isAi ? 'AI interpretation' : 'Rule-based interpretation') + '</span>' +
-      (data.pending ? '<span class="pi-muted">AI analysis in progress…</span>' : '') +
-      '</div>' +
-      (result.headline ? '<h3 class="pi-headline">' + escapeHtml(result.headline) + '</h3>' : '') +
-      (result.summary ? '<p class="pi-lead">' + escapeHtml(result.summary) + '</p>' : '') +
-      '<div class="pi-row-primary">' +
-      '<section class="pi-block pi-next"><h4>Your Next Move</h4>' +
-      (nextMoves.length ? list(nextMoves) : '<p class="pi-muted">Keep the same approach and take a timed mock to confirm it.</p>') +
-      '</section>' +
-      '<section class="pi-block pi-trend"><h4>Trend</h4>' + trendHtml + '</section>' +
-      '</div>' +
-      (diagnosis.length
-        ? '<div class="pi-row-diagnosis">' + diagnosis.join("") + '</div>'
-        : '<p class="pi-muted pi-diagnosis-empty">No standout strengths or weak spots in this attempt.</p>') +
-      '<p class="pi-footnote">Score, accuracy, rank and percentile above are verified metrics calculated by the portal; this interpretation explains them and never changes them.' +
-      (data.disclosure ? ' ' + escapeHtml(data.disclosure) : '') + '</p>';
+    notesRoot.innerHTML =
+      '<div class="rs-plan-notes">' +
+      '<span class="rs-ai-chip">AI-assisted</span>' +
+      (result.headline ? '<h3>' + escapeHtml(result.headline) + '</h3>' : '') +
+      (result.summary ? '<p>' + escapeHtml(result.summary) + '</p>' : '') +
+      '</div>';
+    disclosureRoot.textContent = "Study notes may be written with help from an AI service. Your score, rank and percentile are always calculated by AceIIIT.";
+    disclosureRoot.hidden = false;
   }
 
-  function mountPerformanceIntelligence(attemptId) {
+  function mountPlanNotes(attemptId) {
     if (!store.getInterpretation) return;
     var polls = 0;
     var load = function () {
-      var root = document.getElementById("performance-intelligence-root");
-      if (!root) return;
+      var plan = document.querySelector(".rs-plan");
+      if (!plan || plan.getAttribute("data-attempt") !== String(attemptId)) return;
       Promise.resolve(store.getInterpretation(attemptId)).then(function (data) {
-        var liveRoot = document.getElementById("performance-intelligence-root");
-        if (!liveRoot || !data) return;
-        renderPerformanceIntelligence(liveRoot, data);
+        if (!data) return;
+        renderPlanNotes(attemptId, data);
         polls += 1;
         if (data.pending && polls < 30) {
           window.setTimeout(load, 4000);
         }
       }).catch(function () {
-        var liveRoot = document.getElementById("performance-intelligence-root");
-        if (liveRoot) liveRoot.innerHTML = '<p class="section-label">Performance Intelligence</p><p class="pi-muted">Interpretation is unavailable right now. Your verified results above are complete.</p>';
+        // The plan stands on its own; notes are an extra.
       });
     };
     load();
@@ -10906,8 +11319,9 @@
   document.addEventListener("click", function (event) {
     var toggle = event.target && event.target.closest ? event.target.closest("[data-theme-toggle='true']") : null;
     if (!toggle) return;
-    toggleThemePreference();
+    switchThemeWithCurtain(toggle);
   });
+  ensureThemeCurtain();
 
   if (!window.location.hash) {
     var initialRoute = parseHashRoute();

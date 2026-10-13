@@ -4,6 +4,8 @@
   /* Motion tokens (animate skill): strong ease-out for UI, hover feedback stays near-instant. */
   --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
   --dur-hover: 200ms;
+  /* Theme curtain (the requested curtain theme-switch effect): strong in-out for a full-screen sweep. */
+  --ease-curtain: cubic-bezier(0.76, 0, 0.24, 1);
   --paper: #f3ecdf;
   --surface: #fffaf0;
   --surface-soft: #f6efe2;
@@ -518,8 +520,6 @@ body[data-theme="dark"] .app-loading-screen__animation {
     opacity: 1;
   }
 }
-
-
 
 a {
   color: inherit;
@@ -1053,12 +1053,135 @@ body[data-theme="dark"] select:-webkit-autofill:focus {
 .dashboard-greeting-hero {
   padding: 8px 0 12px;
   border-bottom: 1px solid rgba(20, 17, 15, 0.08);
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-end;
-  gap: 16px;
+  /* Greeting | your progress | mascot, so the numbers are visible as soon as the page opens. */
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-areas: "text progress mascot";
+  align-items: end;
+  column-gap: 28px;
   position: relative;
   overflow: visible;
+}
+
+.dashboard-greeting-hero-content {
+  grid-area: text;
+}
+
+/* Side by side needs ~1240px: below that the greeting gets squeezed, so the progress card drops under it. */
+@media (max-width: 1240px) {
+  .dashboard-greeting-hero {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "text mascot"
+      "progress progress";
+    row-gap: 14px;
+    column-gap: 16px;
+  }
+}
+
+/* ---- Your progress (hero) ---- */
+.hero-progress {
+  grid-area: progress;
+  min-width: 0;
+  margin-bottom: 12px;
+  padding: 12px 16px;
+  border: 1px solid rgba(20, 17, 15, 0.08);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.hero-progress-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 8px;
+}
+
+.hero-progress .section-label {
+  margin: 0;
+  font-size: 0.72rem;
+}
+
+.hero-progress-link {
+  color: var(--gold-strong);
+  font-size: 0.74rem;
+  white-space: nowrap;
+}
+
+.hero-progress-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(84px, auto));
+  gap: 6px 24px;
+  margin: 0;
+}
+
+.hero-stat {
+  display: flex;
+  flex-direction: column-reverse;
+  justify-content: flex-end;
+  gap: 2px;
+  min-width: 0;
+}
+
+.hero-stat dt {
+  color: var(--ink-soft);
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.hero-stat dd {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 6px;
+  margin: 0;
+}
+
+.hero-stat strong {
+  color: var(--ink);
+  font-family: var(--font-display);
+  font-size: 1.5rem;
+  font-weight: 800;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+
+.hero-stat small {
+  color: var(--ink-soft);
+  font-size: 0.68rem;
+}
+
+.hero-progress.is-empty p {
+  max-width: 30ch;
+  margin: 6px 0 0;
+  color: var(--ink-soft);
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+
+body[data-theme="dark"] .hero-progress {
+  border-color: rgba(244, 237, 226, 0.1);
+  background: #1b1917;
+}
+
+@media (max-width: 1240px) {
+  .hero-progress {
+    margin-bottom: 0;
+  }
+
+  .hero-progress-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 480px) {
+  .hero-progress-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px 16px;
+  }
 }
 
 .dashboard-greeting-hero-content {
@@ -1066,13 +1189,93 @@ body[data-theme="dark"] select:-webkit-autofill:focus {
 }
 
 .dashboard-greeting-mascot {
+  grid-area: mascot;
+  position: relative;
   width: 140px;
-  max-width: 25%;
   flex-shrink: 0;
   display: flex;
   align-items: flex-end;
   justify-content: flex-end;
   margin-bottom: -12px; /* Pull it slightly down to anchor it nicely on the bottom border */
+}
+
+/* The mascot is a button: hover, keyboard focus or a tap shows a tip in the bubble. */
+.mascot-button {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: none;
+  cursor: pointer;
+  transform-origin: 50% 100%;
+  transition: transform 200ms var(--ease-out);
+}
+
+.mascot-button:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 4px;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .mascot-button:hover {
+    transform: translateY(-3px) rotate(-2deg);
+  }
+}
+
+.mascot-bubble {
+  position: absolute;
+  right: calc(100% - 14px);
+  bottom: 56%;
+  z-index: 5;
+  width: max-content;
+  max-width: min(300px, 70vw);
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--gold) 60%, transparent);
+  border-radius: 14px 14px 4px 14px;
+  background: var(--surface);
+  box-shadow: 0 12px 28px rgba(20, 17, 15, 0.14);
+  color: var(--ink-soft);
+  font-family: var(--font-body);
+  font-size: 0.86rem;
+  line-height: 1.5;
+  text-align: left;
+  text-wrap: pretty;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(4px) scale(0.96);
+  transform-origin: 100% 100%;
+  transition: opacity 120ms var(--ease-out), transform 120ms var(--ease-out), visibility 0s linear 120ms;
+}
+
+.mascot-bubble strong {
+  color: var(--ink);
+}
+
+.mascot-bubble.is-visible {
+  opacity: 1;
+  visibility: visible;
+  transform: none;
+  transition: opacity 180ms var(--ease-out), transform 180ms var(--ease-out), visibility 0s;
+}
+
+body[data-theme="dark"] .mascot-bubble {
+  background: #1b1917;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.4);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mascot-bubble,
+  .mascot-bubble.is-visible {
+    transform: none;
+  }
+
+  .mascot-button,
+  .mascot-button:hover {
+    transform: none;
+    transition: none;
+  }
 }
 
 .dashboard-greeting-mascot img {
@@ -1082,16 +1285,20 @@ body[data-theme="dark"] select:-webkit-autofill:focus {
   object-fit: contain;
 }
 
+@media (max-width: 900px) {
+  .dashboard-greeting-mascot {
+    margin-bottom: 0;
+  }
+}
+
 @media (max-width: 768px) {
   .dashboard-greeting-mascot {
     width: 100px;
-    margin-bottom: -12px;
   }
 }
 @media (max-width: 480px) {
   .dashboard-greeting-mascot {
     width: 80px;
-    margin-bottom: -8px;
   }
 }
 
@@ -1581,37 +1788,6 @@ body[data-theme="dark"] {
 }
 
 /* Rail Progress Grid */
-.progress-rail-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 12px;
-  padding: 12px;
-  background: var(--surface-soft, rgba(20, 17, 15, 0.02));
-  border-radius: 6px;
-  border: 1px solid rgba(20, 17, 15, 0.06);
-}
-
-.progress-rail-col {
-  display: flex;
-  flex-direction: column;
-}
-
-.progress-rail-col .metric-val {
-  font-family: var(--font-display);
-  font-size: 1.75rem;
-  font-weight: 800;
-  color: var(--ink);
-  line-height: 1.1;
-}
-
-.progress-rail-col .metric-label {
-  font-size: 0.72rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--ink-soft);
-  margin-top: 2px;
-}
 
 /* Official Notice Board Card */
 .dashboard-notice-card {
@@ -1711,11 +1887,6 @@ body[data-theme="dark"] .rail-header {
 
 body[data-theme="dark"] .rail-divider {
   background: rgba(255, 255, 255, 0.08);
-}
-
-body[data-theme="dark"] .progress-rail-grid {
-  background: rgba(255, 255, 255, 0.03);
-  border-color: rgba(255, 255, 255, 0.08);
 }
 
 body[data-theme="dark"] .dashboard-notice-card {
@@ -4356,16 +4527,76 @@ body[data-theme="dark"] .katex-display {
   background: rgba(255, 250, 240, 0.92);
   color: var(--ink);
   box-shadow: 0 10px 22px rgba(20, 17, 15, 0.12);
-  transition: transform 140ms ease, background-color 140ms ease, border-color 140ms ease, color 140ms ease;
+  transition: transform 150ms ease, background-color 140ms ease, border-color 140ms ease, color 140ms ease;
 }
 
-.theme-nav-button:hover {
-  transform: translateY(-1px);
+@media (hover: hover) and (pointer: fine) {
+  .theme-nav-button:hover {
+    transform: scale(1.1);
+  }
+}
+
+.theme-nav-button:active {
+  transform: scale(0.96);
 }
 
 .theme-nav-icon {
-  font-size: 1.15rem;
+  display: inline-flex;
   line-height: 1;
+}
+
+.theme-nav-icon svg {
+  width: 18px;
+  height: 18px;
+}
+
+/* Theme switch curtain: a full-screen panel in the next theme's page colour drops from the top,
+   the theme changes while the page is covered, then the panel pulls back up. Duration is set
+   from app.js (THEME_CURTAIN_MS). While active it also blocks clicks on the hidden page. */
+.theme-curtain {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  transform: scaleY(0);
+  transform-origin: top;
+  transition-property: transform;
+  transition-timing-function: var(--ease-curtain);
+  pointer-events: none;
+  /* Literal page colours: --paper itself flips with the theme the curtain is leaving. */
+  background: #f3ecdf;
+}
+
+.theme-curtain[data-to="dark"] {
+  background: #111111;
+}
+
+.theme-curtain.is-active {
+  pointer-events: auto;
+}
+
+.theme-curtain.is-covering {
+  transform: scaleY(1);
+}
+
+/* Reduced motion: no sweep; the curtain fades in and out instead. */
+@media (prefers-reduced-motion: reduce) {
+  .theme-curtain {
+    transform: none;
+    opacity: 0;
+    transition-property: opacity;
+    transition-timing-function: ease;
+  }
+
+  .theme-curtain.is-covering {
+    transform: none;
+    opacity: 1;
+  }
+
+  .theme-nav-button,
+  .theme-nav-button:hover,
+  .theme-nav-button:active {
+    transform: none;
+  }
 }
 
 .support-chat-button {
@@ -5174,7 +5405,6 @@ body[data-theme="dark"] .support-chat-button {
   font-weight: 700;
 }
 
-
 .status-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -5310,7 +5540,6 @@ body[data-theme="dark"] .support-chat-button {
 .exam-submitcard .button {
   width: 100%;
 }
-
 
 .exam-footerbar {
   padding: 3px 0;
@@ -8491,9 +8720,6 @@ body[data-theme="dark"] .aceiiit-logo-hero-img {
     display: none !important;
   }
 }
-    height: 190px;
-  }
-}
 
 /* Reduced Motion Mode Support */
 @media (prefers-reduced-motion: reduce) {
@@ -8535,7 +8761,6 @@ body[data-theme="dark"] .aceiiit-logo-hero-img {
 body[data-theme="dark"] .dashboard-header.is-pinned {
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
 }
-
 
 .dashboard-header-inner {
   display: flex;
@@ -8919,7 +9144,6 @@ body.is-scroll-locked {
   margin: 0 auto;
   padding: 20px 24px 48px;
 }
-
 
 .section-page-header {
   margin-bottom: 28px;
@@ -10916,16 +11140,6 @@ body[data-theme="dark"] .js-topic-scroll::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.28);
 }
 
-.plan-highlight {
-  font-weight: 700;
-  background-color: rgba(16, 185, 129, 0.15);
-  color: #10b981;
-  padding: 2px 6px;
-  border-radius: 4px;
-  display: inline-block;
-  margin: 0 2px;
-}
-
 .plan-card-name {
   color: var(--ink);
   font-weight: 600;
@@ -11113,38 +11327,6 @@ body.exam-integrity-active textarea {
 }
 
 /* ===================== Performance Intelligence ===================== */
-.pi-card {
-  flex: 1 1 100%;
-  padding: 24px;
-}
-
-.pi-header {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.pi-header .section-label {
-  margin: 0;
-}
-
-.pi-badge {
-  font-size: 0.72rem;
-  font-weight: 700;
-  padding: 3px 10px;
-  border-radius: 999px;
-}
-
-.pi-badge.is-ai {
-  background: rgba(88, 80, 236, 0.12);
-  color: #4338ca;
-}
-
-.pi-badge.is-deterministic {
-  background: rgba(20, 17, 15, 0.07);
-  color: #524c46;
-}
 
 .pi-muted {
   font-size: 0.82rem;
@@ -11153,67 +11335,6 @@ body.exam-integrity-active textarea {
 
 /* Reading order: headline → summary → (next move | trend) → diagnosis → footnote.
    Rows stretch so neighbouring cards end level; empty diagnosis cards are not rendered. */
-.pi-headline {
-  margin: 12px 0 6px;
-}
-
-.pi-lead {
-  max-width: 75ch;
-  margin: 0 0 16px;
-  line-height: 1.55;
-}
-
-.pi-block h4 {
-  margin: 0 0 6px;
-  font-size: 0.95rem;
-}
-
-.pi-row-primary {
-  display: grid;
-  grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
-  gap: 12px;
-  align-items: stretch;
-}
-
-.pi-row-diagnosis {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
-  gap: 12px;
-  align-items: stretch;
-  margin-top: 12px;
-}
-
-.pi-next {
-  border-left: 3px solid var(--gold-strong, #a88411);
-}
-
-.pi-change {
-  margin: 0 0 10px;
-}
-
-.pi-change .is-up {
-  color: var(--green, #157347);
-}
-
-.pi-change .is-down {
-  color: var(--red, #b42318);
-}
-
-.pi-diagnosis-empty {
-  margin: 12px 0 0;
-}
-
-.pi-footnote {
-  margin: 14px 0 0;
-  font-size: 0.78rem;
-  color: var(--ink-soft, #6b635b);
-}
-
-@media (max-width: 900px) {
-  .pi-row-primary {
-    grid-template-columns: minmax(0, 1fr);
-  }
-}
 
 /* Labelled mini column chart (buildBarTrend). */
 .bar-trend {
@@ -11259,17 +11380,6 @@ body.exam-integrity-active textarea {
 .bar-trend-col.is-latest .bar-trend-value {
   color: var(--ink);
 }
-
-.pi-list {
-  margin: 0;
-  padding-left: 18px;
-}
-
-.pi-list li {
-  margin: 4px 0;
-  line-height: 1.45;
-}
-
 
 /* M8 responsive audit: the Studio stepper has 9 tabs, which overflowed the page at every
    width (even 1440px). Let them wrap. The compact question row's fixed grid squeezed the
@@ -11351,17 +11461,6 @@ body.exam-integrity-active textarea {
 /* M8 responsive audit: the dashboard progress rail used 1fr columns (min-content floor),
    which pushed the 320px dashboard 40px wide; results stats stack 2-up on phones instead
    of a 780px strip. */
-.progress-rail-grid {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.progress-rail-col {
-  min-width: 0;
-}
-
-.progress-rail-col .metric-val {
-  overflow-wrap: anywhere;
-}
 
 @media (max-width: 600px) {
   .report-hero-panel .premium-stats-grid {
@@ -11736,6 +11835,8 @@ body[data-theme="dark"] .account-panel {
 
 /* ===================== Results page ===================== */
 .rs-page {
+  /* Clearance so the floating support chip never covers the last card's buttons. */
+  padding-bottom: calc(72px + var(--safe-bottom));
   --rs-line: color-mix(in srgb, var(--ink) 10%, transparent);
   --rs-soft: color-mix(in srgb, var(--ink) 5%, transparent);
   --rs-correct: #239442;
@@ -11783,6 +11884,9 @@ body[data-theme="dark"] .account-panel {
 
 .rs-hero-actions {
   flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
 }
 
 .rs-kpis {
@@ -11812,7 +11916,6 @@ body[data-theme="dark"] .account-panel {
 }
 
 .rs-kpi-label,
-.rs-tag span,
 .rs-stat span,
 .rs-topic-row.is-head {
   color: var(--ink-soft);
@@ -11924,31 +12027,265 @@ body[data-theme="dark"] .account-panel {
   grid-template-columns: minmax(0, 1.65fr) minmax(0, 1fr);
 }
 
-.rs-detail.is-solo {
+.rs-row.is-solo {
   grid-template-columns: minmax(0, 1fr);
 }
 
-.rs-side-stack {
+/* ---- Results: plan for the next mock ---- */
+/* A real heading for the plan, styled like the other card labels (which are <p>). */
+h2.section-label {
+  font-family: 'Geist Mono', monospace;
+  line-height: inherit;
+}
+
+.rs-plan-steps {
   display: grid;
-  gap: 18px;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+  gap: 14px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.rs-plan-step {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: 16px 18px;
+  border: 1px solid var(--rs-line);
+  border-radius: var(--radius-sm);
+  background: var(--rs-soft);
+}
+
+.rs-plan-step:first-child {
+  border-color: color-mix(in srgb, var(--gold) 55%, transparent);
+  background: color-mix(in srgb, var(--gold) 8%, transparent);
+}
+
+.rs-plan-num {
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--gold);
+  color: #14110f;
+  font-family: var(--font-display);
+  font-size: 0.8rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.rs-plan-step h4 {
+  margin: 4px 0 0;
+  font-family: var(--font-display);
+  font-size: 1.02rem;
+  line-height: 1.3;
+  text-wrap: balance;
+}
+
+.rs-plan-step p {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.88rem;
+  line-height: 1.55;
+  text-wrap: pretty;
+}
+
+.rs-plan-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 8px;
+}
+
+.rs-plan-notes {
+  max-width: 75ch;
+  margin: 0 0 16px;
+}
+
+.rs-plan-notes h3 {
+  margin: 8px 0 4px;
+  font-size: 1.1rem;
+  text-wrap: balance;
+}
+
+.rs-plan-notes p {
+  margin: 0;
+  color: var(--ink-soft);
+  line-height: 1.55;
+  text-wrap: pretty;
+}
+
+.rs-ai-chip {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: var(--rs-soft);
+  color: var(--ink-soft);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.rs-plan-disclosure {
+  margin: 14px 0 0;
+  color: var(--ink-soft);
+  font-size: 0.78rem;
+}
+
+.rs-working,
+.rs-untouched {
+  margin: 14px 0 0;
+  color: var(--ink-soft);
+  font-size: 0.86rem;
+  line-height: 1.6;
+  text-wrap: pretty;
+}
+
+.rs-working span,
+.rs-untouched span,
+.rs-working b {
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.rs-untouched {
+  padding-top: 12px;
+  border-top: 1px solid var(--rs-line);
+}
+
+/* Ended-early attempt: a calm notice above the plan. */
+.rs-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px 24px;
+  border-color: color-mix(in srgb, var(--gold) 55%, transparent);
+  background: color-mix(in srgb, var(--gold) 8%, var(--surface));
+}
+
+.rs-notice-text {
+  flex: 1 1 420px;
   min-width: 0;
 }
 
-/* Two-column rows end level: the stacked column's last card takes up the slack instead of
-   leaving a blank area beside the taller neighbour. */
-@media (min-width: 961px) {
-  .rs-side-stack {
-    display: flex;
-    flex-direction: column;
-  }
+.rs-notice h2 {
+  margin: 0 0 4px;
+  font-family: var(--font-display);
+  font-size: 1.05rem;
+  text-wrap: balance;
+}
 
-  .rs-side-stack > :last-child {
-    flex: 1 1 auto;
+.rs-notice p {
+  max-width: 80ch;
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.9rem;
+  line-height: 1.55;
+  text-wrap: pretty;
+}
+
+.rs-time-note,
+.rs-review-sub,
+.rs-first-attempt p {
+  margin: 12px 0 0;
+  color: var(--ink-soft);
+  font-size: 0.88rem;
+  line-height: 1.55;
+}
+
+.rs-review-sub {
+  margin-top: 4px;
+}
+
+.rs-first-attempt {
+  display: grid;
+  justify-items: start;
+  gap: 10px;
+}
+
+.rs-first-attempt p {
+  margin: 0;
+}
+
+/* First attempt at a paper: one line and a Retake action, laid out as a strip. */
+.rs-history.is-first {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 24px;
+}
+
+.rs-history.is-first .rs-card-head {
+  margin: 0;
+}
+
+.rs-history.is-first .rs-first-attempt {
+  display: flex;
+  flex: 1 1 420px;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 20px;
+}
+
+/* Question review header: the button drops under the copy on phones. */
+@media (max-width: 640px) {
+  #question-review-section .analysis-review-head {
+    flex-direction: column;
+    align-items: stretch;
   }
 }
 
+/* Progress on this paper: labelled score chart and the comparison with the previous attempt. */
+.rs-history .bar-trend {
+  height: 104px;
+}
+
+.bar-trend.has-x-labels {
+  margin-bottom: 28px;
+}
+
+.bar-trend.has-x-labels .bar-trend-col {
+  position: relative;
+  max-width: 72px;
+}
+
+.bar-trend-x {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  color: var(--ink-soft);
+  font-size: 0.68rem;
+  white-space: nowrap;
+}
+
+.bar-trend-col.is-latest .bar-trend-x {
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.rs-compare {
+  margin: 0 0 12px;
+  color: var(--ink-soft);
+  font-size: 0.86rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.rs-compare .is-up {
+  color: var(--rs-correct);
+}
+
+.rs-compare .is-down {
+  color: var(--rs-wrong);
+}
+
 .rs-card,
-.rs-page .pi-card,
 #analysis-review-root > section {
   min-width: 0;
   margin: 0;
@@ -11959,8 +12296,7 @@ body[data-theme="dark"] .account-panel {
   box-shadow: none;
 }
 
-.rs-card .section-label,
-.rs-page .pi-card .section-label {
+.rs-card .section-label {
   margin: 0 0 12px;
 }
 
@@ -12033,56 +12369,6 @@ body[data-theme="dark"] .rs-page .is-focus { --rs-tone: #ef7f73; }
   font-size: 0.75rem;
   font-weight: 800;
   white-space: nowrap;
-}
-
-.rs-verdict-tags {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-}
-
-.rs-tag {
-  display: grid;
-  gap: 2px;
-  padding: 10px 12px;
-  border-left: 3px solid var(--rs-tone, var(--gray));
-  border-radius: var(--radius-sm);
-  background: var(--rs-soft);
-}
-
-.rs-tag strong {
-  color: var(--rs-tone, var(--ink));
-  font-family: var(--font-display);
-  font-size: 1.05rem;
-}
-
-.rs-tag small {
-  color: var(--ink-soft);
-  font-size: 0.76rem;
-}
-
-.rs-verdict-line {
-  margin: 12px 0 0;
-  color: var(--ink-soft);
-  font-size: 0.85rem;
-}
-
-.rs-verdict-line b {
-  color: var(--ink);
-}
-
-.rs-steps {
-  display: grid;
-  gap: 8px;
-  margin: 12px 0 0;
-  padding-left: 20px;
-  font-size: 0.9rem;
-  line-height: 1.5;
-}
-
-.rs-steps li::marker {
-  color: var(--gold-strong);
-  font-weight: 800;
 }
 
 .rs-topic-table {
@@ -12184,8 +12470,13 @@ body[data-theme="dark"] .rs-page .is-focus { --rs-tone: #ef7f73; }
 
 .rs-stat-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 130px), 1fr));
   gap: 10px;
+}
+
+.rs-stat small {
+  color: var(--ink-soft);
+  font-size: 0.74rem;
 }
 
 .rs-stat {
@@ -12200,57 +12491,6 @@ body[data-theme="dark"] .rs-page .is-focus { --rs-tone: #ef7f73; }
   font-family: var(--font-display);
   font-size: 1.2rem;
   font-variant-numeric: tabular-nums;
-}
-
-.rs-notes {
-  display: grid;
-  gap: 6px;
-  margin: 12px 0 0;
-  padding: 0;
-  font-size: 0.84rem;
-  list-style: none;
-}
-
-.rs-notes li::before {
-  content: "●";
-  margin-right: 8px;
-  font-size: 0.65rem;
-  vertical-align: 1px;
-}
-
-.rs-notes li.is-ok::before {
-  color: var(--rs-correct);
-}
-
-.rs-notes li.is-warn::before {
-  color: #d9822b;
-}
-
-.rs-trend {
-  display: flex;
-  align-items: flex-end;
-  gap: 6px;
-  height: 56px;
-  margin-bottom: 12px;
-}
-
-.rs-trend span {
-  display: flex;
-  flex: 1 1 0;
-  align-items: flex-end;
-  max-width: 34px;
-  height: 100%;
-}
-
-.rs-trend b {
-  display: block;
-  width: 100%;
-  border-radius: 4px 4px 0 0;
-  background: color-mix(in srgb, var(--gold) 40%, transparent);
-}
-
-.rs-trend span.is-current b {
-  background: var(--gold);
 }
 
 .rs-history-list {
@@ -12283,17 +12523,6 @@ body[data-theme="dark"] .rs-page .is-focus { --rs-tone: #ef7f73; }
   font-weight: 600;
 }
 
-.rs-page .pi-block {
-  min-width: 0;
-  padding: 14px 16px;
-  border-radius: var(--radius-sm);
-  background: var(--rs-soft);
-}
-
-.rs-page .pi-headline {
-  margin: 8px 0 6px;
-}
-
 @media (max-width: 1100px) {
   .rs-kpis {
     grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -12312,10 +12541,6 @@ body[data-theme="dark"] .rs-page .is-focus { --rs-tone: #ef7f73; }
   .rs-top,
   .rs-detail {
     grid-template-columns: minmax(0, 1fr);
-  }
-
-  .rs-side-stack {
-    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   }
 }
 
@@ -12345,13 +12570,8 @@ body[data-theme="dark"] .rs-page .is-focus { --rs-tone: #ef7f73; }
   }
 
   .rs-card,
-  .rs-page .pi-card,
   #analysis-review-root > section {
     padding: 16px;
-  }
-
-  .rs-verdict-tags {
-    grid-template-columns: minmax(0, 1fr);
   }
 
   .rs-hero-actions,
@@ -12392,16 +12612,6 @@ body[data-theme="dark"] .rs-page .is-focus { --rs-tone: #ef7f73; }
 }
 
 /* Readable sans body font for long interpretation text. */
-.rs-page .pi-card p,
-.rs-page .pi-card li {
-  font-family: var(--font-body);
-  font-size: 0.88rem;
-  line-height: 1.55;
-}
-
-.rs-page .pi-card .pi-footnote {
-  font-size: 0.78rem;
-}
 
 /* Exam sidebar refinements: the caption repeats the section header; one-line progress note;
    on short screens the candidate card yields its row to the palette. */
@@ -12482,7 +12692,8 @@ body[data-theme="dark"] .filter-tab-btn.is-active::after {
 .auth-terms-notice a,
 .link-button,
 .link-button-v2,
-.aceiiit-link {
+.aceiiit-link,
+.hero-progress-link {
   font-weight: 600;
   text-decoration: none;
   background-image: linear-gradient(currentColor, currentColor);
@@ -12513,7 +12724,8 @@ body[data-theme="dark"] .filter-tab-btn.is-active::after {
 .auth-terms-notice a:focus-visible,
 .link-button:focus-visible,
 .link-button-v2:focus-visible,
-.aceiiit-link:focus-visible {
+.aceiiit-link:focus-visible,
+.hero-progress-link:focus-visible {
   background-size: 100% 1px;
 }
 

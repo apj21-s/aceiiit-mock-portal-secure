@@ -9,6 +9,7 @@ const Reminder = require("../models/Reminder");
 const User = require("../models/User");
 const { logAuditEvent } = require("../services/auditLogService");
 const { clearSessionCookie } = require("../services/sessionService");
+const { removeGoogleCalendarData } = require("../services/accountPurgeService");
 
 // Self-service data rights: download your data, and delete your account.
 
@@ -60,9 +61,10 @@ const deleteSchema = z.object({
 });
 
 /**
- * Deletes the account: signs out every session immediately and moves the account to trash.
- * An admin purge then anonymizes attempts and removes reminders/calendar data (see
- * purgeUserCascade). Password accounts must re-enter their password.
+ * Deletes the account: signs out every session and revokes Google Calendar access immediately,
+ * and moves the account to trash. It is purged automatically 30 days later (or earlier by an
+ * admin): attempts anonymized, personal data removed (accountPurgeService).
+ * Password accounts must re-enter their password.
  */
 async function deleteMyAccount(req, res, next) {
   try {
@@ -83,6 +85,9 @@ async function deleteMyAccount(req, res, next) {
     user.tokenVersion = Number(user.tokenVersion || 0) + 1;
     await user.save();
     await Reminder.updateMany({ userId: user._id, cancelledAt: null }, { $set: { cancelledAt: new Date(), deliveryState: "cancelled" } });
+    // Google Calendar access is revoked and its data removed now; the rest of the account is
+    // purged automatically after the 30-day grace period (accountPurgeService).
+    await removeGoogleCalendarData(user._id);
     await logAuditEvent({
       actorUserId: user._id,
       action: "ACCOUNT_DELETION_REQUESTED",
