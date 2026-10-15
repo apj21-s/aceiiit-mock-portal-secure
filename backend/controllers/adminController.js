@@ -944,6 +944,12 @@ async function revokeUserPayment(req, res, next) {
   try {
     const user = await User.findById(req.params.id);
     if (!user || user.deletedAt) return res.status(404).json({ error: "User not found" });
+    // Strict revoke: every entitlement (all seasons) and every verified payment for this email,
+    // so no paid test, practice pool or enrolled mentor tier stays open and login can't re-grant.
+    const email = user.normalizedEmail || String(user.email || "").toLowerCase();
+    const now = new Date();
+    await Entitlement.updateMany({ normalizedEmail: email, status: { $ne: "revoked" } }, { $set: { status: "revoked", revokedAt: now } });
+    await PaymentRecord.updateMany({ normalizedEmail: email, status: "verified" }, { $set: { status: "revoked", revokedAt: now } });
     user.isPaid = false;
     await user.save();
     res.json({ ok: true, user: user.toJSON() });

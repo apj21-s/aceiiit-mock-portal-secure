@@ -9,6 +9,7 @@ const MentorConversation = require("../../models/MentorConversation");
 const MentorMessage = require("../../models/MentorMessage");
 const MentorUsage = require("../../models/MentorUsage");
 const PaymentRecord = require("../../models/PaymentRecord");
+const Entitlement = require("../../models/Entitlement");
 const Question = require("../../models/Question");
 const { getActiveSeason } = require("../../services/seasonService");
 const { clearMentorSettingsCache } = require("../../services/mentorSettingsService");
@@ -222,6 +223,27 @@ describe("enrolled tier comes only from verified enrolment", () => {
     const enrolled = (await c.get("/api/mentor/usage")).body.usage;
     expect(enrolled).toMatchObject({ tier: "enrolled", limit: 50, source: { type: "portal_payment", resourceCode: "UGEE_PROGRAMME" } });
     await PaymentRecord.updateOne({ normalizedEmail: "student1@test.local" }, { $set: { status: "revoked" } });
+    expect((await c.get("/api/mentor/usage")).body.usage.tier).toBe("free");
+  });
+
+  test("with PAID_MOCK_SERIES listed, any active portal paid access counts (admin grants too); revoked or expired doesn't", async () => {
+    const c = await student();
+    const season = await getActiveSeason();
+    const ent = await Entitlement.create({ email: "student1@test.local", normalizedEmail: "student1@test.local", seasonId: season._id, tier: "paid", status: "active", source: "admin" });
+    expect((await c.get("/api/mentor/usage")).body.usage.tier).toBe("free"); // no codes configured yet
+    await setLimits({ programCodes: ["PAID_MOCK_SERIES"] });
+    expect((await c.get("/api/mentor/usage")).body.usage).toMatchObject({ tier: "enrolled", source: { type: "portal_access", resourceCode: "PAID_MOCK_SERIES" } });
+    await Entitlement.updateOne({ _id: ent._id }, { $set: { expiresAt: new Date(Date.now() - 1000) } });
+    expect((await c.get("/api/mentor/usage")).body.usage.tier).toBe("free");
+    await Entitlement.updateOne({ _id: ent._id }, { $set: { expiresAt: null, status: "revoked" } });
+    expect((await c.get("/api/mentor/usage")).body.usage.tier).toBe("free");
+  });
+
+  test("portal paid access doesn't count for other programme codes", async () => {
+    await setLimits({ programCodes: ["CLASS_NOTES"] });
+    const c = await student();
+    const season = await getActiveSeason();
+    await Entitlement.create({ email: "student1@test.local", normalizedEmail: "student1@test.local", seasonId: season._id, tier: "paid", status: "active", source: "admin" });
     expect((await c.get("/api/mentor/usage")).body.usage.tier).toBe("free");
   });
 

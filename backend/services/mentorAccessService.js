@@ -1,5 +1,6 @@
 const MentorUsage = require("../models/MentorUsage");
 const PaymentRecord = require("../models/PaymentRecord");
+const { hasAnyActiveEntitlement } = require("./entitlementService");
 const { getMentorSettings } = require("./mentorSettingsService");
 const { getSiteCustomer, isConfigured: siteConfigured } = require("./siteCustomerService");
 const { logger, errorSummary } = require("../utils/logger");
@@ -9,7 +10,9 @@ const { logger, errorSummary } = require("../utils/logger");
 // Period: the calendar month in Asia/Kolkata (IST, UTC+5:30). Resets at 00:00 IST on the 1st.
 // Tier: "enrolled" only with a verified, active purchase whose resource code an admin listed as
 // programme enrolment (Studio → ACEIIIT Mentor): an ACTIVE entitlement on the AceIIIT site, or a
-// verified commerce payment recorded here. Anything else, including a site lookup that fails,
+// verified commerce payment recorded here. PAID_MOCK_SERIES is the portal's own paid access, so
+// listing it also counts any active, unexpired portal entitlement (including access an admin
+// granted in Studio), the same rule that unlocks paid tests. Anything else, including a site lookup that fails,
 // is the free tier (fail closed). The browser never decides the tier or the count.
 // Usage: see models/MentorUsage.js (reserve → settle on success / release on failure).
 
@@ -44,6 +47,9 @@ async function findProgrammeEnrolment(user, settings) {
     .select("rawPayload verifiedAt")
     .lean();
   if (payment) return { type: "portal_payment", resourceCode: payment.rawPayload.resourceCode, since: payment.verifiedAt || null };
+  if (codes.includes("PAID_MOCK_SERIES") && (await hasAnyActiveEntitlement(email))) {
+    return { type: "portal_access", resourceCode: "PAID_MOCK_SERIES", since: null };
+  }
   if (!siteConfigured()) return null;
   try {
     const site = await getSiteCustomer(email);

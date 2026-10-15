@@ -181,7 +181,7 @@ calculated by the portal; the model only explains them.
    in the UGEE preparation programme". A student gets the enrolled allowance only with an
    **ACTIVE** entitlement for one of those codes on the AceIIIT site, or a **verified**
    commerce payment for one recorded in the portal. The list starts empty, so everyone is on
-   the free allowance until an operator sets it. The site's entitlement code comes from the
+   the free allowance until an operator sets it. Listing `PAID_MOCK_SERIES` also counts any active, unexpired portal paid access (including access granted by an admin in Studio). The site's entitlement code comes from the
    product's metadata (`resourceCode`, default `DEFAULT_ACCESS`); confirm which code the
    programme product grants before entering it. A site lookup that fails counts as free.
 4. Deploy the AceIIIT site API with `GET /api/internal/portal/customer` and
