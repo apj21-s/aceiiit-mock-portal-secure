@@ -23,7 +23,6 @@
         noticeBody: "",
       },
       bookmarks: {},
-      studyMaterials: { folders: [], loadedAt: 0 },
     },
     // Auth is an httpOnly cookie set by the server; the browser only caches the user profile.
     session: {
@@ -68,16 +67,9 @@
     state.db.reminders = Array.isArray(state.db.reminders) ? state.db.reminders : [];
     state.db.appConfig = Object.assign({ ugeeExamDate: null, featuredTestId: "", noticeTitle: "", noticeBody: "" }, state.db.appConfig || {});
     state.db.bookmarks = state.db.bookmarks || {};
-    // Study materials are server-backed now. Folders/files an admin once saved only in this
-    // browser (old builds) move aside so the Studio can offer to upload them.
-    var storedMaterials = state.db.studyMaterials;
-    if (storedMaterials && Array.isArray(storedMaterials.files)) {
-      if (storedMaterials.files.length || (storedMaterials.folders || []).length) {
-        state.db.legacyStudyMaterials = { folders: storedMaterials.folders || [], files: storedMaterials.files };
-      }
-      storedMaterials = null;
-    }
-    state.db.studyMaterials = storedMaterials && Array.isArray(storedMaterials.folders) ? storedMaterials : { folders: [], loadedAt: 0 };
+    // Study materials now live in Google Drive and are fetched per folder; drop old caches.
+    delete state.db.studyMaterials;
+    delete state.db.legacyStudyMaterials;
     // Drop client-only practice papers and attempts from older builds (practice is server-built now).
     state.db.tests = (state.db.tests || []).filter(function (t) { return !(t && String(t.id || "").indexOf("practice_") === 0); });
     state.db.attempts = (state.db.attempts || []).filter(function (a) {
@@ -2116,62 +2108,61 @@
     return state.db.bookmarks[userId].some(function(b) { return b.id === questionId; });
   }
 
-  // Study materials live on the server (free for every signed-in student). The list is cached
-  // here so pages render at once; refreshStudyMaterials() reloads it.
-  function getStudyMaterials() {
-    return clone(state.db.studyMaterials || { folders: [], loadedAt: 0 });
+  // Study materials live in the admin's Google Drive; the server is the window onto it.
+  function folderQuery(folderId) {
+    return folderId ? "?folder=" + encodeURIComponent(String(folderId)) : "";
   }
 
-  async function refreshStudyMaterials() {
-    var data = await api("/api/materials", { method: "GET" });
-    state.db.studyMaterials = {
-      folders: Array.isArray(data && data.folders) ? data.folders : [],
-      maxBytes: Number((data && data.maxBytes) || 0),
-      loadedAt: Date.now(),
-    };
-    saveState();
-    return clone(state.db.studyMaterials);
+  async function listMaterials(folderId) {
+    return api("/api/materials" + folderQuery(folderId), { method: "GET" });
   }
 
-  async function createMaterialFolder(input) {
-    var data = await api("/api/materials/folders", { method: "POST", body: JSON.stringify(input || {}) });
+  async function searchMaterials(query) {
+    return api("/api/materials/search?q=" + encodeURIComponent(String(query || "")), { method: "GET" });
+  }
+
+  async function getDriveStatus() {
+    var data = await api("/api/materials/drive", { method: "GET" });
+    return data && data.drive ? data.drive : { connected: false };
+  }
+
+  async function connectDrive() {
+    return api("/api/materials/drive/connect", { method: "POST", body: "{}" });
+  }
+
+  async function disconnectDrive() {
+    return api("/api/materials/drive/disconnect", { method: "POST", body: "{}" });
+  }
+
+  async function setDriveRoot(folder) {
+    return api("/api/materials/drive/root", { method: "POST", body: JSON.stringify({ folder: String(folder || "") }) });
+  }
+
+  async function refreshMaterialsCache() {
+    return api("/api/materials/refresh", { method: "POST", body: "{}" });
+  }
+
+  async function createMaterialFolder(parentId, name) {
+    var data = await api("/api/materials/folders", { method: "POST", body: JSON.stringify({ parentId: parentId || null, name: String(name || "") }) });
     return data.folder;
   }
 
-  async function updateMaterialFolder(folderId, input) {
-    var data = await api("/api/materials/folders/" + encodeURIComponent(folderId), { method: "PATCH", body: JSON.stringify(input || {}) });
-    return data.folder;
+  async function updateMaterialItem(itemId, patch) {
+    var data = await api("/api/materials/items/" + encodeURIComponent(itemId), { method: "PATCH", body: JSON.stringify(patch || {}) });
+    return data.item;
   }
 
-  async function deleteMaterialFolder(folderId) {
-    return api("/api/materials/folders/" + encodeURIComponent(folderId), { method: "DELETE" });
+  async function deleteMaterialItem(itemId) {
+    return api("/api/materials/items/" + encodeURIComponent(itemId), { method: "DELETE" });
   }
 
-  async function signMaterialUpload(input) {
-    return api("/api/materials/uploads/sign", { method: "POST", body: JSON.stringify(input || {}) });
+  async function startDriveUpload(input) {
+    return api("/api/materials/uploads/session", { method: "POST", body: JSON.stringify(input || {}) });
   }
 
-  async function registerMaterialFile(input) {
-    var data = await api("/api/materials/files", { method: "POST", body: JSON.stringify(input || {}) });
+  async function completeDriveUpload(fileId) {
+    var data = await api("/api/materials/uploads/complete", { method: "POST", body: JSON.stringify({ fileId: String(fileId || "") }) });
     return data.file;
-  }
-
-  async function renameMaterialFile(fileId, name) {
-    var data = await api("/api/materials/files/" + encodeURIComponent(fileId), { method: "PATCH", body: JSON.stringify({ name: name }) });
-    return data.file;
-  }
-
-  async function deleteMaterialFile(fileId) {
-    return api("/api/materials/files/" + encodeURIComponent(fileId), { method: "DELETE" });
-  }
-
-  function getLegacyStudyMaterials() {
-    return state.db.legacyStudyMaterials ? clone(state.db.legacyStudyMaterials) : null;
-  }
-
-  function clearLegacyStudyMaterials() {
-    delete state.db.legacyStudyMaterials;
-    saveState();
   }
 
   function getPracticeAttemptsCount(userId) {
@@ -2347,17 +2338,18 @@
     addBookmark: addBookmark,
     removeBookmark: removeBookmark,
     hasBookmark: hasBookmark,
-    getStudyMaterials: getStudyMaterials,
-    refreshStudyMaterials: refreshStudyMaterials,
+    listMaterials: listMaterials,
+    searchMaterials: searchMaterials,
+    getDriveStatus: getDriveStatus,
+    connectDrive: connectDrive,
+    disconnectDrive: disconnectDrive,
+    setDriveRoot: setDriveRoot,
+    refreshMaterialsCache: refreshMaterialsCache,
     createMaterialFolder: createMaterialFolder,
-    updateMaterialFolder: updateMaterialFolder,
-    deleteMaterialFolder: deleteMaterialFolder,
-    signMaterialUpload: signMaterialUpload,
-    registerMaterialFile: registerMaterialFile,
-    renameMaterialFile: renameMaterialFile,
-    deleteMaterialFile: deleteMaterialFile,
-    getLegacyStudyMaterials: getLegacyStudyMaterials,
-    clearLegacyStudyMaterials: clearLegacyStudyMaterials,
+    updateMaterialItem: updateMaterialItem,
+    deleteMaterialItem: deleteMaterialItem,
+    startDriveUpload: startDriveUpload,
+    completeDriveUpload: completeDriveUpload,
     generatePracticeTest: generatePracticeTest,
     getPracticeOptions: getPracticeOptions,
     getPracticeAttemptsCount: getPracticeAttemptsCount

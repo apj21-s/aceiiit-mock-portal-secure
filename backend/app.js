@@ -35,8 +35,9 @@ function createApp() {
           "style-src": ["'self'", "'unsafe-inline'", "https://cdn.jsdelivr.net", "https://fonts.googleapis.com", "https://accounts.google.com"],
           "font-src": ["'self'", "https://fonts.gstatic.com", "https://cdn.jsdelivr.net", "data:"],
           "img-src": ["'self'", "data:", "https:", "blob:"],
-          // api.cloudinary.com: admins upload study materials straight from the browser (signed).
-          "connect-src": ["'self'", "https://accounts.google.com", "https://oauth2.googleapis.com", "https://appleid.apple.com", "https://api.cloudinary.com"],
+          // www.googleapis.com: admins upload study materials straight from the browser into the
+          // connected Google Drive (a resumable session the server opened).
+          "connect-src": ["'self'", "https://accounts.google.com", "https://oauth2.googleapis.com", "https://appleid.apple.com", "https://www.googleapis.com"],
           "frame-src": ["'self'", "https://accounts.google.com", "https://appleid.apple.com"],
         },
       },

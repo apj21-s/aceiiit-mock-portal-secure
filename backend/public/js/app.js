@@ -3403,6 +3403,18 @@
     );
   }
 
+  // The AceIIIT wordmark, as on the main AceIIIT site's navbar: "Ace" in ink, "IIIT" in gold, a
+  // slow shine across both and the small red arrow. The round logo stays as it is.
+  var ACEIIIT_ARROW_SVG = '<svg class="logo-arrow" aria-hidden="true" focusable="false" viewBox="840 260 115 145" fill="none"> <path class="arrow-part-1" d="M 951.77 263.19 C951.28,264.65 949.61,265.28 948.69,264.35 C947.38,263.05 948.01,262.00 950.08,262.00 C951.25,262.00 951.99,262.52 951.77,263.19 ZM 894.36 291.50 C894.05,292.33 893.16,293.00 892.39,293.00 C891.63,293.00 891.00,292.33 891.00,291.50 C891.00,290.67 891.89,290.00 892.97,290.00 C894.31,290.00 894.75,290.48 894.36,291.50 ZM 940.78 401.15 C940.54,401.89 939.53,402.66 938.55,402.85 C937.41,403.07 936.93,402.71 937.22,401.85 C937.46,401.11 938.47,400.34 939.45,400.15 C940.59,399.93 941.07,400.29 940.78,401.15 ZM 936.00 395.50 C936.00,396.33 935.33,397.00 934.50,397.00 C933.67,397.00 933.00,396.33 933.00,395.50 C933.00,394.67 933.67,394.00 934.50,394.00 C935.33,394.00 936.00,394.67 936.00,395.50 Z" fill="rgb(167,167,167)" /> <path class="arrow-part-2" d="M 901.00 382.26 C901.00,384.25 900.57,386.15 900.04,386.47 C898.81,387.24 895.76,381.39 895.36,377.50 C894.12,365.49 892.65,361.39 888.87,359.43 C886.82,358.37 886.07,357.37 886.44,356.19 C887.24,353.67 883.61,348.41 879.12,345.57 C876.94,344.20 874.85,342.12 874.48,340.95 C873.96,339.31 873.31,338.98 871.65,339.50 C870.47,339.88 868.26,340.42 866.74,340.71 C863.02,341.41 862.63,342.38 864.53,346.06 C866.41,349.69 866.23,350.02 862.37,350.30 C859.51,350.50 859.50,350.49 859.74,345.00 C859.88,341.98 860.03,338.38 860.08,337.02 C860.14,335.63 859.37,333.99 858.34,333.31 C852.41,329.37 852.29,329.17 854.69,327.14 C855.90,326.11 858.82,324.97 861.19,324.59 C863.56,324.22 867.24,322.71 869.36,321.24 C872.78,318.88 874.06,318.60 880.46,318.79 C886.52,318.97 888.46,318.60 892.40,316.50 C897.81,313.63 901.83,313.35 906.09,315.55 C910.02,317.58 910.69,319.64 911.45,332.07 C911.80,337.81 912.58,344.19 913.20,346.25 C914.20,349.60 914.04,350.52 911.66,354.88 C910.20,357.57 909.00,360.62 909.00,361.65 C909.00,364.74 905.21,374.15 903.03,376.47 C901.76,377.82 901.00,379.99 901.00,382.26 Z" fill="rgb(168,36,40)" /> <path class="arrow-part-3" d="M 925.91 395.61 C923.87,398.06 922.00,397.05 922.00,393.50 C922.00,392.31 921.70,391.03 921.33,390.66 C920.96,390.29 920.61,388.92 920.55,387.62 C920.46,385.65 920.72,385.44 922.12,386.31 C924.87,388.02 927.29,393.95 925.91,395.61 ZM 940.87 305.34 C941.71,306.36 941.44,307.14 939.74,308.64 C937.12,310.93 932.51,310.71 933.42,308.34 C933.74,307.51 934.00,306.20 934.00,305.42 C934.00,303.58 939.36,303.52 940.87,305.34 ZM 859.93 310.35 C859.70,310.56 856.35,311.02 852.50,311.38 C844.73,312.10 845.13,310.89 853.32,308.92 C856.85,308.08 858.46,308.06 859.26,308.86 C859.87,309.47 860.17,310.14 859.93,310.35 ZM 924.00 301.12 C924.00,302.28 921.89,302.22 920.00,301.00 C919.17,300.47 917.49,300.02 916.25,300.02 C913.26,299.99 913.37,298.20 916.41,297.43 C918.82,296.83 924.00,299.34 924.00,301.12 ZM 868.32 299.75 C868.55,300.16 868.47,301.26 868.12,302.18 C867.65,303.46 867.08,303.63 865.75,302.88 C863.40,301.56 863.52,299.00 865.94,299.00 C867.01,299.00 868.08,299.34 868.32,299.75 ZM 883.00 302.00 C882.17,302.53 880.38,302.97 879.00,302.97 C877.02,302.97 876.81,302.77 878.00,302.00 C878.83,301.47 880.62,301.03 882.00,301.03 C883.98,301.03 884.19,301.23 883.00,302.00 Z" fill="rgb(194,84,83)" /> </svg>';
+
+  // The arrow assembles once per page load, not on every route change (the header re-renders).
+  var wordmarkSettled = false;
+
+  function aceiiitWordmarkHtml() {
+    window.setTimeout(function () { wordmarkSettled = true; }, 1500);
+    return '<span class="aceiiit-logo"><span class="logo-ace">Ace</span><span class="logo-iiit">IIIT' + ACEIIIT_ARROW_SVG + '</span></span>';
+  }
+
   var THEME_ICON_MOON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" focusable="false"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>';
   var THEME_ICON_SUN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" focusable="false"><circle cx="12" cy="12" r="4"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>';
 
@@ -4359,10 +4371,10 @@
     resetNavDrawerState();
 
     return (
-      '<header class="dashboard-header">' +
+      '<header class="dashboard-header' + (wordmarkSettled ? ' wordmark-settled' : '') + '">' +
       '<div class="dashboard-header-inner">' +
       '<div class="brand-group">' +
-      '<a href="#dashboard" class="brand-mark"><img src="assets/favicon-round.svg" alt="AceIIIT Logo" class="brand-logo" /> ACEIIIT</a>' +
+      '<a href="#dashboard" class="brand-mark has-wordmark" aria-label="AceIIIT dashboard"><img src="assets/favicon-round.svg" alt="" class="brand-logo" /> ' + aceiiitWordmarkHtml() + '</a>' +
       '</div>' +
       '<nav class="primary-nav-links" aria-label="Main Navigation">' +
       navLinksHtml +
@@ -4378,7 +4390,7 @@
       '</header>' +
       '<div class="mobile-nav-drawer" id="mobile-nav-drawer" role="dialog" aria-modal="true" aria-labelledby="mobile-drawer-title" aria-hidden="true" inert>' +
       '<div class="mobile-drawer-head">' +
-      '<span class="brand-mark" id="mobile-drawer-title"><img src="assets/favicon-round.svg" alt="" class="brand-logo" /> ACEIIIT</span>' +
+      '<span class="brand-mark has-wordmark" id="mobile-drawer-title" aria-label="AceIIIT menu"><img src="assets/favicon-round.svg" alt="" class="brand-logo" /> ' + aceiiitWordmarkHtml() + '</span>' +
       '<button class="button button-secondary button-compact mobile-drawer-close js-toggle-mobile-drawer" type="button" aria-label="Close navigation menu">✕</button>' +
       '</div>' +
       '<nav class="mobile-drawer-nav" aria-label="Main navigation">' +
@@ -4922,50 +4934,9 @@
         '<div class="bookmark-grid">' + visibleBookmarks.map(renderBookmarkCard).join("") + '</div>'
       : bookmarksEmptyHtml;
 
-    // Study material is server-backed and free for every signed-in student. Folders without
-    // files are left out; each file opens in the browser or downloads through a short-lived link.
-    var studyData = store.getStudyMaterials ? store.getStudyMaterials() : { folders: [], loadedAt: 0 };
-    var studyFolders = (studyData.folders || []).filter(function (folder) { return (folder.files || []).length; });
-    var materialsHtml;
-    if (!studyData.loadedAt) {
-      materialsHtml = runtime.studentMaterialsError
-        ? '<div class="portal-empty-card" role="alert"><h4 class="portal-empty-title">Couldn&rsquo;t load study material</h4><p class="portal-empty-text">Check your connection and try again.</p><button type="button" class="button button-secondary js-materials-retry">Try again</button></div>'
-        : '<p class="materials-status" role="status">Loading study material…</p>';
-    } else if (!studyFolders.length) {
-      materialsHtml =
-        '<div class="portal-empty-card">' +
-        '<h4 class="portal-empty-title">No study material yet</h4>' +
-        '<p class="portal-empty-text">Notes and formula sheets appear here as soon as your instructors publish them.</p>' +
-        '<a href="#resources/bookmarks" class="button button-secondary">Revise your bookmarks</a>' +
-        '</div>';
-    } else {
-      materialsHtml = '<div class="material-folders">' + studyFolders.map(function (folder) {
-        var files = folder.files || [];
-        // The folder colour is admin-chosen data, so it stays inline; layout lives in the CSS.
-        return '<section class="material-folder" aria-labelledby="material-folder-' + escapeAttribute(folder.id) + '">' +
-          '<h3 class="material-folder-title" id="material-folder-' + escapeAttribute(folder.id) + '"' + (folder.color ? ' style="color:' + escapeAttribute(folder.color) + ';"' : '') + '>' +
-          '<span aria-hidden="true">' + escapeHtml(folder.icon || "📁") + '</span> ' + escapeHtml(folder.name) +
-          '<span class="material-folder-count">' + files.length + (files.length === 1 ? ' file' : ' files') + '</span>' +
-          '</h3>' +
-          '<div class="study-materials-grid">' + files.map(function (file) {
-            var href = "/api/materials/files/" + encodeURIComponent(file.id) + "/download";
-            return '<div class="study-material-card">' +
-              '<div class="study-material-card-body">' +
-              '<div class="study-material-info">' +
-              materialTypeBadge(file.name) +
-              '<h4 class="study-material-name">' + escapeHtml(file.name) + '</h4>' +
-              '<span class="study-material-meta">' + escapeHtml(formatBytes(file.bytes)) + ' &bull; Added ' + escapeHtml(formatDateOnly(file.createdAt)) + '</span>' +
-              '</div>' +
-              '<div class="study-material-actions">' +
-              '<a class="button button-secondary button-compact" href="' + href + '?inline=1" target="_blank" rel="noopener" aria-label="Open ' + escapeAttribute(file.name) + '">Open</a>' +
-              '<a class="button button-primary button-compact" href="' + href + '" aria-label="Download ' + escapeAttribute(file.name) + '">Download</a>' +
-              '</div>' +
-              '</div>' +
-              '</div>';
-          }).join("") + '</div>' +
-          '</section>';
-      }).join("") + '</div>';
-    }
+    // Study material (Google Drive, free for every signed-in student) mounts into its own root
+    // after the page renders; the open folder is in the route: #resources/materials/<folderId>.
+    var materialsHtml = '<div class="materials-browser" id="materials-browser"></div>';
 
     var activeContentHtml = subTab === "materials" ? materialsHtml : bookmarksHtml;
 
@@ -4985,25 +4956,13 @@
       { fluid: true }
     );
     
-    // Study material: load (or refresh, after a minute) from the server, then redraw if the
-    // student is still on this tab.
-    if (subTab === "materials" && store.refreshStudyMaterials) {
-      var loadMaterials = function () {
-        runtime.studentMaterialsError = false;
-        runtime.studentMaterialsLoading = true;
-        Promise.resolve(store.refreshStudyMaterials()).catch(function () {
-          runtime.studentMaterialsError = true;
-        }).then(function () {
-          runtime.studentMaterialsLoading = false;
-          if (/resources\/materials/.test(window.location.hash || "")) renderResources(user, subTab);
-        });
-      };
-      var cached = store.getStudyMaterials();
-      if (!runtime.studentMaterialsLoading && !runtime.studentMaterialsError && (!cached.loadedAt || Date.now() - cached.loadedAt > 60 * 1000)) {
-        loadMaterials();
-      }
-      app.querySelectorAll(".js-materials-retry").forEach(function (button) {
-        button.addEventListener("click", loadMaterials);
+    if (subTab === "materials") {
+      mountMaterialsBrowser(document.getElementById("materials-browser"), {
+        admin: false,
+        folderId: routeParts()[2] ? decodeURIComponent(routeParts()[2]) : "",
+        onOpenFolder: function (folderId) {
+          navigate("resources/materials" + (folderId ? "/" + encodeURIComponent(folderId) : ""));
+        }
       });
     }
 
@@ -10111,7 +10070,6 @@
     xls: { kind: "sheet", label: "XLS" }, xlsx: { kind: "sheet", label: "XLS" }, csv: { kind: "sheet", label: "CSV" },
     txt: { kind: "text", label: "TXT" }
   };
-  var MATERIAL_ACCEPT = ".pdf,.png,.jpg,.jpeg,.webp,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.txt,.csv";
 
   function materialKind(name) {
     var match = /\.([a-z0-9]{1,5})$/i.exec(String(name || ""));
@@ -10130,8 +10088,8 @@
     return '<span class="materials-type-badge is-' + kind.kind + '" aria-hidden="true">' + kind.label + '</span>';
   }
 
-  // Uploads go straight from the browser to Cloudinary (the server signs each one), with real
-  // progress, three at a time, while the admin keeps working. The panel lives on document.body,
+  // Uploads go straight from the browser into Google Drive (the server opens a resumable
+  // session in the target folder), with real progress, three at a time, while the admin keeps working. The panel lives on document.body,
   // so Studio re-renders and route changes leave it alone; only a full reload would stop an
   // upload, so the page asks before unloading while any are running.
   var MATERIAL_UPLOAD_CONCURRENCY = 3;
@@ -10177,14 +10135,12 @@
     materialUploads.items.filter(function (item) { return item.status === "waiting"; }).slice(0, Math.max(0, free)).forEach(startMaterialUpload);
   }
 
-  function sendToStorage(item, signed) {
+  function sendToDrive(item, session) {
     return new Promise(function (resolve, reject) {
-      var form = new FormData();
-      Object.keys(signed.fields).forEach(function (key) { form.append(key, String(signed.fields[key])); });
-      form.append("file", item.file);
       var xhr = new XMLHttpRequest();
       item.xhr = xhr;
-      xhr.open("POST", signed.uploadUrl);
+      xhr.open("PUT", session.uploadUrl);
+      if (item.file.type) xhr.setRequestHeader("Content-Type", item.file.type);
       xhr.upload.onprogress = function (event) {
         if (event.lengthComputable) {
           item.loaded = event.loaded;
@@ -10195,7 +10151,13 @@
       xhr.onload = function () {
         item.xhr = null;
         if (xhr.status >= 200 && xhr.status < 300) {
-          resolve(signed);
+          var file = null;
+          try { file = JSON.parse(xhr.responseText); } catch (_err) { }
+          if (file && file.id) {
+            resolve(file);
+            return;
+          }
+          reject(new Error("Google Drive didn't confirm the upload."));
           return;
         }
         var message = "";
@@ -10210,7 +10172,7 @@
         item.xhr = null;
         reject(Object.assign(new Error("Cancelled"), { cancelled: true }));
       };
-      xhr.send(form);
+      xhr.send(item.file);
     });
   }
 
@@ -10219,19 +10181,19 @@
     item.error = "";
     item.loaded = 0;
     scheduleMaterialUploadRender();
-    Promise.resolve(store.signMaterialUpload({ folderId: item.folderId, name: item.file.name, bytes: item.file.size }))
-      .then(function (signed) {
+    Promise.resolve(store.startDriveUpload({ parentId: item.folderId || null, name: item.file.name, mimeType: item.file.type || "", size: item.file.size || 0 }))
+      .then(function (session) {
         if (item.status === "cancelled") return null;
         item.status = "uploading";
         scheduleMaterialUploadRender();
-        return sendToStorage(item, signed);
+        return sendToDrive(item, session);
       })
-      .then(function (signed) {
-        if (!signed || item.status === "cancelled") return null;
+      .then(function (uploaded) {
+        if (!uploaded || item.status === "cancelled") return null;
         item.status = "finishing";
         item.loaded = item.total;
         scheduleMaterialUploadRender();
-        return store.registerMaterialFile({ folderId: item.folderId, name: item.file.name, publicId: signed.publicId, resourceType: signed.resourceType });
+        return store.completeDriveUpload(uploaded.id);
       })
       .then(function (file) {
         if (!file) return;
@@ -10289,9 +10251,8 @@
   function refreshMaterialsSoon() {
     window.clearTimeout(materialUploads.refreshTimer);
     materialUploads.refreshTimer = window.setTimeout(function () {
-      Promise.resolve(store.refreshStudyMaterials && store.refreshStudyMaterials()).then(function () {
-        if (typeof materialUploads.onChange === "function") materialUploads.onChange();
-      }).catch(function () { });
+      invalidateDriveCache();
+      if (typeof materialUploads.onChange === "function") materialUploads.onChange();
     }, 400);
   }
 
@@ -10415,7 +10376,7 @@
       var item = materialUploads.items.find(function (entry) { return entry.id === id; });
       if (!item) return;
       runtime.adminStudioTab = "materials";
-      runtime.materialsFolderId = item.folderId;
+      driveUi.adminFolderId = item.folderId || "";
       if ((window.location.hash || "").indexOf("admin") === -1) {
         navigate("admin");
       } else if (typeof materialUploads.onChange === "function") {
@@ -10424,328 +10385,702 @@
     }
   }
 
-  // ---- Admin Studio → Study Materials (folders and files, Drive-style) ------------------
-  var MATERIAL_FOLDER_COLORS = [
-    ["", "Default"], ["var(--gold-strong)", "Brand gold"], ["#3b82f6", "Blue"], ["#10b981", "Green"], ["#ef4444", "Red"], ["#8b5cf6", "Purple"]
+  // ---- Study materials browser (Google Drive) -----------------------------------------------
+  // One Drive-style browser for students (Resources → Study material) and admins (Studio →
+  // Study Materials): breadcrumbs, folders at any depth, a dense list or a thumbnail grid,
+  // search, and for admins new folder / upload / rename / move / colour / delete. Drive is the
+  // source of truth; listings are cached here briefly (the server also caches for a minute).
+  var DRIVE_COLORS = [
+    ["", "Default"], ["#4285f4", "Blue"], ["#0f9d58", "Green"], ["#db4437", "Red"],
+    ["#f4b400", "Yellow"], ["#ab47bc", "Purple"], ["#ff7537", "Orange"], ["#8f8f8f", "Grey"]
   ];
+  var DRIVE_ICON_FOLDER = '<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" focusable="false"><path fill="currentColor" d="M10 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8l-2-2z"/></svg>';
+  var DRIVE_ICON_LIST = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true" focusable="false"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>';
+  var DRIVE_ICON_GRID = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" focusable="false"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>';
+  var DRIVE_ICON_DOWNLOAD = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg>';
+  var DRIVE_ICON_MORE = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false"><circle cx="12" cy="5" r="1.8" fill="currentColor"/><circle cx="12" cy="12" r="1.8" fill="currentColor"/><circle cx="12" cy="19" r="1.8" fill="currentColor"/></svg>';
+  var DRIVE_LIST_TTL_MS = 60 * 1000;
 
-  function materialFileDate(value) {
-    return value ? formatDateOnly(value) : "";
+  var driveUi = {
+    cache: {},
+    loading: {},
+    errors: {},
+    view: (function () { try { return localStorage.getItem("aceiiit_materials_view") === "grid" ? "grid" : "list"; } catch (_e) { return "list"; } })(),
+    query: "",
+    results: null,
+    searchError: "",
+    searchTimer: 0,
+    searchSeq: 0,
+    adminFolderId: "",
+    status: null,
+    statusError: "",
+    mounted: null,
+    menu: null,
+    notice: "",
+    dragDepth: 0
+  };
+
+  function driveKey(id) {
+    return id || "root";
   }
 
-  function buildAdminMaterialsHtml() {
-    var data = store.getStudyMaterials ? store.getStudyMaterials() : { folders: [], loadedAt: 0 };
-    if (!data.loadedAt) {
-      return '<div class="materials-studio" id="materials-studio">' +
-        (runtime.materialsError
-          ? '<div class="materials-status" role="alert"><p>Couldn&rsquo;t load study materials: ' + escapeHtml(runtime.materialsError) + '</p><button type="button" class="button button-secondary button-compact js-material-reload">Try again</button></div>'
-          : '<p class="materials-status" role="status">Loading study materials…</p>') +
+  function invalidateDriveCache() {
+    driveUi.cache = {};
+    driveUi.errors = {};
+  }
+
+  function driveFileUrl(id, download) {
+    return "/api/materials/files/" + encodeURIComponent(id) + "/content" + (download ? "?download=1" : "");
+  }
+
+  function driveWebUrl(item) {
+    return item.kind === "folder" ? "https://drive.google.com/drive/folders/" + encodeURIComponent(item.id) : "https://drive.google.com/file/d/" + encodeURIComponent(item.id) + "/view";
+  }
+
+  function driveKindOf(item) {
+    if (item.googleType === "document") return { kind: "doc", label: "DOC" };
+    if (item.googleType === "spreadsheet") return { kind: "sheet", label: "SHEET" };
+    if (item.googleType === "presentation") return { kind: "slides", label: "SLIDES" };
+    var mime = String(item.mimeType || "");
+    if (/^video\//.test(mime)) return { kind: "video", label: "VIDEO" };
+    if (/^audio\//.test(mime)) return { kind: "audio", label: "AUDIO" };
+    if (/zip|compressed|x-rar|x-7z/.test(mime)) return { kind: "file", label: "ZIP" };
+    var kind = materialKind(item.name);
+    if (kind.kind === "file" && /^image\//.test(mime)) return { kind: "image", label: "IMG" };
+    if (kind.kind === "file" && mime === "application/pdf") return { kind: "pdf", label: "PDF" };
+    return kind;
+  }
+
+  function driveBadge(item) {
+    var kind = driveKindOf(item);
+    return '<span class="materials-type-badge is-' + kind.kind + '" aria-hidden="true">' + kind.label + '</span>';
+  }
+
+  function driveDate(value) {
+    if (!value) return "";
+    try {
+      return new Date(value).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
+    } catch (_e) {
+      return "";
+    }
+  }
+
+  function currentDriveFolderId() {
+    var m = driveUi.mounted;
+    return m ? (m.options.folderId || "") : "";
+  }
+
+  function currentDriveListing() {
+    var entry = driveUi.cache[driveKey(currentDriveFolderId())];
+    return entry ? entry.data : null;
+  }
+
+  /** Mounts (or re-mounts) the browser into `root`. options: { admin, folderId, onOpenFolder } */
+  function mountMaterialsBrowser(root, options) {
+    if (!root) return;
+    var previous = driveUi.mounted;
+    driveUi.mounted = { root: root, options: options || {} };
+    if (!previous || previous.options.folderId !== (options || {}).folderId) {
+      driveUi.query = "";
+      driveUi.results = null;
+    }
+    if (!root.__driveBound) {
+      root.__driveBound = true;
+      bindMaterialsBrowser(root);
+    }
+    if (options.admin && !driveUi.status) loadDriveStatus();
+    renderMaterialsBrowser();
+    loadDriveFolder(options.folderId || "", false);
+  }
+
+  function loadDriveStatus() {
+    driveUi.statusError = "";
+    return Promise.resolve(store.getDriveStatus()).then(function (status) {
+      driveUi.status = status;
+      renderMaterialsBrowser();
+    }).catch(function (error) {
+      driveUi.statusError = (error && error.message) || "Couldn't check Google Drive.";
+      renderMaterialsBrowser();
+    });
+  }
+
+  function loadDriveFolder(folderId, force) {
+    var key = driveKey(folderId);
+    var entry = driveUi.cache[key];
+    if (!force && entry && Date.now() - entry.at < DRIVE_LIST_TTL_MS) return Promise.resolve(entry.data);
+    if (driveUi.loading[key]) return driveUi.loading[key];
+    driveUi.errors[key] = "";
+    var request = Promise.resolve(store.listMaterials(folderId)).then(function (data) {
+      driveUi.cache[key] = { data: data, at: Date.now() };
+      return data;
+    }).catch(function (error) {
+      driveUi.errors[key] = { message: (error && error.message) || "Couldn't load this folder.", code: error && error.code, status: error && error.status };
+      return null;
+    }).then(function (data) {
+      delete driveUi.loading[key];
+      if (driveKey(currentDriveFolderId()) === key) renderMaterialsBrowser();
+      return data;
+    });
+    driveUi.loading[key] = request;
+    if (driveKey(currentDriveFolderId()) === key && !entry) renderMaterialsBrowser();
+    return request;
+  }
+
+  function openDriveFolder(folderId) {
+    var m = driveUi.mounted;
+    if (!m) return;
+    closeDriveMenu(false);
+    if (typeof m.options.onOpenFolder === "function") m.options.onOpenFolder(folderId || "");
+  }
+
+  function buildDriveConnectionHtml() {
+    var st = driveUi.status;
+    var notice = driveUi.notice ? '<p class="drive-notice' + (/^Google Drive is connected/.test(driveUi.notice) ? '' : ' is-error') + '" role="status">' + escapeHtml(driveUi.notice) + '</p>' : '';
+    return notice + buildDriveConnectionCard(st);
+  }
+
+  function buildDriveConnectionCard(st) {
+    if (driveUi.statusError && !st) {
+      return '<div class="drive-connect is-error"><p>' + escapeHtml(driveUi.statusError) + '</p><button type="button" class="button button-secondary button-compact" data-drive-action="status-retry">Try again</button></div>';
+    }
+    if (!st) return '<div class="drive-connect"><p aria-busy="true">Checking Google Drive…</p></div>';
+    if (!st.connected) {
+      return '<div class="drive-connect is-cta">' +
+        '<div class="drive-connect-copy"><h3>Connect Google Drive</h3>' +
+        '<p>Study material is stored in your Google Drive, in a folder called “AceIIIT Study Materials”. Anything you put there, here or straight in Google Drive, shows up for students. Uploads don\'t use Cloudinary.</p></div>' +
+        '<button type="button" class="button button-primary" data-drive-action="connect">Connect Google Drive</button>' +
         '</div>';
     }
-    var folders = data.folders || [];
-    var selected = folders.find(function (f) { return f.id === runtime.materialsFolderId; }) || folders[0] || null;
-    runtime.materialsFolderId = selected ? selected.id : "";
-    var maxMb = data.maxBytes ? Math.round(data.maxBytes / (1024 * 1024)) : 10;
-
-    var legacy = store.getLegacyStudyMaterials ? store.getLegacyStudyMaterials() : null;
-    var legacyCount = legacy ? (legacy.files || []).filter(function (f) { return /^data:/.test(String(f.url || "")); }).length : 0;
-    var legacyHtml = legacyCount
-      ? '<div class="materials-legacy" role="status">' +
-        '<p><strong>' + legacyCount + (legacyCount === 1 ? ' file is' : ' files are') + ' saved only in this browser</strong> from an older version of the Studio, so students can&rsquo;t see ' + (legacyCount === 1 ? 'it' : 'them') + ' yet.</p>' +
-        '<button type="button" class="button button-primary button-compact js-material-legacy-upload">Upload ' + (legacyCount === 1 ? 'it' : 'all ' + legacyCount) + '</button>' +
-        '</div>'
-      : '';
-
-    var folderListHtml = folders.length
-      ? '<ul class="materials-folder-list">' + folders.map(function (f) {
-        var isActive = selected && f.id === selected.id;
-        return '<li><button type="button" class="materials-folder-btn js-material-folder' + (isActive ? ' is-active' : '') + '" data-id="' + escapeAttribute(f.id) + '"' + (isActive ? ' aria-current="true"' : '') + '>' +
-          '<span class="materials-folder-icon" aria-hidden="true">' + escapeHtml(f.icon || "📁") + '</span>' +
-          '<span class="materials-folder-name"' + (f.color ? ' style="color:' + escapeAttribute(f.color) + ';"' : '') + '>' + escapeHtml(f.name) + '</span>' +
-          '<span class="materials-folder-count" aria-label="' + f.files.length + ' files">' + f.files.length + '</span>' +
-          '</button></li>';
-      }).join("") + '</ul>'
-      : '<p class="materials-muted">No folders yet. Create one to start adding files.</p>';
-
-    var newFolderHtml =
-      '<form id="materials-new-folder" class="materials-new-folder">' +
-      '<p class="materials-subhead">New folder</p>' +
-      '<div class="field"><label for="materials-folder-name">Name</label><input id="materials-folder-name" name="name" required maxlength="80" placeholder="e.g. Physics notes"></div>' +
-      '<div class="materials-folder-meta">' +
-      '<div class="field"><label for="materials-folder-icon">Icon</label><input id="materials-folder-icon" name="icon" value="📁" maxlength="8"></div>' +
-      '<div class="field"><label for="materials-folder-color">Colour</label><select id="materials-folder-color" name="color">' +
-      MATERIAL_FOLDER_COLORS.map(function (c) { return '<option value="' + escapeAttribute(c[0]) + '">' + escapeHtml(c[1]) + '</option>'; }).join("") +
-      '</select></div>' +
-      '</div>' +
-      '<button type="submit" class="button button-primary button-compact">Create folder</button>' +
-      '</form>';
-
-    var filesHtml;
-    if (!selected) {
-      filesHtml = '<div class="materials-empty"><p>Create a folder on the left, then upload files into it.</p></div>';
-    } else {
-      var files = selected.files || [];
-      var headHtml = runtime.materialsRenamingFolder
-        ? '<form class="materials-inline-form js-material-folder-rename-form">' +
-          '<label class="sr-only" for="materials-folder-rename">Folder name</label>' +
-          '<input id="materials-folder-rename" name="name" required maxlength="80" value="' + escapeAttribute(selected.name) + '">' +
-          '<button type="submit" class="button button-primary button-compact">Save</button>' +
-          '<button type="button" class="button button-secondary button-compact js-material-folder-rename-cancel">Cancel</button>' +
-          '</form>'
-        : '<h3 class="materials-files-title"><span aria-hidden="true">' + escapeHtml(selected.icon || "📁") + '</span> ' + escapeHtml(selected.name) + '</h3>';
-      var rows = files.map(function (file) {
-        var renaming = runtime.materialsRenameFileId === file.id;
-        var baseName = file.ext ? file.name.replace(new RegExp("\\." + file.ext + "$", "i"), "") : file.name;
-        return '<li class="materials-file-row">' +
-          materialTypeBadge(file.name) +
-          (renaming
-            ? '<form class="materials-inline-form js-material-rename-form" data-id="' + escapeAttribute(file.id) + '">' +
-              '<label class="sr-only" for="materials-rename-' + escapeAttribute(file.id) + '">New name for ' + escapeHtml(file.name) + '</label>' +
-              '<input id="materials-rename-' + escapeAttribute(file.id) + '" name="name" required maxlength="150" value="' + escapeAttribute(baseName) + '">' +
-              (file.ext ? '<span class="materials-ext">.' + escapeHtml(file.ext) + '</span>' : '') +
-              '<button type="submit" class="button button-primary button-compact">Save</button>' +
-              '<button type="button" class="button button-secondary button-compact js-material-rename-cancel">Cancel</button>' +
-              '</form>'
-            : '<span class="materials-file-name">' + escapeHtml(file.name) + '</span>') +
-          '<span class="materials-file-meta">' + escapeHtml(formatBytes(file.bytes)) + ' · ' + escapeHtml(materialFileDate(file.createdAt)) + '</span>' +
-          (renaming ? '' :
-            '<span class="materials-file-actions">' +
-            '<a class="button button-secondary button-compact" href="/api/materials/files/' + encodeURIComponent(file.id) + '/download?inline=1" target="_blank" rel="noopener" aria-label="Open ' + escapeAttribute(file.name) + '">Open</a>' +
-            '<button type="button" class="button button-secondary button-compact js-material-rename" data-id="' + escapeAttribute(file.id) + '" aria-label="Rename ' + escapeAttribute(file.name) + '">Rename</button>' +
-            '<button type="button" class="button button-danger button-compact js-material-delete" data-id="' + escapeAttribute(file.id) + '" data-name="' + escapeAttribute(file.name) + '" aria-label="Delete ' + escapeAttribute(file.name) + '">Delete</button>' +
-            '</span>') +
-          '</li>';
-      }).join("");
-      filesHtml =
-        '<div class="materials-files-head">' + headHtml +
-        (runtime.materialsRenamingFolder ? '' :
-          '<div class="materials-files-actions">' +
-          '<label class="button button-primary button-compact materials-upload-btn">Upload files' +
-          '<input type="file" id="materials-file-input" multiple accept="' + MATERIAL_ACCEPT + '"></label>' +
-          '<button type="button" class="button button-secondary button-compact js-material-rename-folder">Rename</button>' +
-          '<button type="button" class="button button-danger button-compact js-material-delete-folder">Delete folder</button>' +
-          '</div>') +
-        '</div>' +
-        '<p class="materials-hint">Drag files here or use Upload files · up to ' + maxMb + ' MB each · PDF, images, Word, PowerPoint, Excel, TXT, CSV · free for every student</p>' +
-        (rows ? '<ul class="materials-file-list">' + rows + '</ul>' : '<div class="materials-empty"><p>This folder is empty.</p><p>Drop files here or use Upload files.</p></div>') +
-        '<div class="materials-drop-overlay" aria-hidden="true"><span>Drop to upload to <strong>' + escapeHtml(selected.name) + '</strong></span></div>';
+    if (st.needsReconnect) {
+      return '<div class="drive-connect is-warn"><p><strong>Google Drive needs to be connected again.</strong> Access was revoked or expired, so students can\'t open materials until you reconnect.</p>' +
+        '<button type="button" class="button button-primary button-compact" data-drive-action="connect">Reconnect</button></div>';
     }
+    return '<div class="drive-connect is-connected">' +
+      '<p><span class="drive-connect-dot" aria-hidden="true"></span>Google Drive · <strong>' + escapeHtml(st.accountEmail || "connected") + '</strong> · folder <a href="' + escapeAttribute(st.root.url) + '" target="_blank" rel="noopener">' + escapeHtml(st.root.name || "Study materials") + '</a></p>' +
+      '<div class="drive-connect-actions">' +
+      '<button type="button" class="button button-secondary button-compact" data-drive-action="change-root">Use another folder</button>' +
+      '<button type="button" class="button button-secondary button-compact" data-drive-action="disconnect">Disconnect</button>' +
+      '</div></div>';
+  }
 
-    return '<div class="materials-studio" id="materials-studio">' +
-      legacyHtml +
-      '<div class="materials-layout">' +
-      '<aside class="admin-card materials-folders" aria-label="Folders">' +
-      '<h3 class="materials-panel-title">Folders</h3>' +
-      folderListHtml +
-      newFolderHtml +
-      '</aside>' +
-      '<section class="admin-card materials-files" id="materials-drop-zone" aria-label="' + escapeAttribute(selected ? "Files in " + selected.name : "Files") + '">' +
-      filesHtml +
-      '</section>' +
+  function buildDriveCrumbsHtml(listing, admin) {
+    var crumbs = (listing && listing.breadcrumbs) || [{ id: "", name: "Study material" }];
+    return '<nav class="drive-crumbs" aria-label="Folder path"><ol>' + crumbs.map(function (crumb, index) {
+      var last = index === crumbs.length - 1;
+      var id = index === 0 ? "" : crumb.id;
+      var label = escapeHtml(crumb.name);
+      if (last) return '<li><span aria-current="page">' + label + '</span></li>';
+      return '<li>' + (admin
+        ? '<button type="button" class="drive-crumb" data-drive-open="' + escapeAttribute(id) + '">' + label + '</button>'
+        : '<a class="drive-crumb" href="#resources/materials' + (id ? "/" + encodeURIComponent(id) : "") + '">' + label + '</a>') + '</li>';
+    }).join("") + '</ol></nav>';
+  }
+
+  function buildDriveToolbarHtml(listing, admin) {
+    return '<div class="drive-toolbar">' +
+      buildDriveCrumbsHtml(listing, admin) +
+      '<div class="drive-tools">' +
+      '<div class="drive-search" role="search">' +
+      '<label class="sr-only" for="drive-search-input">Search study material</label>' +
+      '<input id="drive-search-input" type="search" placeholder="Search files" autocomplete="off" value="' + escapeAttribute(driveUi.query) + '" data-drive-search>' +
+      '</div>' +
+      '<div class="drive-view" role="group" aria-label="Layout">' +
+      '<button type="button" class="drive-view-btn" data-drive-view="list" aria-pressed="' + (driveUi.view === "list") + '" aria-label="List view" title="List">' + DRIVE_ICON_LIST + '</button>' +
+      '<button type="button" class="drive-view-btn" data-drive-view="grid" aria-pressed="' + (driveUi.view === "grid") + '" aria-label="Grid view" title="Grid">' + DRIVE_ICON_GRID + '</button>' +
+      '</div>' +
+      (admin
+        ? '<button type="button" class="button button-secondary button-compact" data-drive-action="new-folder">New folder</button>' +
+          '<button type="button" class="button button-primary button-compact" data-drive-action="upload">Upload</button>' +
+          '<input type="file" multiple hidden data-drive-file>' +
+          '<button type="button" class="button button-secondary button-compact" data-drive-action="refresh" title="Show changes made in Google Drive">Refresh</button>'
+        : '') +
       '</div>' +
       '</div>';
   }
 
-  // A data: URL from an old browser-only upload, as a File the upload manager can send.
-  function materialDataUrlToFile(dataUrl, name) {
-    var match = /^data:([^;,]*)(;base64)?,(.*)$/.exec(String(dataUrl || ""));
-    if (!match) return null;
-    var raw = match[2] ? window.atob(match[3]) : decodeURIComponent(match[3]);
-    var bytes = new Uint8Array(raw.length);
-    for (var i = 0; i < raw.length; i += 1) bytes[i] = raw.charCodeAt(i);
-    return new File([bytes], name || "file", { type: match[1] || "application/octet-stream" });
+  function buildDriveFolderTile(folder, admin) {
+    var count = folder.itemCount === null || folder.itemCount === undefined ? "" : folder.itemCount + (folder.itemCount === 1 ? " item" : " items");
+    var inner = '<span class="drive-folder-icon"' + (folder.color ? ' style="color:' + escapeAttribute(folder.color) + ';"' : '') + '>' + DRIVE_ICON_FOLDER + '</span>' +
+      '<span class="drive-folder-text"><span class="drive-folder-name">' + escapeHtml(folder.name) + '</span>' +
+      (count ? '<span class="drive-folder-meta">' + escapeHtml(count) + '</span>' : '') + '</span>';
+    return '<li class="drive-folder" data-drop-folder="' + escapeAttribute(folder.id) + '" data-drop-name="' + escapeAttribute(folder.name) + '">' +
+      (admin
+        ? '<button type="button" class="drive-folder-link" data-drive-open="' + escapeAttribute(folder.id) + '">' + inner + '</button>'
+        : '<a class="drive-folder-link" href="#resources/materials/' + encodeURIComponent(folder.id) + '">' + inner + '</a>') +
+      (admin ? buildDriveMoreButton(folder) : '') +
+      '</li>';
   }
 
-  function bindAdminMaterials(user, selectedTestId) {
+  function buildDriveMoreButton(item) {
+    return '<button type="button" class="drive-more" data-drive-menu="' + escapeAttribute(item.id) + '" aria-haspopup="menu" aria-expanded="false" aria-label="' + escapeAttribute("More actions for " + item.name) + '">' + DRIVE_ICON_MORE + '</button>';
+  }
+
+  function buildDriveFileRow(file, admin, path) {
+    var size = file.size ? formatBytes(file.size) : (file.googleType ? "Google " + file.googleType : "");
+    var thumb = driveUi.view === "grid"
+      ? '<span class="drive-thumb">' + (file.hasThumbnail ? '<img src="/api/materials/files/' + encodeURIComponent(file.id) + '/thumbnail" alt="" loading="lazy" onerror="this.remove()">' : '') + driveBadge(file) + '</span>'
+      : driveBadge(file);
+    return '<li class="drive-file">' +
+      thumb +
+      '<a class="drive-file-name" href="' + driveFileUrl(file.id, false) + '" target="_blank" rel="noopener">' +
+      '<span class="drive-file-title">' + escapeHtml(file.name) + '</span>' +
+      (path ? '<span class="drive-file-path">' + escapeHtml(path.join(" › ")) + '</span>' : '') +
+      '</a>' +
+      '<span class="drive-file-size">' + escapeHtml(size) + '</span>' +
+      '<span class="drive-file-date">' + escapeHtml(driveDate(file.modifiedTime)) + '</span>' +
+      '<a class="drive-icon-btn" href="' + driveFileUrl(file.id, true) + '" aria-label="' + escapeAttribute("Download " + file.name) + '" title="Download">' + DRIVE_ICON_DOWNLOAD + '</a>' +
+      (admin ? buildDriveMoreButton(file) : '') +
+      '</li>';
+  }
+
+  function buildDriveBodyHtml() {
+    var m = driveUi.mounted;
+    var admin = Boolean(m.options.admin);
+    var key = driveKey(m.options.folderId);
+    var listing = currentDriveListing();
+    var error = driveUi.errors[key];
+    if (driveUi.query.trim().length >= 2) {
+      if (driveUi.searchError) return '<p class="drive-notice is-error" role="alert">' + escapeHtml(driveUi.searchError) + '</p>';
+      if (!driveUi.results) return '<div class="drive-skeleton" aria-busy="true" aria-label="Searching"><span></span><span></span><span></span></div>';
+      var found = driveUi.results;
+      var folders = found.filter(function (i) { return i.kind === "folder"; });
+      var files = found.filter(function (i) { return i.kind !== "folder"; });
+      return '<p class="drive-result-count" role="status">' + found.length + (found.length === 1 ? " result" : " results") + ' for “' + escapeHtml(driveUi.query.trim()) + '”</p>' +
+        (folders.length ? '<ul class="drive-folders">' + folders.map(function (f) { return buildDriveFolderTile(f, admin); }).join("") + '</ul>' : '') +
+        (files.length ? '<ul class="drive-files">' + files.map(function (f) { return buildDriveFileRow(f, admin, f.path); }).join("") + '</ul>' : '') +
+        (!found.length ? '<p class="drive-empty">No files match that name. Try a shorter word.</p>' : '');
+    }
+    if (error && !listing) {
+      if (error.code === "DRIVE_NOT_FOUND" && m.options.folderId) {
+        return '<div class="drive-empty"><p>This folder isn\'t available any more.</p><button type="button" class="button button-secondary button-compact" data-drive-open="">Back to Study material</button></div>';
+      }
+      return '<div class="drive-notice is-error" role="alert"><p>' + escapeHtml(error.message) + '</p><button type="button" class="button button-secondary button-compact" data-drive-action="retry">Try again</button></div>';
+    }
+    if (!listing) return '<div class="drive-skeleton" aria-busy="true" aria-label="Loading folder"><span></span><span></span><span></span><span></span></div>';
+    if (listing.connected === false) {
+      return admin ? '' : '<div class="portal-empty-card"><h4 class="portal-empty-title">Study material isn\'t available yet</h4><p class="portal-empty-text">Notes and formula sheets appear here as soon as your instructors publish them.</p><a href="#resources/bookmarks" class="button button-secondary">Revise your bookmarks</a></div>';
+    }
+    var html = '';
+    if (listing.folders.length) {
+      html += '<section aria-label="Folders"><h3 class="drive-section-label">Folders</h3><ul class="drive-folders">' + listing.folders.map(function (f) { return buildDriveFolderTile(f, admin); }).join("") + '</ul></section>';
+    }
+    if (listing.files.length) {
+      html += '<section aria-label="Files"><h3 class="drive-section-label">Files <span class="drive-section-count">' + listing.files.length + '</span></h3>' +
+        (driveUi.view === "list" ? '<div class="drive-list-head" aria-hidden="true"><span>Name</span><span>Size</span><span>Modified</span></div>' : '') +
+        '<ul class="drive-files">' + listing.files.map(function (f) { return buildDriveFileRow(f, admin); }).join("") + '</ul></section>';
+    }
+    if (!html) {
+      html = admin
+        ? '<div class="drive-empty is-drop"><p>This folder is empty.</p><p class="drive-empty-hint">Drop files here, or</p><button type="button" class="button button-primary button-compact" data-drive-action="upload">Upload files</button></div>'
+        : '<div class="drive-empty"><p>Nothing here yet.</p></div>';
+    }
+    return html;
+  }
+
+  function renderMaterialsBrowser() {
+    var m = driveUi.mounted;
+    if (!m || !document.body.contains(m.root)) return;
+    var admin = Boolean(m.options.admin);
+    var listing = currentDriveListing();
+    var root = m.root;
+    var focusedSearch = document.activeElement && document.activeElement.hasAttribute && document.activeElement.hasAttribute("data-drive-search");
+    var caret = focusedSearch ? document.activeElement.selectionStart : null;
+    var showBrowser = !admin || (driveUi.status && driveUi.status.connected);
+    root.innerHTML =
+      '<div class="drive' + (admin ? ' is-admin' : '') + '" data-view="' + driveUi.view + '">' +
+      (admin ? buildDriveConnectionHtml() : '') +
+      (showBrowser && !(listing && listing.connected === false && !admin)
+        ? buildDriveToolbarHtml(listing, admin) + '<div class="drive-body" data-drive-body>' + buildDriveBodyHtml() + '</div>'
+        : (!admin ? '<div class="drive-body" data-drive-body>' + buildDriveBodyHtml() + '</div>' : '')) +
+      '<p class="sr-only" role="status" data-drive-live></p>' +
+      '</div>';
+    if (focusedSearch) {
+      var input = root.querySelector("[data-drive-search]");
+      if (input) {
+        input.focus();
+        try { input.setSelectionRange(caret, caret); } catch (_e) { }
+      }
+    }
+  }
+
+  function renderDriveBody() {
+    var m = driveUi.mounted;
+    var body = m && m.root.querySelector("[data-drive-body]");
+    if (body) body.innerHTML = buildDriveBodyHtml();
+    else renderMaterialsBrowser();
+  }
+
+  function announceDrive(text) {
+    var live = driveUi.mounted && driveUi.mounted.root.querySelector("[data-drive-live]");
+    if (!live) return;
+    live.textContent = "";
+    window.setTimeout(function () { live.textContent = text; }, 40);
+  }
+
+  function runDriveSearch() {
+    var q = driveUi.query.trim();
+    var seq = ++driveUi.searchSeq;
+    driveUi.searchError = "";
+    if (q.length < 2) {
+      driveUi.results = null;
+      renderDriveBody();
+      return;
+    }
+    driveUi.results = null;
+    renderDriveBody();
+    Promise.resolve(store.searchMaterials(q)).then(function (data) {
+      if (seq !== driveUi.searchSeq) return;
+      driveUi.results = (data && data.items) || [];
+      renderDriveBody();
+    }).catch(function (error) {
+      if (seq !== driveUi.searchSeq) return;
+      driveUi.searchError = (error && error.message) || "Search failed.";
+      renderDriveBody();
+    });
+  }
+
+  function findDriveItem(id) {
+    var listing = currentDriveListing();
+    var pool = [].concat(listing ? listing.folders.concat(listing.files) : [], driveUi.results || []);
+    return pool.filter(function (item) { return item.id === id; })[0] || null;
+  }
+
+  function afterDriveChange(message) {
+    invalidateDriveCache();
+    if (message) announceDrive(message);
+    if (driveUi.query.trim().length >= 2) runDriveSearch();
+    loadDriveFolder(currentDriveFolderId(), true);
+  }
+
+  function driveFail(error) {
+    window.alert((error && error.message) || "That didn't work. Try again.");
+  }
+
+  // ---- the "More actions" menu (admins) ----
+  function closeDriveMenu(restoreFocus) {
+    var menu = driveUi.menu;
+    if (!menu) return;
+    driveUi.menu = null;
+    if (menu.el && menu.el.parentNode) menu.el.parentNode.removeChild(menu.el);
+    document.removeEventListener("mousedown", menu.outside, true);
+    document.removeEventListener("keydown", menu.keys, true);
+    if (menu.button && document.body.contains(menu.button)) {
+      menu.button.setAttribute("aria-expanded", "false");
+      if (restoreFocus !== false) menu.button.focus();
+    }
+  }
+
+  function openDriveMenu(button) {
+    var id = button.getAttribute("data-drive-menu");
+    var item = findDriveItem(id);
+    if (!item) return;
+    if (driveUi.menu && driveUi.menu.button === button) {
+      closeDriveMenu();
+      return;
+    }
+    closeDriveMenu(false);
+    var el = document.createElement("div");
+    el.className = "drive-menu";
+    el.setAttribute("role", "menu");
+    el.id = "drive-menu-" + id;
+    el.setAttribute("aria-label", "Actions for " + item.name);
+    el.innerHTML =
+      (item.kind === "file" ? '<a role="menuitem" href="' + driveFileUrl(item.id, false) + '" target="_blank" rel="noopener">Open</a>' : '') +
+      '<button type="button" role="menuitem" data-drive-do="rename">Rename</button>' +
+      '<button type="button" role="menuitem" data-drive-do="move">Move to…</button>' +
+      (item.kind === "folder"
+        ? '<div class="drive-menu-colors" role="group" aria-label="Folder colour">' + DRIVE_COLORS.map(function (c) {
+            return '<button type="button" role="menuitemradio" aria-checked="' + ((item.color || "") === c[0]) + '" class="drive-swatch" data-drive-color="' + escapeAttribute(c[0]) + '" aria-label="' + escapeAttribute(c[1]) + '" title="' + escapeAttribute(c[1]) + '"' + (c[0] ? ' style="background:' + escapeAttribute(c[0]) + ';"' : '') + '></button>';
+          }).join("") + '</div>'
+        : '') +
+      '<a role="menuitem" href="' + escapeAttribute(driveWebUrl(item)) + '" target="_blank" rel="noopener">Open in Google Drive</a>' +
+      '<button type="button" role="menuitem" class="is-danger" data-drive-do="delete">Delete</button>';
+    document.body.appendChild(el);
+    var rect = button.getBoundingClientRect();
+    var top = rect.bottom + 4;
+    var left = Math.max(8, Math.min(window.innerWidth - el.offsetWidth - 8, rect.right - el.offsetWidth));
+    if (top + el.offsetHeight > window.innerHeight - 8) top = Math.max(8, rect.top - el.offsetHeight - 4);
+    el.style.top = top + "px";
+    el.style.left = left + "px";
+    button.setAttribute("aria-expanded", "true");
+    button.setAttribute("aria-controls", el.id);
+    var menu = {
+      el: el,
+      button: button,
+      item: item,
+      outside: function (event) {
+        if (!el.contains(event.target) && event.target !== button && !button.contains(event.target)) closeDriveMenu(false);
+      },
+      keys: function (event) {
+        var items = Array.prototype.slice.call(el.querySelectorAll('[role^="menuitem"]'));
+        var index = items.indexOf(document.activeElement);
+        if (event.key === "Escape") {
+          event.preventDefault();
+          event.stopPropagation();
+          closeDriveMenu();
+        } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+          event.preventDefault();
+          var next = event.key === "ArrowDown" ? index + 1 : index - 1;
+          items[(next + items.length) % items.length].focus();
+        } else if (event.key === "Tab") {
+          closeDriveMenu(false);
+        }
+      }
+    };
+    driveUi.menu = menu;
+    document.addEventListener("mousedown", menu.outside, true);
+    document.addEventListener("keydown", menu.keys, true);
+    el.addEventListener("click", function (event) {
+      var target = event.target.closest ? event.target : null;
+      if (!target) return;
+      var color = target.closest("[data-drive-color]");
+      var action = target.closest("[data-drive-do]");
+      if (target.closest("a[role=menuitem]")) {
+        closeDriveMenu(false);
+        return;
+      }
+      if (color) {
+        var value = color.getAttribute("data-drive-color");
+        closeDriveMenu();
+        Promise.resolve(store.updateMaterialItem(item.id, { color: value })).then(function () { afterDriveChange("Colour changed."); }).catch(driveFail);
+      } else if (action) {
+        var what = action.getAttribute("data-drive-do");
+        closeDriveMenu();
+        runDriveItemAction(what, item);
+      }
+    });
+    var first = el.querySelector('[role^="menuitem"]');
+    if (first) first.focus();
+  }
+
+  function runDriveItemAction(what, item) {
+    if (what === "rename") {
+      var name = window.prompt("Rename “" + item.name + "”", item.name);
+      if (name === null || !name.trim() || name.trim() === item.name) return;
+      Promise.resolve(store.updateMaterialItem(item.id, { name: name.trim() })).then(function () { afterDriveChange("Renamed to " + name.trim() + "."); }).catch(driveFail);
+    } else if (what === "delete") {
+      var noun = item.kind === "folder" ? "the folder “" + item.name + "” and everything in it" : "“" + item.name + "”";
+      if (!window.confirm("Delete " + noun + "?\n\nIt moves to Google Drive's trash (restorable there for 30 days) and students won't see it.")) return;
+      Promise.resolve(store.deleteMaterialItem(item.id)).then(function () { afterDriveChange(item.name + " deleted."); }).catch(driveFail);
+    } else if (what === "move") {
+      openDriveMovePicker(item);
+    }
+  }
+
+  /** "Move to…": browse folders (from the root) and move the item into the chosen one. */
+  function openDriveMovePicker(item) {
+    var picker = { folderId: "", listing: null, error: "" };
+    var renderPicker = function () {
+      var body = document.querySelector("[data-drive-picker]");
+      if (!body) return;
+      if (picker.error) {
+        body.innerHTML = '<p class="drive-notice is-error">' + escapeHtml(picker.error) + '</p>';
+        return;
+      }
+      if (!picker.listing) {
+        body.innerHTML = '<div class="drive-skeleton" aria-busy="true"><span></span><span></span></div>';
+        return;
+      }
+      var crumbs = picker.listing.breadcrumbs || [];
+      var folders = (picker.listing.folders || []).filter(function (f) { return f.id !== item.id; });
+      body.innerHTML =
+        '<nav class="drive-crumbs" aria-label="Destination path"><ol>' + crumbs.map(function (c, i) {
+          return '<li>' + (i === crumbs.length - 1 ? '<span aria-current="page">' + escapeHtml(c.name) + '</span>' : '<button type="button" class="drive-crumb" data-pick-open="' + escapeAttribute(i === 0 ? "" : c.id) + '">' + escapeHtml(c.name) + '</button>') + '</li>';
+        }).join("") + '</ol></nav>' +
+        (folders.length
+          ? '<ul class="drive-pick-list">' + folders.map(function (f) {
+              return '<li><button type="button" class="drive-pick" data-pick-open="' + escapeAttribute(f.id) + '"><span class="drive-folder-icon"' + (f.color ? ' style="color:' + escapeAttribute(f.color) + ';"' : '') + '>' + DRIVE_ICON_FOLDER + '</span>' + escapeHtml(f.name) + '</button></li>';
+            }).join("") + '</ul>'
+          : '<p class="drive-empty-hint">No folders inside this one.</p>') +
+        '<div class="button-row"><button type="button" class="button button-primary" data-pick-move>Move here</button></div>';
+    };
+    var load = function (id) {
+      picker.folderId = id;
+      picker.listing = null;
+      picker.error = "";
+      renderPicker();
+      Promise.resolve(store.listMaterials(id)).then(function (data) {
+        picker.listing = data;
+        renderPicker();
+      }).catch(function (error) {
+        picker.error = (error && error.message) || "Couldn't load folders.";
+        renderPicker();
+      });
+    };
+    showAdminModal("Move “" + item.name + "”", '<div class="drive-picker" data-drive-picker></div>');
+    var host = document.querySelector("[data-drive-picker]");
+    if (host) {
+      host.addEventListener("click", function (event) {
+        var open = event.target.closest && event.target.closest("[data-pick-open]");
+        var move = event.target.closest && event.target.closest("[data-pick-move]");
+        if (open) load(open.getAttribute("data-pick-open"));
+        if (move && picker.listing) {
+          var target = picker.listing.folder || {};
+          move.disabled = true;
+          Promise.resolve(store.updateMaterialItem(item.id, { parentId: target.id })).then(function () {
+            hideAdminModal();
+            afterDriveChange(item.name + " moved to " + (target.name || "Study material") + ".");
+          }).catch(function (error) {
+            move.disabled = false;
+            picker.error = (error && error.message) || "Couldn't move it.";
+            renderPicker();
+          });
+        }
+      });
+    }
+    load("");
+  }
+
+  function startDriveUploads(files, folderId, folderName) {
+    if (!files || !files.length) return;
+    var listing = currentDriveListing();
+    var targetId = folderId || (listing && listing.folder && !listing.folder.isRoot ? listing.folder.id : "") || "";
+    var targetName = folderName || (listing && listing.folder ? listing.folder.name : "Study material");
+    var max = listing && listing.maxBytes ? listing.maxBytes : 0;
+    var accepted = [];
+    var tooBig = [];
+    Array.prototype.forEach.call(files, function (file) {
+      if (max && file.size > max) tooBig.push(file.name);
+      else accepted.push(file);
+    });
+    if (tooBig.length) window.alert("Too large to upload (max " + formatBytes(max) + "):\n" + tooBig.join("\n"));
+    if (accepted.length) queueMaterialUploads({ id: targetId, name: targetName }, accepted);
+  }
+
+  function bindMaterialsBrowser(root) {
+    root.addEventListener("click", function (event) {
+      var target = event.target && event.target.closest ? event.target : null;
+      if (!target) return;
+      var open = target.closest("[data-drive-open]");
+      var view = target.closest("[data-drive-view]");
+      var more = target.closest("[data-drive-menu]");
+      var action = target.closest("[data-drive-action]");
+      if (open) {
+        openDriveFolder(open.getAttribute("data-drive-open"));
+      } else if (view) {
+        driveUi.view = view.getAttribute("data-drive-view") === "grid" ? "grid" : "list";
+        try { localStorage.setItem("aceiiit_materials_view", driveUi.view); } catch (_e) { }
+        renderMaterialsBrowser();
+        var again = root.querySelector('[data-drive-view="' + driveUi.view + '"]');
+        if (again) again.focus();
+      } else if (more) {
+        event.preventDefault();
+        openDriveMenu(more);
+      } else if (action) {
+        var name = action.getAttribute("data-drive-action");
+        if (name === "connect") {
+          action.disabled = true;
+          Promise.resolve(store.connectDrive()).then(function (data) { window.location.href = data.url; }).catch(function (error) {
+            action.disabled = false;
+            driveFail(error);
+          });
+        } else if (name === "disconnect") {
+          if (!window.confirm("Disconnect Google Drive?\n\nStudents won't see study material until you connect again. Nothing is deleted from your Drive.")) return;
+          Promise.resolve(store.disconnectDrive()).then(function () {
+            driveUi.status = null;
+            invalidateDriveCache();
+            loadDriveStatus();
+            loadDriveFolder(currentDriveFolderId(), true);
+          }).catch(driveFail);
+        } else if (name === "change-root") {
+          var link = window.prompt("Paste the link of the Google Drive folder to use for study material:");
+          if (!link || !link.trim()) return;
+          Promise.resolve(store.setDriveRoot(link.trim())).then(function () {
+            driveUi.status = null;
+            loadDriveStatus();
+            openDriveFolder("");
+            afterDriveChange("Study material now uses the new folder.");
+          }).catch(driveFail);
+        } else if (name === "status-retry") {
+          loadDriveStatus();
+        } else if (name === "retry") {
+          loadDriveFolder(currentDriveFolderId(), true);
+        } else if (name === "refresh") {
+          action.disabled = true;
+          Promise.resolve(store.refreshMaterialsCache()).catch(function () { }).then(function () {
+            afterDriveChange("Refreshed from Google Drive.");
+          });
+        } else if (name === "new-folder") {
+          var folderName = window.prompt("New folder name");
+          if (!folderName || !folderName.trim()) return;
+          var listing = currentDriveListing();
+          var parentId = listing && listing.folder && !listing.folder.isRoot ? listing.folder.id : null;
+          Promise.resolve(store.createMaterialFolder(parentId, folderName.trim())).then(function () { afterDriveChange("Folder " + folderName.trim() + " created."); }).catch(driveFail);
+        } else if (name === "upload") {
+          var picker = root.querySelector("[data-drive-file]");
+          if (picker) picker.click();
+        }
+      }
+    });
+    root.addEventListener("input", function (event) {
+      if (!event.target.hasAttribute || !event.target.hasAttribute("data-drive-search")) return;
+      driveUi.query = event.target.value;
+      window.clearTimeout(driveUi.searchTimer);
+      driveUi.searchTimer = window.setTimeout(runDriveSearch, 300);
+    });
+    root.addEventListener("change", function (event) {
+      if (!event.target.hasAttribute || !event.target.hasAttribute("data-drive-file")) return;
+      startDriveUploads(event.target.files);
+      event.target.value = "";
+    });
+    // Drag files from the desktop onto the list (current folder) or onto a folder tile.
+    root.addEventListener("dragenter", function (event) {
+      if (!driveUi.mounted || !driveUi.mounted.options.admin || !event.dataTransfer || Array.prototype.indexOf.call(event.dataTransfer.types || [], "Files") === -1) return;
+      event.preventDefault();
+      driveUi.dragDepth += 1;
+      root.classList.add("is-dropping");
+    });
+    root.addEventListener("dragover", function (event) {
+      if (!root.classList.contains("is-dropping")) return;
+      event.preventDefault();
+      var tile = event.target.closest && event.target.closest("[data-drop-folder]");
+      root.querySelectorAll(".drive-folder.is-drop-target").forEach(function (el) { if (el !== tile) el.classList.remove("is-drop-target"); });
+      if (tile) tile.classList.add("is-drop-target");
+    });
+    root.addEventListener("dragleave", function () {
+      driveUi.dragDepth = Math.max(0, driveUi.dragDepth - 1);
+      if (!driveUi.dragDepth) {
+        root.classList.remove("is-dropping");
+        root.querySelectorAll(".drive-folder.is-drop-target").forEach(function (el) { el.classList.remove("is-drop-target"); });
+      }
+    });
+    root.addEventListener("drop", function (event) {
+      if (!root.classList.contains("is-dropping")) return;
+      event.preventDefault();
+      driveUi.dragDepth = 0;
+      root.classList.remove("is-dropping");
+      var tile = event.target.closest && event.target.closest("[data-drop-folder]");
+      root.querySelectorAll(".drive-folder.is-drop-target").forEach(function (el) { el.classList.remove("is-drop-target"); });
+      startDriveUploads(event.dataTransfer.files, tile ? tile.getAttribute("data-drop-folder") : "", tile ? tile.getAttribute("data-drop-name") : "");
+    });
+  }
+
+  // ---- Admin Studio → Study Materials ----
+  function buildAdminMaterialsHtml() {
+    return '<div class="materials-studio" id="materials-studio"></div>';
+  }
+
+  function bindAdminMaterials() {
     var root = document.getElementById("materials-studio");
     if (!root) {
       materialUploads.onChange = null;
       return;
     }
-    var rerender = function () {
-      if (runtime.adminStudioTab === "materials" && document.getElementById("materials-studio")) {
-        rerenderAdminPreserveScroll(user, selectedTestId);
+    materialUploads.onChange = function () {
+      invalidateDriveCache();
+      loadDriveFolder(currentDriveFolderId(), true);
+    };
+    // Studio has no route per folder, so the open folder is kept in driveUi.adminFolderId.
+    var openFolder = function (folderId) {
+      driveUi.adminFolderId = folderId || "";
+      mountMaterialsBrowser(root, { admin: true, folderId: driveUi.adminFolderId, onOpenFolder: openFolder });
+      var here = root.querySelector(".drive-crumbs [aria-current]");
+      if (here) {
+        here.setAttribute("tabindex", "-1");
+        here.focus({ preventScroll: true });
       }
     };
-    materialUploads.onChange = rerender;
-    var reload = function () {
-      runtime.materialsError = "";
-      return Promise.resolve(store.refreshStudyMaterials()).then(rerender).catch(function (error) {
-        runtime.materialsError = error && error.message ? error.message : "Network error";
-        rerender();
-      });
-    };
-    var data = store.getStudyMaterials();
-    if (!runtime.materialsError && (!data.loadedAt || Date.now() - data.loadedAt > 60 * 1000) && !runtime.materialsLoading) {
-      runtime.materialsLoading = true;
-      reload().then(function () { runtime.materialsLoading = false; });
-    }
-    var folders = data.folders || [];
-    var selected = folders.find(function (f) { return f.id === runtime.materialsFolderId; }) || null;
-    var act = function (button, work) {
-      if (button) button.disabled = true;
-      Promise.resolve().then(work).then(reload).catch(function (error) {
-        if (button) button.disabled = false;
-        window.alert(error && error.message ? error.message : "That didn't work. Please try again.");
-      });
-    };
-
-    root.querySelectorAll(".js-material-reload").forEach(function (button) {
-      button.addEventListener("click", function () { reload(); });
-    });
-    root.querySelectorAll(".js-material-folder").forEach(function (button) {
-      button.addEventListener("click", function () {
-        runtime.materialsFolderId = button.dataset.id;
-        runtime.materialsRenameFileId = "";
-        runtime.materialsRenamingFolder = false;
-        rerender();
-      });
-    });
-
-    var newFolder = document.getElementById("materials-new-folder");
-    if (newFolder) {
-      newFolder.addEventListener("submit", function (event) {
-        event.preventDefault();
-        var form = new FormData(newFolder);
-        act(newFolder.querySelector('[type="submit"]'), function () {
-          return store.createMaterialFolder({ name: form.get("name"), icon: form.get("icon") || "📁", color: form.get("color") || "" }).then(function (folder) {
-            runtime.materialsFolderId = folder.id;
-          });
-        });
-      });
-    }
-
-    var renameFolderButton = root.querySelector(".js-material-rename-folder");
-    if (renameFolderButton) {
-      renameFolderButton.addEventListener("click", function () {
-        runtime.materialsRenamingFolder = true;
-        rerender();
-        window.requestAnimationFrame(function () {
-          var input = document.getElementById("materials-folder-rename");
-          if (input) { input.focus(); input.select(); }
-        });
-      });
-    }
-    var folderRenameForm = root.querySelector(".js-material-folder-rename-form");
-    if (folderRenameForm && selected) {
-      var cancelFolderRename = function () { runtime.materialsRenamingFolder = false; rerender(); };
-      folderRenameForm.addEventListener("submit", function (event) {
-        event.preventDefault();
-        var name = String(new FormData(folderRenameForm).get("name") || "").trim();
-        act(folderRenameForm.querySelector('[type="submit"]'), function () {
-          return store.updateMaterialFolder(selected.id, { name: name }).then(function () { runtime.materialsRenamingFolder = false; });
-        });
-      });
-      folderRenameForm.querySelector(".js-material-folder-rename-cancel").addEventListener("click", cancelFolderRename);
-      folderRenameForm.addEventListener("keydown", function (event) { if (event.key === "Escape") cancelFolderRename(); });
-    }
-
-    var deleteFolderButton = root.querySelector(".js-material-delete-folder");
-    if (deleteFolderButton && selected) {
-      deleteFolderButton.addEventListener("click", function () {
-        var count = (selected.files || []).length;
-        if (!window.confirm("Delete the folder “" + selected.name + "”" + (count ? " and its " + count + (count === 1 ? " file" : " files") : "") + "? Students will no longer see " + (count ? "them" : "it") + ".")) return;
-        act(deleteFolderButton, function () {
-          return store.deleteMaterialFolder(selected.id).then(function () { runtime.materialsFolderId = ""; });
-        });
-      });
-    }
-
-    var fileInput = document.getElementById("materials-file-input");
-    if (fileInput && selected) {
-      fileInput.addEventListener("change", function () {
-        if (fileInput.files && fileInput.files.length) queueMaterialUploads(selected, fileInput.files);
-        fileInput.value = "";
-      });
-    }
-
-    // Drag and drop onto the open folder.
-    var dropZone = document.getElementById("materials-drop-zone");
-    if (dropZone && selected) {
-      var depth = 0;
-      var hasFiles = function (event) {
-        return event.dataTransfer && Array.prototype.indexOf.call(event.dataTransfer.types || [], "Files") !== -1;
-      };
-      dropZone.addEventListener("dragenter", function (event) {
-        if (!hasFiles(event)) return;
-        event.preventDefault();
-        depth += 1;
-        dropZone.classList.add("is-drag-over");
-      });
-      dropZone.addEventListener("dragover", function (event) {
-        if (!hasFiles(event)) return;
-        event.preventDefault();
-        event.dataTransfer.dropEffect = "copy";
-      });
-      dropZone.addEventListener("dragleave", function () {
-        depth = Math.max(0, depth - 1);
-        if (!depth) dropZone.classList.remove("is-drag-over");
-      });
-      dropZone.addEventListener("drop", function (event) {
-        if (!hasFiles(event)) return;
-        event.preventDefault();
-        depth = 0;
-        dropZone.classList.remove("is-drag-over");
-        if (event.dataTransfer.files && event.dataTransfer.files.length) queueMaterialUploads(selected, event.dataTransfer.files);
-      });
-    }
-
-    root.querySelectorAll(".js-material-rename").forEach(function (button) {
-      button.addEventListener("click", function () {
-        runtime.materialsRenameFileId = button.dataset.id;
-        rerender();
-        window.requestAnimationFrame(function () {
-          var input = document.getElementById("materials-rename-" + button.dataset.id);
-          if (input) { input.focus(); input.select(); }
-        });
-      });
-    });
-    root.querySelectorAll(".js-material-rename-form").forEach(function (form) {
-      var cancel = function () { runtime.materialsRenameFileId = ""; rerender(); };
-      form.addEventListener("submit", function (event) {
-        event.preventDefault();
-        var name = String(new FormData(form).get("name") || "").trim();
-        act(form.querySelector('[type="submit"]'), function () {
-          return store.renameMaterialFile(form.dataset.id, name).then(function () { runtime.materialsRenameFileId = ""; });
-        });
-      });
-      form.querySelector(".js-material-rename-cancel").addEventListener("click", cancel);
-      form.addEventListener("keydown", function (event) { if (event.key === "Escape") cancel(); });
-    });
-    root.querySelectorAll(".js-material-delete").forEach(function (button) {
-      button.addEventListener("click", function () {
-        if (!window.confirm("Delete “" + button.dataset.name + "”? Students will no longer see it.")) return;
-        act(button, function () { return store.deleteMaterialFile(button.dataset.id); });
-      });
-    });
-
-    // Old browser-only files: recreate their folders on the server and upload them.
-    var legacyButton = root.querySelector(".js-material-legacy-upload");
-    if (legacyButton) {
-      legacyButton.addEventListener("click", function () {
-        var legacy = store.getLegacyStudyMaterials() || { folders: [], files: [] };
-        legacyButton.disabled = true;
-        var byName = {};
-        folders.forEach(function (f) { byName[f.name.toLowerCase()] = f; });
-        var batch = { pending: 0, done: 0, onAllDone: function () { store.clearLegacyStudyMaterials(); rerender(); } };
-        var chain = Promise.resolve();
-        (legacy.folders || []).forEach(function (oldFolder) {
-          var files = (legacy.files || []).filter(function (f) { return f.folderId === oldFolder.id && /^data:/.test(String(f.url || "")); });
-          if (!files.length) return;
-          chain = chain.then(function () {
-            var existing = byName[String(oldFolder.name || "").toLowerCase()];
-            return existing ? existing : store.createMaterialFolder({ name: oldFolder.name || "Study material", icon: oldFolder.icon || "📁", color: "" });
-          }).then(function (folder) {
-            byName[String(folder.name).toLowerCase()] = folder;
-            queueMaterialUploads(folder, files.map(function (f) { return materialDataUrlToFile(f.url, f.name); }).filter(Boolean), batch);
-          });
-        });
-        chain.then(reload).catch(function (error) {
-          legacyButton.disabled = false;
-          window.alert(error && error.message ? error.message : "Couldn't start those uploads.");
-        });
-      });
-    }
+    mountMaterialsBrowser(root, { admin: true, folderId: driveUi.adminFolderId, onOpenFolder: openFolder });
   }
 
   // ---- Studio → User Payments: all users (server-paginated) and the user details window ---
@@ -14144,6 +14479,21 @@
     toggleMentor(toggle);
   });
   ensureThemeCurtain();
+
+  // Back from Google's consent screen (Studio → Study Materials → Connect Google Drive).
+  (function handleDriveReturn() {
+    var result = "";
+    try { result = new URLSearchParams(window.location.search).get("drive") || ""; } catch (_e) { return; }
+    if (!result) return;
+    runtime.adminStudioTab = "materials";
+    driveUi.notice = {
+      connected: "Google Drive is connected. Add folders and files below, or straight in Google Drive.",
+      denied: "Google Drive wasn't connected: access wasn't granted.",
+      no_refresh_token: "Google didn't grant offline access. Remove AceIIIT from your Google Account's third-party access, then connect again.",
+      failed: "Connecting Google Drive failed. Try again."
+    }[result] || "";
+    try { history.replaceState(null, "", window.location.pathname + window.location.hash); } catch (_e) { }
+  })();
 
   if (!window.location.hash) {
     var initialRoute = parseHashRoute();
