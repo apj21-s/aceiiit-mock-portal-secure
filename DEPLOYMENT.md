@@ -40,8 +40,9 @@ dashboard; never commit `backend/.env`.
 | `APPLE_CLIENT_ID`, `APPLE_REDIRECT_URI` | (unset) | Apple sign-in is disabled unless set |
 | `GOOGLE_CLIENT_SECRET`, `GOOGLE_CALENDAR_REDIRECT_URI` | (unset) | Google Calendar sync |
 | `RESEND_FROM`, `MAIL_FROM_EMAIL`, `MAIL_FROM_NAME`, `REMINDER_FROM_EMAIL`, `SMTP_*` | | Senders must be verified with the provider; SMTP is a last-resort fallback |
-| `CLOUDINARY_URL` (or `CLOUDINARY_CLOUD_NAME/API_KEY/API_SECRET`) | | Question images and study materials. Study files are uploaded from the admin's browser straight to Cloudinary (signed per file; the CSP allows `api.cloudinary.com`) as non-public "authenticated" assets; students get 5-minute signed download links |
-| `MATERIAL_MAX_BYTES` | 10485760 (10 MB) | Largest study-material file. 10 MB is Cloudinary's free-plan per-file limit; raise it only on a plan that allows larger files |
+| `CLOUDINARY_URL` (or `CLOUDINARY_CLOUD_NAME/API_KEY/API_SECRET`) | | Question images |
+| `MATERIAL_MAX_BYTES` | 104857600 (100 MB) | Largest study-material upload from the portal (files go straight to Google Drive) |
+| `GOOGLE_DRIVE_REDIRECT_URI` | `<PORTAL_BASE_URL>/api/materials/drive/callback` | Study materials' Google Drive connection (uses `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` and `CALENDAR_TOKEN_KEY` to encrypt the token) |
 | `SESSION_TTL_HOURS` | 24 | Session lifetime (sliding renewal while active) |
 | `COMMERCE_ACTIVE_SEASON_RESOURCE_CODES` | `PAID_MOCK_SERIES` | Commerce resource codes that map to the active season |
 | `AI_INTERPRETATION_ENABLED`, `GEMINI_API_KEY`, `GEMINI_MODEL` | `false`, (unset), `gemini-3.5-flash-lite` | AI coach on the results page (full mocks only; practice papers never call Gemini). Check Google's current model list and pricing before enabling. If Gemini refuses (quota, a denied project), results show the rule-based plan only |
@@ -161,6 +162,39 @@ Expected effects of this release:
   `PROVISIONING_FAILED`, and its retry route re-sends provisioning once the portal is
   healthy. Provisioning is idempotent.
 
+## Study materials (Google Drive)
+
+Study material lives in the admin's own Google Drive, in one folder (default "AceIIIT Study
+Materials", created on connect). Drive is the source of truth: files and folders added in
+Google Drive itself show up in the portal within a minute (or at once with Studio's Refresh).
+Students browse, search, open and download through the portal, which streams each file; they
+never get Drive links, and nothing outside that folder can be reached. Admins make folders at
+any depth, upload (the browser sends files straight to a Drive upload session), rename, move,
+recolour and delete (to Drive's trash) in Studio → Study Materials. Cloudinary is no longer used
+for study material.
+
+**One-time setup**
+
+1. Google Cloud, in the project that owns `GOOGLE_CLIENT_ID`:
+   - APIs & Services → Library → enable **Google Drive API**.
+   - Credentials → the OAuth client → add the redirect URI
+     `https://mock.aceiiit.in/api/materials/drive/callback`.
+   - OAuth consent screen → add the scope `.../auth/drive`, and set publishing status to
+     **In production** (in "Testing", Google expires the refresh token after 7 days). The admin
+     sees a one-time "Google hasn't verified this app" screen; choose Advanced → Continue.
+2. Deploy, then in Studio → Study Materials click **Connect Google Drive** and sign in with the
+   Google account that should own the files. To use an existing folder, choose "Use another
+   folder" and paste its link.
+3. Remove the old Cloudinary study files (dry run first):
+   ```bash
+   cd backend
+   node scripts/migrations/2026-10-delete-cloudinary-materials.js           # review
+   node scripts/migrations/2026-10-delete-cloudinary-materials.js --apply   # delete
+   ```
+
+If Google revokes access (password change, access removed in the Google Account), Studio shows
+"Reconnect"; students see the materials again once it's reconnected.
+
 ## ACEIIIT Mentor
 
 The floating help button opens ACEIIIT Mentor, a Gemini-backed chat about the student's own
@@ -231,6 +265,7 @@ The usage line drops by one, and Studio → ACEIIIT Mentor shows the reply under
 - [ ] Optional: create a Sentry project and set `SENTRY_DSN`.
 - [ ] Optional: enable Gemini (`AI_INTERPRETATION_ENABLED=true`, `GEMINI_API_KEY`) after reviewing the current model list and pricing.
 - [ ] ACEIIIT Mentor: confirm the Gemini project can generate content (a 403 "project has been denied access" must be resolved with Google), run the index migration, set the programme resource code(s) in Studio → ACEIIIT Mentor, deploy the site's internal lookup endpoints and set `ACEIIIT_SITE_URL`.
+- [ ] Study materials: enable the Google Drive API, add the Drive redirect URI and scope, publish the consent screen, connect Drive in Studio, then run the Cloudinary cleanup script.
 - [ ] Review Google's data-use terms for the Gemini tier in use (free-tier content may be used to improve Google's products).
 - [ ] Have the Privacy Policy and Terms (`backend/public/privacy.html`, `terms.html`) legally reviewed.
 - [ ] Run `npm run load-test` (or the same flow) against staging sized like production before a large exam.

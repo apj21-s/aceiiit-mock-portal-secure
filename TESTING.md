@@ -9,8 +9,8 @@ loaded.
 | Command | What it runs |
 |---|---|
 | `npm run lint` | ESLint flat config (`eslint.config.js`): correctness rules; `no-console` in server code |
-| `npm test` | Jest, 34 suites / 300 tests (unit + HTTP integration via supertest) |
-| `npm run test:e2e` | Puppeteer: production boot, student exam flow, custom practice and results, ACEIIIT Mentor, Admin Studio, responsive audit, mobile flows |
+| `npm test` | Jest, 34 suites / 309 tests (unit + HTTP integration via supertest) |
+| `npm run test:e2e` | Puppeteer: production boot, student exam flow, custom practice and results, ACEIIIT Mentor, study materials, Admin Studio, responsive audit, mobile flows |
 | `npm run load-test` | Concurrent students through the full HTTP flow (20 → 150) |
 | `npm audit --omit=dev` | Production dependency advisories (CI fails on high/critical) |
 
@@ -29,7 +29,7 @@ The first test run downloads a MongoDB binary (needs network once).
 | ACEIIIT Mentor | `mentor/mentor` | Sign-in required; free allowance and IST month reset; a reply charged exactly once (idempotent retry, failures free, last permitted reply then blocked); concurrent sends never exceed the allowance; abandoned reservations expire; enrolled tier only from a verified payment or ACTIVE site entitlement for a configured programme code (pending, revoked, unconfigured or a site outage → free); the browser can't set tier, usage or owner; owner-only conversations and attempts; prompts carry measured results but no name, email or ids, and general doubts carry no personal data; prompt injection changes nothing; malformed input refused; purge deletes mentor data; missing key, refused project, timeout, provider daily quota and the global daily cap fail safely without charging and never leak the key; admin settings validation and stats (Gemini stubbed) |
 | Account / admin | `account/account-data`, `account/account-purge`, `admin/question-bank`, `admin/question-images`, `admin/users-list`, `admin/site-orders` | Data export contents (no secrets); deletion (confirmation, password re-check, CSRF, sessions revoked, admins refused) and the 30-day purge; paginated question bank and slim snapshot; question images saved exactly as sent (remove, replace, reorder) with a 0/20–100% display width per image that reaches the exam paper; every user listed (past 500) with true totals, and no internal user fields sent; a student's AceIIIT-site orders fetched for admins only (shared secret), payment screenshots streamed with a safe content type, site outages reported without crashing (site stubbed) |
 | Practice | `practice/practice-sessions` | Builder options (counts per section and topic, by difficulty); exact topic subjects; time split by question count, untimed cap; a student's practice papers listed with the catalog; REAP-only papers start in REAP; SUPR-only papers get no REAP time |
-| Study materials | `materials/study-materials` | Sign-in required, free for every student, admin-only changes; signed direct upload (type, size, folder checks); registration only once Cloudinary confirms the asset; "(1)" names; short-lived signed download links; rename keeps the extension; deletes clean up storage (Cloudinary stubbed) |
+| Study materials | `materials/study-materials` | Google Drive (faked): connecting needs a matching OAuth state and stores the token encrypted (never returned); existing root folder reused or set by link; disconnect revokes; folders first in natural order with counts; files added directly in Drive appear after a refresh; nothing outside the root folder is reachable (list, stream, thumbnail, search, writes); search with folder paths; streaming with Range, safe inline types only (HTML downloads), Google Docs as PDF; a revoked grant asks for a reconnect; admin-only nested folders, rename, recolour, move (not into itself), delete to trash, resumable upload sessions with a size limit |
 | Ops | `ops/observability`, `ops/indexes`, `ops/renumber-attempts` | Request ids, `/health`, `/ready`, error responses without stacks; missing-index detection and recreation; duplicate attempt-number renumbering migration |
 
 ## Browser E2E (`backend/tests/e2e`)
@@ -75,6 +75,7 @@ Uses `puppeteer-core` with a locally installed Chrome (`CHROME_PATH`, default
   a new tab, reset date, Maybe Later), history open/delete, a conversation linked to the attempt
   when opened from results, dark mode, reduced motion, the phone sheet (modal, inert page, Back
   closes it) and sign-out removing the panel.
+- **`materials.e2e.js`** (32 checks, `/api/materials` faked): students get folder tiles with counts and Drive colours, breadcrumbs, subfolders and Back, a dense list of 60 files (52px rows, truncated names, no sideways scroll; on phones two-line names, no date column, 44px targets), a remembered list/grid toggle, search with paths, open/download through the portal and no admin controls; admins connect Google Drive (and come back to the tab with a notice), make folders, upload into the open folder through the background panel, and rename, move, recolour and delete from the row menu (Escape returns focus).
 - **`admin.e2e.js`** (36 checks): all ten Studio tabs render without errors; the ACEIIIT Mentor tab reports a missing key without showing one, saves allowances and programme codes, and refuses a non-https programme link; question bank
   pagination, server search with focus kept, drawer excludes attached questions and
   attaches; the question image manager adds, sizes, replaces (a failed replace keeps the old

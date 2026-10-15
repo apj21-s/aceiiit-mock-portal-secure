@@ -1714,6 +1714,7 @@
         window.clearTimeout(parseInt(existing.dataset.fadeTimer));
         existing.removeAttribute("data-fade-timer");
       }
+      existing.style.pointerEvents = "";
       existing.style.opacity = "1";
       document.body.classList.add("is-syncing");
       overlayLoaderVisible = true;
@@ -1774,6 +1775,8 @@
     document.body.classList.remove("is-syncing");
     var existing = document.querySelector("[data-sync-overlay='true']");
     if (existing) {
+      // Fading out: it must not swallow the next click while it disappears.
+      existing.style.pointerEvents = "none";
       existing.style.transition = "opacity 0.8s ease";
       existing.style.opacity = "0";
       existing.dataset.fadeTimer = window.setTimeout(function () {

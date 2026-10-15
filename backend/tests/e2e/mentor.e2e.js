@@ -186,7 +186,7 @@ function fakeMentor() {
     check(await page.$eval("#mentor-panel", (p) => !!p.querySelector("a[href^='https://wa.me/']")), "WhatsApp support is still reachable inside the panel");
     check(st.rect.width <= 400 && st.rect.right >= 16 && st.rect.top > 0, `desktop panel floats bottom-right (${Math.round(st.rect.width)}px wide)`);
     await page.keyboard.press("Escape");
-    await sleep(400);
+    await page.waitForFunction(() => { const p = document.getElementById("mentor-panel"); return p && p.hidden; }, { timeout: 3000 }).catch(() => null);
     st = await panelState(page);
     const toggleFocused = await page.evaluate(() => document.activeElement && document.activeElement.classList.contains("js-mentor-toggle"));
     check(!st.open && st.hidden && st.toggleExpanded === "false" && toggleFocused, "Escape closes it and focus returns to the button");
