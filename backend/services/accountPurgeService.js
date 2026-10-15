@@ -3,6 +3,9 @@ const AttemptSession = require("../models/AttemptSession");
 const Entitlement = require("../models/Entitlement");
 const GoogleCalendarConnection = require("../models/GoogleCalendarConnection");
 const GoogleCalendarEvent = require("../models/GoogleCalendarEvent");
+const MentorConversation = require("../models/MentorConversation");
+const MentorMessage = require("../models/MentorMessage");
+const MentorUsage = require("../models/MentorUsage");
 const Reminder = require("../models/Reminder");
 const User = require("../models/User");
 const { logAuditEvent } = require("./auditLogService");
@@ -41,6 +44,9 @@ async function purgeUserCascade(user, actorUserId, { automatic = false } = {}) {
     Entitlement.updateMany({ userId }, { $set: { userId: null } }),
     AttemptSession.deleteMany({ userId }),
     Reminder.deleteMany({ userId }),
+    MentorMessage.deleteMany({ userId }),
+    MentorConversation.deleteMany({ userId }),
+    MentorUsage.deleteMany({ userId }),
   ]);
   await User.deleteOne({ _id: userId });
   await logAuditEvent({

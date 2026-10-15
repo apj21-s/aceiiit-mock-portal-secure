@@ -40,11 +40,14 @@ dashboard; never commit `backend/.env`.
 | `APPLE_CLIENT_ID`, `APPLE_REDIRECT_URI` | (unset) | Apple sign-in is disabled unless set |
 | `GOOGLE_CLIENT_SECRET`, `GOOGLE_CALENDAR_REDIRECT_URI` | (unset) | Google Calendar sync |
 | `RESEND_FROM`, `MAIL_FROM_EMAIL`, `MAIL_FROM_NAME`, `REMINDER_FROM_EMAIL`, `SMTP_*` | | Senders must be verified with the provider; SMTP is a last-resort fallback |
-| `CLOUDINARY_URL` (or `CLOUDINARY_CLOUD_NAME/API_KEY/API_SECRET`) | | Question images |
+| `CLOUDINARY_URL` (or `CLOUDINARY_CLOUD_NAME/API_KEY/API_SECRET`) | | Question images and study materials. Study files are uploaded from the admin's browser straight to Cloudinary (signed per file; the CSP allows `api.cloudinary.com`) as non-public "authenticated" assets; students get 5-minute signed download links |
+| `MATERIAL_MAX_BYTES` | 10485760 (10 MB) | Largest study-material file. 10 MB is Cloudinary's free-plan per-file limit; raise it only on a plan that allows larger files |
 | `SESSION_TTL_HOURS` | 24 | Session lifetime (sliding renewal while active) |
 | `COMMERCE_ACTIVE_SEASON_RESOURCE_CODES` | `PAID_MOCK_SERIES` | Commerce resource codes that map to the active season |
-| `AI_INTERPRETATION_ENABLED`, `GEMINI_API_KEY`, `GEMINI_MODEL` | `false`, (unset), `gemini-3.5-flash-lite` | Optional Performance Intelligence. Check Google's current model list and pricing before enabling |
+| `AI_INTERPRETATION_ENABLED`, `GEMINI_API_KEY`, `GEMINI_MODEL` | `false`, (unset), `gemini-3.5-flash-lite` | AI coach on the results page (full mocks only; practice papers never call Gemini). Check Google's current model list and pricing before enabling. If Gemini refuses (quota, a denied project), results show the rule-based plan only |
 | `AI_TIMEOUT_MS`, `AI_BREAKER_TTL_MS`, `AI_BREAKER_MAX_MS`, `AI_MIN_INTERVAL_MS` | 20000, 3600000, 86400000, 4000 | AI reliability tuning |
+| `MENTOR_MAX_CONCURRENT`, `MENTOR_SENDS_PER_MINUTE` | 4, 6 | ACEIIIT Mentor limits per instance: replies generated at the same time, and messages per student per minute. It uses `GEMINI_API_KEY`/`GEMINI_MODEL`/`AI_TIMEOUT_MS` and works whether or not `AI_INTERPRETATION_ENABLED` is on. Allowances, programme codes and the daily cap are set in Studio → ACEIIIT Mentor (see below) |
+| `ACEIIIT_SITE_URL` | (unset) | The AceIIIT site's origin. With the shared `INTERNAL_API_SECRET` it powers programme-enrolment checks for the mentor and the "On the AceIIIT site" orders in Studio user details. Unset turns both off |
 | `SENTRY_DSN` | (unset) | Error monitoring (no bodies, cookies or auth headers are sent) |
 | `LOG_LEVEL` | `info` | pino JSON logs to stdout |
 | `UV_THREADPOOL_SIZE` | 4 | Password hashing runs here; set it to the host's vCPU count (minimum 4) |
@@ -158,6 +161,54 @@ Expected effects of this release:
   `PROVISIONING_FAILED`, and its retry route re-sends provisioning once the portal is
   healthy. Provisioning is idempotent.
 
+## ACEIIIT Mentor
+
+The floating help button opens ACEIIIT Mentor, a Gemini-backed chat about the student's own
+results (WhatsApp support is linked inside it). Scores, ranks and percentiles are always
+calculated by the portal; the model only explains them.
+
+**Before switching it on**
+
+1. Run `scripts/migrations/2026-10-sync-indexes.js --apply` (dry run first). The unique
+   indexes on `mentorusages {userId, period}` and `mentormessages {userId, clientMessageId}`
+   make the monthly allowance exactly-once under concurrent requests; production runs with
+   auto-indexing off, so without the migration the allowance is not race-safe. The same run
+   creates the `studyfiles` / `studyfolders` indexes.
+2. Set `GEMINI_API_KEY` and `GEMINI_MODEL` on Render (never in the frontend or in Git). Check
+   that the Google Cloud project can call `generateContent`; Studio → ACEIIIT Mentor shows
+   "Paused after a provider error" if Google refuses the key or project.
+3. Programme enrolment: in Studio → ACEIIIT Mentor, list the resource code(s) that mean "enrolled
+   in the UGEE preparation programme". A student gets the enrolled allowance only with an
+   **ACTIVE** entitlement for one of those codes on the AceIIIT site, or a **verified**
+   commerce payment for one recorded in the portal. The list starts empty, so everyone is on
+   the free allowance until an operator sets it. The site's entitlement code comes from the
+   product's metadata (`resourceCode`, default `DEFAULT_ACCESS`); confirm which code the
+   programme product grants before entering it. A site lookup that fails counts as free.
+4. Deploy the AceIIIT site API with `GET /api/internal/portal/customer` and
+   `GET /api/internal/portal/payments/:id/receipt` (same `INTERNAL_API_SECRET` as the
+   portal), then set `ACEIIIT_SITE_URL` on the portal.
+5. Optional: set the programme page (https only). Empty uses the existing registrations link.
+
+**Allowance:** counts mentor replies, not tokens. Free: 10 per calendar month by default;
+enrolled: 100 by default (both configurable, never unlimited). The month is the calendar month
+in Asia/Kolkata and resets at 00:00 IST on the 1st. A reply is charged once, only after it is
+stored; failures, timeouts and refusals cost nothing, and a retry of the same message never
+charges twice. The count lives in MongoDB, so it holds across restarts and instances.
+
+**Cost controls:** per-student rate limit (`MENTOR_SENDS_PER_MINUTE`), replies generated at
+once (`MENTOR_MAX_CONCURRENT`), a global daily reply cap, maximum message length and reply
+tokens (Studio), the AI timeout and the shared circuit breaker (quota or a refused project
+pauses replies for everyone; nothing is charged while paused). Non-streaming; no automatic
+provider retries.
+
+**Data:** collections `mentorconversations`, `mentormessages`, `mentorusages`,
+`mentordailystats`. Students can delete conversations; account purge deletes them; "Download
+my data" includes them. Prompts carry measured results only, never name, email or account
+ids (see `privacy.html`).
+
+**Smoke check:** as a student, open the mentor and send "Analyse my latest mock test.".
+The usage line drops by one, and Studio → ACEIIIT Mentor shows the reply under today.
+
 ## Scaling
 
 - Run **one instance**. The rate limiters, the submit queue, the rank cache and the
@@ -179,5 +230,7 @@ Expected effects of this release:
 - [ ] Verify the email sender domain with Resend and/or Brevo.
 - [ ] Optional: create a Sentry project and set `SENTRY_DSN`.
 - [ ] Optional: enable Gemini (`AI_INTERPRETATION_ENABLED=true`, `GEMINI_API_KEY`) after reviewing the current model list and pricing.
+- [ ] ACEIIIT Mentor: confirm the Gemini project can generate content (a 403 "project has been denied access" must be resolved with Google), run the index migration, set the programme resource code(s) in Studio → ACEIIIT Mentor, deploy the site's internal lookup endpoints and set `ACEIIIT_SITE_URL`.
+- [ ] Review Google's data-use terms for the Gemini tier in use (free-tier content may be used to improve Google's products).
 - [ ] Have the Privacy Policy and Terms (`backend/public/privacy.html`, `terms.html`) legally reviewed.
 - [ ] Run `npm run load-test` (or the same flow) against staging sized like production before a large exam.

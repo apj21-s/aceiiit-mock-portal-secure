@@ -5,6 +5,9 @@ const Attempt = require("../models/Attempt");
 const Entitlement = require("../models/Entitlement");
 const IntegrityEvent = require("../models/IntegrityEvent");
 const PaymentRecord = require("../models/PaymentRecord");
+const MentorConversation = require("../models/MentorConversation");
+const MentorMessage = require("../models/MentorMessage");
+const MentorUsage = require("../models/MentorUsage");
 const Reminder = require("../models/Reminder");
 const User = require("../models/User");
 const { logAuditEvent } = require("../services/auditLogService");
@@ -20,7 +23,7 @@ async function exportMyData(req, res, next) {
     const user = await User.findById(userId).select("+passwordHash").lean();
     if (!user) return res.status(404).json({ error: "User not found" });
     const email = String(user.normalizedEmail || user.email || "").toLowerCase();
-    const [attempts, reminders, entitlements, payments, integrityEvents] = await Promise.all([
+    const [attempts, reminders, entitlements, payments, integrityEvents, mentorConversations, mentorMessages, mentorUsage] = await Promise.all([
       Attempt.find({ userId })
         .select("testId attemptNumber score accuracy correctCount wrongCount skippedCount timeTakenSeconds submittedAt submittedReason isPractice integrity sectionWise topicWise")
         .sort({ submittedAt: -1 })
@@ -29,7 +32,14 @@ async function exportMyData(req, res, next) {
       Entitlement.find({ normalizedEmail: email }).select("seasonId tier status source grantedAt revokedAt expiresAt").lean(),
       PaymentRecord.find({ normalizedEmail: email }).select("seasonId status source verifiedAt revokedAt createdAt").lean(),
       IntegrityEvent.find({ userId }).select("sessionId testId type counted clientAt receivedAt durationMs").sort({ receivedAt: 1 }).limit(5000).lean(),
+      MentorConversation.find({ userId }).select("title attemptId createdAt lastMessageAt").sort({ createdAt: 1 }).lean(),
+      MentorMessage.find({ userId }).select("conversationId role content status createdAt").sort({ createdAt: 1 }).limit(20000).lean(),
+      MentorUsage.find({ userId }).select("period used").sort({ period: 1 }).lean(),
     ]);
+    const messagesByConversation = mentorMessages.reduce((acc, m) => {
+      (acc[String(m.conversationId)] = acc[String(m.conversationId)] || []).push({ role: m.role, content: m.content, status: m.status, createdAt: m.createdAt });
+      return acc;
+    }, {});
     const exportDoc = {
       exportedAt: new Date().toISOString(),
       profile: {
@@ -46,6 +56,16 @@ async function exportMyData(req, res, next) {
       entitlements,
       payments,
       examIntegrityEvents: integrityEvents,
+      mentor: {
+        conversations: mentorConversations.map((c) => ({
+          title: c.title,
+          attemptId: c.attemptId || null,
+          createdAt: c.createdAt,
+          lastMessageAt: c.lastMessageAt,
+          messages: messagesByConversation[String(c._id)] || [],
+        })),
+        monthlyReplies: mentorUsage.map((u) => ({ period: u.period, replies: u.used })),
+      },
     };
     res.set("Cache-Control", "no-store");
     res.set("Content-Disposition", `attachment; filename="aceiiit-my-data-${new Date().toISOString().slice(0, 10)}.json"`);

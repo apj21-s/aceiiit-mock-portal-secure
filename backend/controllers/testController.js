@@ -38,6 +38,7 @@ async function listTests(req, res, next) {
       noticeTitle: appConfig && appConfig.noticeTitle ? appConfig.noticeTitle : "",
       noticeBody: appConfig && appConfig.noticeBody ? appConfig.noticeBody : "",
     };
+    payload.practiceTests = await listOwnPracticeTests(req.auth.userId);
     const qotd = await getQuestionOfTheDay();
     payload.qotd = qotd ? { ...qotd, attempt: await qotdAttemptFor(req.auth.userId, qotd) } : null;
     res.json(payload);
@@ -281,14 +282,21 @@ async function submitQotdAttempt(req, res, next) {
 // student can already access. Scored by the same server-authoritative session flow,
 // and excluded from ranks and leaderboards.
 // ---------------------------------------------------------------------------
-const UNTIMED_SECTION_MINUTES = 600;
+// Untimed papers show no countdown, but the server still closes them at this cap.
+const UNTIMED_PRACTICE_MINUTES = 300;
 const FREE_PRACTICE_LIMIT = 1;
+const PRACTICE_LIST_LIMIT = 30;
 
 const practiceSchema = z.object({
-  subject: z.string().trim().min(1).max(60).default("all"),
+  // "all" | "SUPR" | "REAP" | "topic:<SECTION>:<topic>" (older clients sent a bare word)
+  subject: z.string().trim().min(1).max(120).default("all"),
   difficulty: z.enum(["all", "easy", "medium", "hard"]).default("all"),
   count: z.coerce.number().int().min(1).max(100).default(10),
   timerMinutes: z.coerce.number().int().min(0).max(300).default(0),
+});
+
+const practiceOptionsSchema = z.object({
+  difficulty: z.enum(["all", "easy", "medium", "hard"]).default("all"),
 });
 
 function shuffleInPlace(items) {
@@ -299,11 +307,107 @@ function shuffleInPlace(items) {
   return items;
 }
 
+const sectionOf = (question) => (question.section === "REAP" ? "REAP" : "SUPR");
+const topicKey = (topic) => String(topic || "").trim().toLowerCase();
+
+/** Questions this student may practise: those in live tests they can access. */
+async function practicePool(req, difficulty = "all") {
+  const isAdmin = req.auth.role === "admin";
+  const [entitledSeasonIds, activeSeason] = await Promise.all([getEntitledSeasonIds(req.auth), getActiveSeason()]);
+  const liveTests = await Test.find({ status: "live", deletedAt: null }).select("isFree seasonId questionIds").lean();
+  const accessibleIds = new Set();
+  liveTests
+    .filter((test) => isTestAccessible(test, { isAdmin, entitledSeasonIds, activeSeasonId: activeSeason && activeSeason._id }))
+    .forEach((test) => (test.questionIds || []).forEach((id) => accessibleIds.add(String(id))));
+  const filter = { _id: { $in: Array.from(accessibleIds) }, deletedAt: null };
+  if (difficulty !== "all") filter.difficulty = difficulty;
+  const pool = await Question.find(filter).select("_id section topic").lean();
+  return { pool, isAdmin, entitledSeasonIds };
+}
+
+function filterBySubject(pool, subject) {
+  if (subject === "all") return pool;
+  if (subject === "SUPR" || subject === "REAP") return pool.filter((q) => sectionOf(q) === subject);
+  const topicMatch = /^topic:(SUPR|REAP):(.+)$/.exec(subject);
+  if (topicMatch) {
+    const key = topicKey(topicMatch[2]);
+    return pool.filter((q) => sectionOf(q) === topicMatch[1] && topicKey(q.topic) === key);
+  }
+  const needle = topicKey(subject);
+  return pool.filter((q) => topicKey(q.topic).includes(needle));
+}
+
+/**
+ * Splits a paper's minutes between its sections by question count. A section with no
+ * questions gets 0 (the session then skips it); each present section gets at least a minute.
+ */
+function splitPracticeMinutes(totalMinutes, counts) {
+  if (!counts.SUPR) return { SUPR: 0, REAP: totalMinutes };
+  if (!counts.REAP) return { SUPR: totalMinutes, REAP: 0 };
+  const total = Math.max(2, totalMinutes);
+  const supr = Math.min(total - 1, Math.max(1, Math.round((total * counts.SUPR) / (counts.SUPR + counts.REAP))));
+  return { SUPR: supr, REAP: total - supr };
+}
+
+function practiceTestView(test) {
+  return {
+    id: String(test._id),
+    title: test.title,
+    subtitle: test.subtitle,
+    series: test.series,
+    isPractice: true,
+    isFree: true,
+    status: "live",
+    untimed: Boolean(test.untimed),
+    createdBy: String(test.ownerUserId),
+    questionIds: [],
+    questionCount: Array.isArray(test.questionIds) ? test.questionIds.length : 0,
+    sectionDurations: test.sectionDurations,
+    durationMinutes: test.durationMinutes,
+    createdAt: test.createdAt,
+  };
+}
+
+/** The student's own practice papers, newest first, so they follow the account across devices. */
+async function listOwnPracticeTests(userId) {
+  const tests = await Test.find({ ownerUserId: userId, status: "practice", deletedAt: null })
+    .sort({ createdAt: -1 })
+    .limit(PRACTICE_LIST_LIMIT)
+    .select("title subtitle series ownerUserId untimed sectionDurations durationMinutes questionIds createdAt")
+    .lean();
+  return tests.map(practiceTestView);
+}
+
+/** What the practice builder can offer: question counts per section and per topic. */
+async function getPracticeOptions(req, res, next) {
+  try {
+    const { difficulty } = practiceOptionsSchema.parse(req.query || {});
+    const { pool } = await practicePool(req, difficulty);
+    const sections = { SUPR: 0, REAP: 0 };
+    const topics = new Map();
+    pool.forEach((question) => {
+      const section = sectionOf(question);
+      sections[section] += 1;
+      const name = String(question.topic || "").trim();
+      if (!name) return;
+      const key = `${section}|${topicKey(name)}`;
+      const entry = topics.get(key) || { topic: name, section, count: 0 };
+      entry.count += 1;
+      topics.set(key, entry);
+    });
+    const topicList = Array.from(topics.values()).sort(
+      (a, b) => a.section.localeCompare(b.section) || b.count - a.count || a.topic.localeCompare(b.topic)
+    );
+    res.json({ total: pool.length, sections, topics: topicList });
+  } catch (err) {
+    next(err);
+  }
+}
+
 async function createPracticeTest(req, res, next) {
   try {
     const input = practiceSchema.parse(req.body || {});
-    const isAdmin = req.auth.role === "admin";
-    const [entitledSeasonIds, activeSeason] = await Promise.all([getEntitledSeasonIds(req.auth), getActiveSeason()]);
+    const { pool, isAdmin, entitledSeasonIds } = await practicePool(req, input.difficulty);
 
     if (!isAdmin && entitledSeasonIds.size === 0) {
       const used = await Test.countDocuments({ ownerUserId: req.auth.userId, status: "practice" });
@@ -312,61 +416,43 @@ async function createPracticeTest(req, res, next) {
       }
     }
 
-    const liveTests = await Test.find({ status: "live", deletedAt: null }).select("isFree seasonId questionIds").lean();
-    const accessibleIds = new Set();
-    liveTests
-      .filter((test) => isTestAccessible(test, { isAdmin, entitledSeasonIds, activeSeasonId: activeSeason && activeSeason._id }))
-      .forEach((test) => (test.questionIds || []).forEach((id) => accessibleIds.add(String(id))));
-
-    const filter = { _id: { $in: Array.from(accessibleIds) }, deletedAt: null };
-    if (input.difficulty !== "all") filter.difficulty = input.difficulty;
-    if (input.subject === "SUPR" || input.subject === "REAP") filter.section = input.subject;
-    const pool = await Question.find(filter).select("_id section topic").lean();
-    const subjectNeedle = input.subject.toLowerCase();
-    const matching = input.subject === "all" || input.subject === "SUPR" || input.subject === "REAP"
-      ? pool
-      : pool.filter((q) => String(q.topic || "").toLowerCase().includes(subjectNeedle));
-    const selected = shuffleInPlace(matching.slice()).slice(0, input.count);
+    const selected = shuffleInPlace(filterBySubject(pool, input.subject).slice()).slice(0, input.count);
     if (!selected.length) {
-      return res.status(400).json({ error: "No questions match these practice filters yet.", code: "PRACTICE_EMPTY" });
+      return res.status(400).json({ error: "No questions match these practice filters yet. Try another subject or difficulty.", code: "PRACTICE_EMPTY" });
     }
 
-    const minutes = input.timerMinutes > 0 ? input.timerMinutes : UNTIMED_SECTION_MINUTES;
-    const subjectLabel = input.subject === "all" ? "Mixed Subjects" : input.subject;
+    // SUPR questions first, then REAP, as in the real paper.
+    selected.sort((a, b) => (sectionOf(a) === sectionOf(b) ? 0 : sectionOf(a) === "SUPR" ? -1 : 1));
+    const counts = { SUPR: 0, REAP: 0 };
+    selected.forEach((q) => { counts[sectionOf(q)] += 1; });
+    const untimed = input.timerMinutes === 0;
+    const totalMinutes = untimed ? UNTIMED_PRACTICE_MINUTES : input.timerMinutes;
+    const sectionDurations = splitPracticeMinutes(totalMinutes, counts);
+
+    const topicMatch = /^topic:(SUPR|REAP):(.+)$/.exec(input.subject);
+    const subjectLabel = input.subject === "all"
+      ? "Mixed Subjects"
+      : (topicMatch ? topicMatch[2].trim() : input.subject);
+    const questionWord = selected.length === 1 ? "Question" : "Questions";
     const test = await Test.create({
       title: `Practice: ${subjectLabel}`.slice(0, 120),
-      subtitle: `${selected.length} Questions • ${input.timerMinutes > 0 ? `${input.timerMinutes} Mins` : "Untimed"}`,
+      subtitle: `${selected.length} ${questionWord} • ${untimed ? "Untimed" : `${totalMinutes} Mins`}`,
       series: "Practice",
       type: "practice",
       isFree: true,
       isPractice: true,
       status: "practice",
+      untimed,
       ownerUserId: req.auth.userId,
-      sectionDurations: { SUPR: minutes, REAP: minutes },
-      durationMinutes: minutes * 2,
+      sectionDurations,
+      durationMinutes: sectionDurations.SUPR + sectionDurations.REAP,
       questionIds: selected.map((q) => q._id),
     });
 
-    return res.status(201).json({
-      test: {
-        id: String(test._id),
-        title: test.title,
-        subtitle: test.subtitle,
-        series: test.series,
-        isPractice: true,
-        isFree: true,
-        status: "live",
-        createdBy: String(req.auth.userId),
-        questionIds: [],
-        questionCount: selected.length,
-        sectionDurations: test.sectionDurations,
-        durationMinutes: test.durationMinutes,
-        createdAt: test.createdAt,
-      },
-    });
+    return res.status(201).json({ test: practiceTestView(test) });
   } catch (err) {
     next(err);
   }
 }
 
-module.exports = { createPracticeTest, listTests, getTestById, getTestQuestions, createTest, updateTest, deleteTest, submitQotdAttempt };
+module.exports = { createPracticeTest, getPracticeOptions, listOwnPracticeTests, splitPracticeMinutes, listTests, getTestById, getTestQuestions, createTest, updateTest, deleteTest, submitQotdAttempt };

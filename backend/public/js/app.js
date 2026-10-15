@@ -772,11 +772,14 @@
       .join("");
   }
 
+  // The first name as shown to the student: first letter capitalised, the rest as typed
+  // ("marco" → "Marco", "McKenzie" stays). The "there" fallback reads as "Hey there".
   function firstName(name) {
-    return String(name || "")
+    var first = String(name || "")
       .trim()
       .split(/\s+/)
-      .filter(Boolean)[0] || "there";
+      .filter(Boolean)[0];
+    return first ? first.charAt(0).toUpperCase() + first.slice(1) : "there";
   }
 
   var TIME_AWARE_GREETINGS = {
@@ -1168,11 +1171,41 @@
     }, 16);
   }
 
-  // One source for the student-facing exam label: the year of the admin-set UGEE exam date.
-  function targetExamLabel() {
+  // The exam students are preparing for. The admin-set UGEE date applies through the end of
+  // that exam day; after it, the target is the next yearly anniversary of that date (exam on
+  // 26 Apr 2026, today 13 Oct 2026 → UGEE 2027). Null when no date is set.
+  function targetExamDate(now) {
     var config = store.getAppConfig ? store.getAppConfig() : null;
     var date = config && config.ugeeExamDate ? new Date(config.ugeeExamDate) : null;
+    if (!date || isNaN(date.getTime())) return null;
+    var today = new Date(now || Date.now());
+    today.setHours(0, 0, 0, 0);
+    var target = new Date(date.getTime());
+    target.setHours(0, 0, 0, 0);
+    while (target < today) target.setFullYear(target.getFullYear() + 1);
+    return target;
+  }
+
+  function examLabelForDate(date) {
     return date && !isNaN(date.getTime()) ? "UGEE " + date.getFullYear() : "UGEE";
+  }
+
+  // One source for the student-facing exam label (eyebrow, account, notices).
+  function targetExamLabel() {
+    return examLabelForDate(targetExamDate());
+  }
+
+  // Custom practice papers are short and unranked, so they never count as mocks in progress
+  // stats, reports or tips (they keep their own list under Exams → Practice).
+  function isPracticeAttempt(attempt) {
+    if (!attempt) return false;
+    if (attempt.isPractice) return true;
+    var test = store.getTestById ? store.getTestById(attempt.testId) : null;
+    return !!(test && test.isPractice);
+  }
+
+  function mockAttemptsOnly(attempts) {
+    return (attempts || []).filter(function (attempt) { return !isPracticeAttempt(attempt); });
   }
 
   // KPIs over a student's submitted attempts, shared by Dashboard and Progress so both always agree.
@@ -1327,7 +1360,7 @@
   // grounded in their own attempts, the next mock or the exam date. Returns HTML strings.
   function buildMascotTips(ctx) {
     var name = firstName(ctx.user && ctx.user.name);
-    var hello = '<strong>Hey ' + escapeHtml(name.charAt(0).toUpperCase() + name.slice(1)) + '!</strong> ';
+    var hello = '<strong>Hey ' + escapeHtml(name) + '!</strong> ';
     var tests = ctx.tests || [];
     var titleOf = function (testId) {
       var test = tests.filter(function (t) { return t.id === testId; })[0];
@@ -1375,7 +1408,7 @@
       var examDay = new Date(examDate.getTime());
       examDay.setHours(0, 0, 0, 0);
       var days = Math.round((examDay - today) / (24 * 60 * 60 * 1000));
-      var exam = targetExamLabel();
+      var exam = examLabelForDate(examDate);
       if (days > 1) tips.push(days + " days to " + exam + ". One full timed mock a week keeps you exam-ready.");
       else if (days === 1) tips.push(exam + " is tomorrow. Rest well and trust your preparation.");
       else if (days === 0) tips.push(exam + " is today. All the best!");
@@ -1414,6 +1447,17 @@
     return el && typeof el.value === "string" ? el.value : "";
   }
 
+  // The editor's working-copy images at their exam sizes, for the question previews.
+  function buildPreviewFiguresBlock() {
+    var draft = runtime.questionImageDraft;
+    var items = draft ? draft.items.filter(function (item) { return item.url; }) : [];
+    if (!items.length) return "";
+    return '<div class="latex-preview-block">' +
+      '<p class="section-label" style="margin-bottom: 10px;">Images (as students see them)</p>' +
+      renderQuestionFigures({ imageUrls: items.map(function (i) { return i.url; }), imageWidths: items.map(function (i) { return i.width; }) }) +
+      '</div>';
+  }
+
   function buildLatexPreviewHtml(formEl) {
     var prompt = getInputValue(formEl, "#question-prompt");
     var passage = getInputValue(formEl, "#question-passage");
@@ -1436,6 +1480,7 @@
       '<div class="latex-preview-stack">' +
       block("Question prompt", prompt) +
       (passage ? block("Passage / context (optional)", passage) : "") +
+      buildPreviewFiguresBlock() +
       '<div class="latex-preview-block">' +
       '<p class="section-label" style="margin-bottom: 10px;">Options</p>' +
       '<ol class="latex-preview-options">' +
@@ -1990,17 +2035,35 @@
     return [];
   }
 
-  function renderQuestionFigures(question) {
-    var imageUrls = getQuestionImageUrls(question);
+  // A question's images with their exam display width (0 = Auto), paired by index so a dropped
+  // invalid URL never shifts another image's width.
+  function getQuestionFigures(question) {
+    if (!question) return [];
+    var urls = Array.isArray(question.imageUrls) && question.imageUrls.length
+      ? question.imageUrls
+      : (question.imageUrl ? [question.imageUrl] : []);
+    var widths = Array.isArray(question.imageWidths) ? question.imageWidths : [];
+    return urls.map(function (url, index) {
+      return { url: safeImageUrl(url), width: Number(widths[index]) || 0 };
+    }).filter(function (figure) { return figure.url; });
+  }
 
-    if (!imageUrls.length) {
+  // Sized figures take that share of the column (phones: at least 70%, in the CSS).
+  function figureSizeAttrs(width) {
+    return width ? ' style="--fig-w: ' + Math.max(20, Math.min(100, Number(width))) + '%;"' : '';
+  }
+
+  // One renderer for the exam, every admin preview and the answer review, so what an admin
+  // previews is exactly what students see.
+  function renderQuestionFigures(question) {
+    var figures = getQuestionFigures(question);
+    if (!figures.length) {
       return "";
     }
-
     return (
       '<div class="question-figure-stack">' +
-      imageUrls.map(function (imageUrl, index) {
-        return '<button type="button" class="question-figure-button" data-open-image="' + escapeAttribute(imageUrl) + '" aria-label="Open question image ' + (index + 1) + '"><img class="question-figure" loading="lazy" decoding="async" src="' + safeImageUrl(imageUrl) + '" alt="Figure ' + (index + 1) + '"></button>';
+      figures.map(function (figure, index) {
+        return '<button type="button" class="question-figure-button' + (figure.width ? ' figure-sized' : '') + '"' + figureSizeAttrs(figure.width) + ' data-open-image="' + escapeAttribute(figure.url) + '" aria-label="Open question image ' + (index + 1) + '"><img class="question-figure" loading="lazy" decoding="async" src="' + figure.url + '" alt="Figure ' + (index + 1) + '"></button>';
       }).join("") +
       '</div>'
     );
@@ -2500,130 +2563,303 @@
     return escapeHtml(value).replace(/"/g, "&quot;");
   }
 
-  function summarizeSelectedFiles(fileList) {
-    var files = Array.prototype.slice.call(fileList || []);
-    if (!files.length) {
-      return "No image selected";
-    }
-    if (files.length === 1) {
-      return files[0].name;
-    }
-    return files.length + " files selected: " + files.map(function (file) {
-      return file.name;
-    }).join(", ");
+  // ---- Studio question editor: images (add, replace, remove, reorder, size) ---------------
+  // A working copy of the question's images lives in runtime.questionImageDraft. Files upload
+  // as soon as they're picked (each thumbnail shows its own progress); nothing changes on the
+  // server until the question is saved, and Save sends exactly this list.
+  var QIMG_PRESETS = [[0, "Auto"], [35, "Small"], [55, "Medium"], [75, "Large"], [100, "Full width"]];
+
+  function questionImageContext() {
+    return runtime.adminEditingQuestionId ? "edit:" + runtime.adminEditingQuestionId : "new";
   }
 
-  function updateQuestionFileStatus(fileList) {
-    runtime.pendingQuestionFileNames = Array.prototype.slice.call(fileList || []).map(function (file) {
-      return file.name;
-    });
-    runtime.pendingQuestionFiles = Array.prototype.slice.call(fileList || []);
-    // Build preview thumbnails for admin only (local object URLs).
-    runtime.pendingQuestionFilePreviews.forEach(function (url) {
-      try { URL.revokeObjectURL(url); } catch (_err) { }
-    });
-    runtime.pendingQuestionFilePreviews = Array.prototype.slice.call(fileList || []).slice(0, 6).map(function (file) {
-      try {
-        return URL.createObjectURL(file);
-      } catch (_err) {
-        return "";
-      }
-    }).filter(Boolean);
-    renderQuestionUploadUi();
+  function ensureQuestionImageDraft(editingQuestion) {
+    var context = questionImageContext();
+    var draft = runtime.questionImageDraft;
+    if (draft && draft.context === context) return draft;
+    var urls = editingQuestion && Array.isArray(editingQuestion.imageUrls) ? editingQuestion.imageUrls : [];
+    var widths = editingQuestion && Array.isArray(editingQuestion.imageWidths) ? editingQuestion.imageWidths : [];
+    var nextKey = 1;
+    runtime.questionImageDraft = {
+      context: context,
+      items: urls.map(function (url, index) {
+        return { key: nextKey++, url: String(url || "").trim(), width: Number(widths[index]) || 0, busy: false, error: "" };
+      }).filter(function (item) { return item.url; }),
+      nextKey: nextKey,
+      undo: null,
+      notice: "",
+      dirty: false,
+      previewMode: "desktop"
+    };
+    return runtime.questionImageDraft;
   }
 
-  function renderQuestionUploadUi() {
-    var status = document.getElementById("question-files-status");
-    if (status) {
-      status.textContent = runtime.pendingQuestionFiles.length
-        ? summarizeSelectedFiles(runtime.pendingQuestionFiles)
-        : "No image selected";
-    }
-    var preview = document.getElementById("question-files-preview");
-    if (preview) {
-      preview.innerHTML = runtime.pendingQuestionFilePreviews.length
-        ? runtime.pendingQuestionFilePreviews.map(function (url, index) {
-          return '<div class="upload-img-chip-wrap" style="position:relative; display:inline-block; margin:6px;">' +
-            '<img class="question-figure" src="' + escapeAttribute(url) + '" alt="Selected image ' + (index + 1) + '" style="max-height:80px; border-radius:6px; display:block;">' +
-            '<button type="button" class="js-remove-pending-file-btn" data-index="' + index + '" title="Remove selected image" style="position:absolute; top:-6px; right:-6px; background:#e11d48; color:#fff; border:none; border-radius:50%; width:22px; height:22px; font-size:12px; font-weight:bold; cursor:pointer; display:flex; align-items:center; justify-content:center; box-shadow:0 2px 6px rgba(0,0,0,0.3); z-index:5;">✕</button>' +
-            '</div>';
-        }).join("")
-        : "";
-    }
-    var uploadedStatus = document.getElementById("question-uploaded-status");
-    if (uploadedStatus) {
-      uploadedStatus.textContent = runtime.pendingUploadedQuestionImageUrls.length
-        ? (runtime.pendingUploadedQuestionImageUrls.length + " image(s) attached to question")
-        : "Uploaded images will appear here after Cloudinary upload";
-    }
-    var uploadedPreview = document.getElementById("question-uploaded-preview");
-    if (uploadedPreview) {
-      uploadedPreview.innerHTML = runtime.pendingUploadedQuestionImageUrls.length
-        ? runtime.pendingUploadedQuestionImageUrls.map(function (url, index) {
-          return '<div class="upload-img-chip-wrap" style="position:relative; display:inline-block; margin:6px; vertical-align:top; text-align:center;">' +
-            '<button type="button" class="question-figure-button" data-open-image="' + escapeAttribute(url) + '" style="padding:0; border:none; background:none; cursor:pointer; display:block;">' +
-            '<img class="question-figure" src="' + escapeAttribute(url) + '" alt="Uploaded image ' + (index + 1) + '" style="max-height:90px; border-radius:6px; display:block; border:1px solid rgba(0,0,0,0.15);">' +
-            '</button>' +
-            '<button type="button" class="js-remove-uploaded-url-btn" data-url="' + escapeAttribute(url) + '" title="Delete this image from question" style="position:absolute; top:-6px; right:-6px; background:#e11d48; color:#fff; border:none; border-radius:50%; width:22px; height:22px; font-size:12px; font-weight:bold; cursor:pointer; display:flex; align-items:center; justify-content:center; box-shadow:0 2px 6px rgba(0,0,0,0.3); z-index:5;">✕</button>' +
-            '<button type="button" class="button button-compact button-secondary js-remove-uploaded-url-btn" data-url="' + escapeAttribute(url) + '" style="display:block; margin-top:4px; font-size:0.75rem; padding:3px 8px; color:#e11d48; border-color:#fca5a5; background:#fff2f2; width:100%;">🗑 Delete</button>' +
-            '</div>';
-        }).join("")
-        : "";
-    }
-    var uploadButton = document.getElementById("upload-question-images");
-    if (uploadButton) {
-      uploadButton.disabled = !runtime.pendingQuestionFiles.length;
-    }
-
-    var imageUrlsTextarea = document.getElementById("question-image-urls");
-    if (imageUrlsTextarea && runtime.pendingUploadedQuestionImageUrls.length) {
-      imageUrlsTextarea.value = runtime.pendingUploadedQuestionImageUrls.join("\n");
-    }
-
-    document.querySelectorAll(".js-remove-pending-file-btn").forEach(function (btn) {
-      btn.addEventListener("click", function (e) {
-        e.preventDefault();
-        e.stopPropagation();
-        var idx = parseInt(btn.getAttribute("data-index"), 10);
-        if (!isNaN(idx) && idx >= 0) {
-          runtime.pendingQuestionFiles.splice(idx, 1);
-          if (runtime.pendingQuestionFileNames) runtime.pendingQuestionFileNames.splice(idx, 1);
-          if (runtime.pendingQuestionFilePreviews && runtime.pendingQuestionFilePreviews[idx]) {
-            try { URL.revokeObjectURL(runtime.pendingQuestionFilePreviews[idx]); } catch (_e) { }
-            runtime.pendingQuestionFilePreviews.splice(idx, 1);
-          }
-          renderQuestionUploadUi();
-        }
-      });
-    });
-
-    document.querySelectorAll(".js-remove-uploaded-url-btn").forEach(function (btn) {
-      btn.addEventListener("click", function (e) {
-        e.preventDefault();
-        e.stopPropagation();
-        var targetUrl = btn.getAttribute("data-url");
-        if (targetUrl) {
-          runtime.pendingUploadedQuestionImageUrls = (runtime.pendingUploadedQuestionImageUrls || []).filter(function (u) {
-            return u !== targetUrl;
-          });
-          if (imageUrlsTextarea) {
-            imageUrlsTextarea.value = runtime.pendingUploadedQuestionImageUrls.join("\n");
-          }
-          renderQuestionUploadUi();
-        }
-      });
-    });
-  }
-
-  function resetPendingQuestionUploads() {
+  // Save and cancel clear the image working copy; a switch of editing context keeps it (the copy
+  // is keyed to the question being edited and rebuilds itself for another one).
+  function resetPendingQuestionUploads(options) {
     runtime.pendingQuestionFileNames = [];
     runtime.pendingQuestionFiles = [];
     runtime.pendingUploadedQuestionImageUrls = [];
     runtime.questionUploadContext = "";
-    runtime.pendingQuestionFilePreviews.forEach(function (url) {
-      try { URL.revokeObjectURL(url); } catch (_err) { }
+    if (!(options && options.keepImages)) runtime.questionImageDraft = null;
+  }
+
+  function qimgPresetFor(width) {
+    var match = QIMG_PRESETS.find(function (preset) { return preset[0] === Number(width || 0); });
+    return match ? String(match[0]) : "custom";
+  }
+
+  function buildQuestionImageManagerHtml() {
+    var draft = runtime.questionImageDraft || { items: [], previewMode: "desktop" };
+    var items = draft.items;
+    var itemsHtml = items.map(function (item, index) {
+      var n = index + 1;
+      var thumb = item.busy && !item.url
+        ? '<span class="qimg-busy" role="status">Uploading…</span>'
+        : '<button type="button" class="qimg-thumb-btn" data-open-image="' + escapeAttribute(safeImageUrl(item.url)) + '" aria-label="Preview image ' + n + '">' +
+          '<img src="' + safeImageUrl(item.url) + '" alt="Image ' + n + '">' +
+          (item.busy ? '<span class="qimg-busy is-overlay" role="status">Replacing…</span>' : '') +
+          '</button>';
+      var preset = qimgPresetFor(item.width);
+      var sizeHtml =
+        '<div class="qimg-size">' +
+        '<label for="qimg-size-' + item.key + '">Size in exam</label>' +
+        '<select id="qimg-size-' + item.key + '" class="js-qimg-preset" data-key="' + item.key + '"' + (item.url ? '' : ' disabled') + '>' +
+        QIMG_PRESETS.map(function (p) {
+          return '<option value="' + p[0] + '"' + (preset === String(p[0]) ? ' selected' : '') + '>' + escapeHtml(p[1]) + (p[0] ? ' (' + p[0] + '%)' : '') + '</option>';
+        }).join("") +
+        '<option value="custom"' + (preset === "custom" ? ' selected' : '') + '>Custom</option>' +
+        '</select>' +
+        '<div class="qimg-range-row">' +
+        '<input type="range" min="20" max="100" step="5" class="js-qimg-range" data-key="' + item.key + '" value="' + (item.width || 100) + '"' + (item.width ? '' : ' disabled') + ' aria-label="Image ' + n + ' width, percent of the question column">' +
+        '<output class="qimg-range-value" id="qimg-range-value-' + item.key + '">' + (item.width ? item.width + '%' : 'Auto') + '</output>' +
+        '</div>' +
+        '</div>';
+      return '<li class="qimg-item' + (item.busy ? ' is-busy' : '') + '">' +
+        '<div class="qimg-thumb">' + thumb + '</div>' +
+        '<div class="qimg-body">' +
+        '<p class="qimg-name">Image ' + n + (item.url && isGoogleDriveImageLink(item.url) ? ' · Google Drive link' : '') + '</p>' +
+        sizeHtml +
+        '<div class="qimg-actions">' +
+        '<button type="button" class="button button-secondary button-compact js-qimg-move" data-key="' + item.key + '" data-dir="-1"' + (index === 0 || item.busy ? ' disabled' : '') + ' aria-label="Move image ' + n + ' earlier">←</button>' +
+        '<button type="button" class="button button-secondary button-compact js-qimg-move" data-key="' + item.key + '" data-dir="1"' + (index === items.length - 1 || item.busy ? ' disabled' : '') + ' aria-label="Move image ' + n + ' later">→</button>' +
+        '<label class="button button-secondary button-compact qimg-file-btn' + (item.busy ? ' is-disabled' : '') + '">Replace' +
+        '<input type="file" accept="image/*" class="js-qimg-replace" data-key="' + item.key + '"' + (item.busy ? ' disabled' : '') + ' aria-label="Replace image ' + n + '"></label>' +
+        '<button type="button" class="button button-danger button-compact js-qimg-remove" data-key="' + item.key + '"' + (item.busy ? ' disabled' : '') + ' aria-label="Remove image ' + n + '">Remove</button>' +
+        '</div>' +
+        (item.error ? '<p class="qimg-error" role="alert">' + escapeHtml(item.error) + '</p>' : '') +
+        '</div>' +
+        '</li>';
+    }).join("");
+    var previewItems = items.filter(function (item) { return item.url; });
+    return (
+      '<div class="qimg-head">' +
+      '<span class="qimg-label" id="qimg-label">Question images</span>' +
+      '<span class="helper-text">Shown under the prompt, in this order. Changes apply when you save the question.</span>' +
+      '</div>' +
+      (items.length ? '<ul class="qimg-list" aria-labelledby="qimg-label">' + itemsHtml + '</ul>' : '<p class="helper-text qimg-empty">No images yet.</p>') +
+      '<div class="qimg-add">' +
+      '<label class="button button-secondary button-compact qimg-file-btn">Add images' +
+      '<input type="file" accept="image/*" multiple class="js-qimg-add" aria-label="Add images to this question"></label>' +
+      '<div class="qimg-link">' +
+      '<label class="sr-only" for="qimg-link-input">Google Drive image link</label>' +
+      '<input id="qimg-link-input" type="url" placeholder="Or paste a public Google Drive image link">' +
+      '<button type="button" class="button button-secondary button-compact js-qimg-add-link">Add link</button>' +
+      '</div>' +
+      '</div>' +
+      (draft.notice ? '<p class="qimg-notice" role="alert">' + escapeHtml(draft.notice) + '</p>' : '') +
+      (draft.undo ? '<p class="qimg-undo">Image removed. <button type="button" class="link-button js-qimg-undo">Undo</button></p>' : '') +
+      (previewItems.length
+        ? '<div class="qimg-preview">' +
+          '<div class="qimg-preview-head"><span>As students see it</span>' +
+          '<div class="qimg-preview-modes" role="group" aria-label="Preview width">' +
+          ['desktop', 'phone'].map(function (mode) {
+            return '<button type="button" class="qimg-mode js-qimg-mode' + (draft.previewMode === mode ? ' is-active' : '') + '" data-mode="' + mode + '" aria-pressed="' + (draft.previewMode === mode ? 'true' : 'false') + '">' + (mode === 'desktop' ? 'Desktop' : 'Phone') + '</button>';
+          }).join("") +
+          '</div></div>' +
+          '<div class="qimg-preview-frame is-' + draft.previewMode + '">' +
+          '<div class="qimg-preview-prompt rich-text" id="qimg-preview-prompt"></div>' +
+          renderQuestionFigures({ imageUrls: previewItems.map(function (i) { return i.url; }), imageWidths: previewItems.map(function (i) { return i.width; }) }) +
+          '</div>' +
+          '<p class="helper-text">On phones, a sized image is never narrower than 70% of the screen so it stays readable.</p>' +
+          '</div>'
+        : '') +
+      '<p class="sr-only" id="qimg-live" aria-live="polite"></p>'
+    );
+  }
+
+  function refreshQimgPreviewPrompt() {
+    var target = document.getElementById("qimg-preview-prompt");
+    var prompt = document.getElementById("question-prompt");
+    if (!target) return;
+    target.innerHTML = formatRichText(prompt ? prompt.value : "");
+    renderLatexInElement(target);
+  }
+
+  function mountQuestionImageManager() {
+    var root = document.getElementById("qimg-root");
+    if (!root) return;
+    var draft = runtime.questionImageDraft;
+    var find = function (key) {
+      return draft.items.find(function (item) { return item.key === Number(key); });
+    };
+    var announce = function (text) {
+      var live = document.getElementById("qimg-live");
+      if (live) live.textContent = text;
+    };
+    var redraw = function () {
+      if (runtime.questionImageDraft !== draft || !document.body.contains(root)) return;
+      var focusKey = document.activeElement && root.contains(document.activeElement)
+        ? (document.activeElement.className.split(" ").filter(function (c) { return c.indexOf("js-qimg-") === 0; })[0] || "") + "|" + (document.activeElement.getAttribute("data-key") || document.activeElement.getAttribute("data-mode") || "")
+        : "";
+      root.innerHTML = buildQuestionImageManagerHtml();
+      refreshQimgPreviewPrompt();
+      if (focusKey) {
+        var parts = focusKey.split("|");
+        var again = parts[0] && root.querySelector("." + parts[0] + (parts[1] ? '[data-key="' + parts[1] + '"], .' + parts[0] + '[data-mode="' + parts[1] + '"]' : ""));
+        if (again && !again.disabled) again.focus();
+      }
+    };
+    var changed = function () {
+      draft.dirty = true;
+      draft.notice = "";
+    };
+    var upload = function (file) {
+      return Promise.resolve(prepareQuestionUploadFiles([file])).then(function (prepared) {
+        return store.uploadQuestionImages(prepared);
+      }).then(function (urls) {
+        if (!urls || !urls[0]) throw new Error("The upload returned no image.");
+        return urls[0];
+      });
+    };
+
+    root.addEventListener("click", function (event) {
+      var target = event.target.closest ? event.target.closest("button") : null;
+      if (!target || !root.contains(target)) return;
+      if (target.hasAttribute("data-open-image")) {
+        openImageLightbox(target.getAttribute("data-open-image"));
+        return;
+      }
+      var key = target.getAttribute("data-key");
+      if (target.classList.contains("js-qimg-move")) {
+        var index = draft.items.indexOf(find(key));
+        var to = index + Number(target.getAttribute("data-dir"));
+        if (index < 0 || to < 0 || to >= draft.items.length) return;
+        var moved = draft.items.splice(index, 1)[0];
+        draft.items.splice(to, 0, moved);
+        changed();
+        draft.undo = null;
+        announce("Image moved to position " + (to + 1) + ".");
+        redraw();
+      } else if (target.classList.contains("js-qimg-remove")) {
+        var item = find(key);
+        var at = draft.items.indexOf(item);
+        if (at < 0) return;
+        draft.items.splice(at, 1);
+        changed();
+        draft.undo = { item: item, index: at };
+        announce("Image " + (at + 1) + " removed.");
+        redraw();
+        var undoButton = root.querySelector(".js-qimg-undo");
+        if (undoButton) undoButton.focus();
+      } else if (target.classList.contains("js-qimg-undo")) {
+        if (!draft.undo) return;
+        draft.items.splice(Math.min(draft.undo.index, draft.items.length), 0, draft.undo.item);
+        draft.undo = null;
+        changed();
+        announce("Image restored.");
+        redraw();
+      } else if (target.classList.contains("js-qimg-add-link")) {
+        var input = document.getElementById("qimg-link-input");
+        var url = input ? String(input.value || "").trim() : "";
+        if (!/^https?:\/\//i.test(url)) {
+          draft.notice = "Paste a full link that starts with https://";
+          redraw();
+          return;
+        }
+        draft.items.push({ key: draft.nextKey++, url: url, width: 0, busy: false, error: "" });
+        changed();
+        draft.undo = null;
+        announce("Image link added.");
+        redraw();
+      } else if (target.classList.contains("js-qimg-mode")) {
+        draft.previewMode = target.getAttribute("data-mode") === "phone" ? "phone" : "desktop";
+        redraw();
+      }
     });
-    runtime.pendingQuestionFilePreviews = [];
+
+    root.addEventListener("change", function (event) {
+      var target = event.target;
+      if (target.classList.contains("js-qimg-preset")) {
+        var item = find(target.getAttribute("data-key"));
+        if (!item) return;
+        item.width = target.value === "custom" ? (item.width || 55) : Number(target.value) || 0;
+        changed();
+        redraw();
+      } else if (target.classList.contains("js-qimg-add")) {
+        var files = Array.prototype.slice.call(target.files || []).filter(function (f) { return /^image\//.test(f.type); });
+        target.value = "";
+        files.forEach(function (file) {
+          var item = { key: draft.nextKey++, url: "", width: 0, busy: true, error: "" };
+          draft.items.push(item);
+          changed();
+          upload(file).then(function (url) {
+            item.url = url;
+            item.busy = false;
+            announce(file.name + " added.");
+          }).catch(function (error) {
+            draft.items.splice(draft.items.indexOf(item), 1);
+            draft.notice = "Couldn't upload " + file.name + ": " + (error && error.message ? error.message : "please try again") + ".";
+          }).then(redraw);
+        });
+        draft.undo = null;
+        redraw();
+      } else if (target.classList.contains("js-qimg-replace")) {
+        var replacing = find(target.getAttribute("data-key"));
+        var file = target.files && target.files[0];
+        target.value = "";
+        if (!replacing || !file) return;
+        replacing.busy = true;
+        replacing.error = "";
+        draft.undo = null;
+        redraw();
+        upload(file).then(function (url) {
+          replacing.url = url;
+          changed();
+          announce("Image " + (draft.items.indexOf(replacing) + 1) + " replaced.");
+        }).catch(function (error) {
+          replacing.error = "Couldn't replace this image (" + (error && error.message ? error.message : "upload failed") + "). The current image is kept.";
+        }).then(function () {
+          replacing.busy = false;
+          redraw();
+        });
+      }
+    });
+
+    // The slider updates the label at once and the preview after a short pause.
+    var rangeTimer = null;
+    root.addEventListener("input", function (event) {
+      var target = event.target;
+      if (!target.classList.contains("js-qimg-range")) return;
+      var item = find(target.getAttribute("data-key"));
+      if (!item) return;
+      item.width = Number(target.value) || 100;
+      changed();
+      var out = document.getElementById("qimg-range-value-" + item.key);
+      if (out) out.textContent = item.width + "%";
+      window.clearTimeout(rangeTimer);
+      rangeTimer = window.setTimeout(redraw, 150);
+    });
+
+    var promptInput = document.getElementById("question-prompt");
+    if (promptInput) {
+      var promptTimer = null;
+      promptInput.addEventListener("input", function () {
+        window.clearTimeout(promptTimer);
+        promptTimer = window.setTimeout(refreshQimgPreviewPrompt, 250);
+      });
+    }
+    refreshQimgPreviewPrompt();
   }
 
   function dedupeUrls(values) {
@@ -2634,31 +2870,14 @@
     });
   }
 
+  // Unsaved or uploading question images: background refreshes must not redraw the editor.
   function hasPendingQuestionUploadState() {
-    return !!(
-      (runtime.pendingQuestionFiles && runtime.pendingQuestionFiles.length) ||
-      (runtime.pendingUploadedQuestionImageUrls && runtime.pendingUploadedQuestionImageUrls.length)
-    );
+    var draft = runtime.questionImageDraft;
+    return !!(draft && (draft.dirty || draft.items.some(function (item) { return item.busy; })));
   }
 
   function isGoogleDriveImageLink(value) {
     return /drive\.google\.com|docs\.google\.com/i.test(String(value || ""));
-  }
-
-  function parseQuestionImageLinksText(raw) {
-    return String(raw || "")
-      .split(/\r?\n/)
-      .map(function (item) { return String(item || "").trim(); })
-      .filter(Boolean)
-      .filter(function (item, index, items) {
-        return items.indexOf(item) === index;
-      });
-  }
-
-  function getQuestionDriveLinks(question) {
-    return getQuestionImageUrls(question).filter(function (url) {
-      return isGoogleDriveImageLink(url);
-    });
   }
 
   function updateCalculatorDisplay() {
@@ -3156,18 +3375,21 @@
     var footerHtml = options.hideFooter
       ? ""
       : ('<div class="' + footerClass + '">' + escapeHtml(footerText) +
-        ' · <a href="/privacy.html" target="_blank" rel="noopener">Privacy</a>' +
+        '<span class="app-footer-sep"> · </span><span class="app-footer-links">' +
+        '<a href="/privacy.html" target="_blank" rel="noopener">Privacy</a>' +
         ' · <a href="/terms.html" target="_blank" rel="noopener">Terms</a>' +
-        ' · <a href="mailto:support@aceiiit.com">Support</a></div>');
-    var supportChatHref = "https://wa.me/" + encodeURIComponent(SUPPORT_WHATSAPP_NUMBER) + "?text=" + encodeURIComponent("Hi AceIIIT, I need help with the portal.");
+        ' · <a href="mailto:support@aceiiit.com">Support</a></span></div>');
+    // The one floating help button: it opens ACEIIIT Mentor (WhatsApp support is linked inside).
     var currentUser = auth.getCurrentUser ? auth.getCurrentUser() : (store.getCurrentUser ? store.getCurrentUser() : null);
+    var mentorOpen = Boolean(mentorState && mentorState.open);
     var supportChatHtml = options.hideSupportChat || !currentUser
       ? ""
       : (
-        '<a class="support-chat-button" href="' + escapeAttribute(supportChatHref) + '" target="_blank" rel="noreferrer" aria-label="Chat on WhatsApp for support" title="WhatsApp support">' +
+        '<button type="button" class="support-chat-button js-mentor-toggle" aria-haspopup="dialog" aria-expanded="' + (mentorOpen ? "true" : "false") + '"' +
+        (mentorState && mentorState.el ? ' aria-controls="mentor-panel"' : '') + ' aria-label="ACEIIIT Mentor: ask about your performance">' +
         '<span class="support-chat-icon" aria-hidden="true"><img src="assets/favicon-current.jpeg" alt=""></span>' +
-        '<span class="support-chat-copy"><strong>Need help?</strong><small>Chat on WhatsApp</small></span>' +
-        '</a>'
+        '<span class="support-chat-copy" aria-hidden="true"><strong>ACEIIIT Mentor</strong><small>Ask about your performance</small></span>' +
+        '</button>'
       );
     if (options.fluid) {
       shellClass += " is-fluid";
@@ -4256,13 +4478,15 @@
         '<div class="dashboard-test-row exam-catalog-row">' +
         '<div class="exam-catalog-main">' +
         '<span class="editorial-num-tag">' + numTag + '</span>' +
-        '<div>' +
+        '<div class="exam-catalog-text">' +
         '<h3 class="exam-catalog-title">' + escapeHtml(t.title) + '</h3>' +
-        '<span class="meta-chip">' + escapeHtml(t.isFree ? "FREE MOCK" : "PAID MOCK") + '</span> &bull; ' +
+        '<div class="exam-catalog-meta-row">' +
+        '<span class="meta-chip">' + escapeHtml(t.isFree ? "FREE MOCK" : "PAID MOCK") + '</span>' +
         '<span class="exam-catalog-meta">' + getTotalDuration(t) + ' MINS &bull; ' + (Number(t.questionCount || 0) || t.questionIds.length) + ' QUESTIONS</span>' +
         '</div>' +
         '</div>' +
-        '<div>' + cta + '</div>' +
+        '</div>' +
+        '<div class="exam-catalog-cta">' + cta + '</div>' +
         '</div>'
       );
     }
@@ -4284,20 +4508,20 @@
             var inProgress = attempts.find(function (a) { return a.status === "in_progress"; });
             var submitted = attempts.find(function (a) { return a.status === "submitted"; });
             
-            var statusHtml = inProgress ? '<span class="status-indicator is-live" style="font-size:0.6rem; padding: 2px 6px;">IN PROGRESS</span>' : (submitted ? '<span class="status-indicator is-completed" style="font-size:0.6rem; padding: 2px 6px;">COMPLETED</span>' : '<span class="status-indicator is-available" style="font-size:0.6rem; padding: 2px 6px;">AVAILABLE</span>');
+            var statusHtml = inProgress ? '<span class="status-indicator is-live">IN PROGRESS</span>' : (submitted ? '<span class="status-indicator is-completed">COMPLETED</span>' : '<span class="status-indicator is-available">AVAILABLE</span>');
             var actionHtml = inProgress 
               ? '<button class="button button-primary button-compact js-resume-test" data-id="' + t.id + '" data-attempt="' + inProgress.id + '">Resume</button>'
               : (submitted ? '<button class="button button-secondary button-compact js-open-result" data-id="' + submitted.id + '">Report</button>' : '<button class="button button-primary button-compact js-open-instructions" data-id="' + t.id + '">Start</button>');
   
-            return '<div class="attempt-item">' +
-                   '<div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom: 8px;">' +
+            return '<div class="attempt-item practice-session-row">' +
+                   '<div class="practice-session-head">' +
                    '<strong>' + escapeHtml(t.title) + '</strong>' +
-                   statusHtml + 
+                   statusHtml +
                    '</div>' +
-                   '<div class="meta-row" style="margin-bottom:8px;">' +
+                   '<div class="meta-row practice-session-meta">' +
                    '<span class="meta-chip">' + escapeHtml(t.subtitle) + '</span>' +
                    '</div>' +
-                   '<div class="button-row">' + actionHtml + '</div>' +
+                   '<div class="button-row practice-session-actions">' + actionHtml + '</div>' +
                    '</div>';
           }).join("") + '</div>'
         : '<p class="pi-muted">Practice mode allows targeted topic drill without affecting your official UGEE benchmark ranks. Your generated practice sessions will appear here.</p>';
@@ -4310,10 +4534,12 @@
       '<span class="section-label">CUSTOM PRACTICE SESSION</span>' +
       '<h3 style="margin:4px 0 16px;">Configure Questions & Subject Focus</h3>' +
       '<form id="practice-gen-form" class="generator-form-grid">' +
-      '<div class="field"><label>Subject Area</label><select id="prac-subject"><option value="all">ALL SUBJECTS</option><option value="SUPR">SUPR (Physics/Maths)</option><option value="REAP">REAP (Logical & Reading)</option><option value="Maths">Mathematics</option><option value="Physics">Physics</option><option value="Logical">Logical Reasoning</option></select></div>' +
-      '<div class="field"><label>Difficulty Level</label><select id="prac-difficulty"><option value="all">ALL LEVELS</option><option value="easy">Easy</option><option value="medium" selected>Medium</option><option value="hard">Hard</option></select></div>' +
-      '<div class="field"><label>Questions Count</label><input type="number" inputmode="numeric" id="prac-count" value="15" min="5" max="30"></div>' +
-      '<div class="field"><label>Timer Limit</label><select id="prac-timer"><option value="0">Untimed Mode</option><option value="15">15 Minutes</option><option value="30" selected>30 Minutes</option><option value="45">45 Minutes</option></select></div>' +
+      // Subjects are filled from the questions this student can actually practise (see below).
+      '<div class="field"><label for="prac-subject">Subject Area</label><select id="prac-subject"><option value="all">All subjects</option><option value="SUPR">SUPR – all topics</option><option value="REAP">REAP – all topics</option></select></div>' +
+      '<div class="field"><label for="prac-difficulty">Difficulty Level</label><select id="prac-difficulty"><option value="all">All levels</option><option value="easy">Easy</option><option value="medium" selected>Medium</option><option value="hard">Hard</option></select></div>' +
+      '<div class="field"><label for="prac-count">Questions Count</label><input type="number" inputmode="numeric" id="prac-count" value="15" min="5" max="30"></div>' +
+      '<div class="field"><label for="prac-timer">Timer Limit</label><select id="prac-timer"><option value="0">Untimed</option><option value="15">15 Minutes</option><option value="30" selected>30 Minutes</option><option value="45">45 Minutes</option></select></div>' +
+      '<p class="helper-text practice-availability" id="practice-availability" role="status" aria-live="polite"></p>' +
       '<div class="button-row" style="grid-column:1 / -1; margin-top:12px;">' +
       '<button type="button" class="button button-primary" id="start-practice-btn">Start Practice Session →</button>' +
       '</div>' +
@@ -4362,6 +4588,79 @@
       runtime.practicePreset = null;
     }
 
+    // Practice builder: subjects and counts come from the student's accessible question pool, so
+    // every option yields a paper; the server still validates on Start.
+    (function bindPracticeOptions() {
+      var subjectEl = document.getElementById("prac-subject");
+      var difficultyEl = document.getElementById("prac-difficulty");
+      var countEl = document.getElementById("prac-count");
+      var availabilityEl = document.getElementById("practice-availability");
+      var startEl = document.getElementById("start-practice-btn");
+      if (!subjectEl || !difficultyEl || !countEl || !availabilityEl || !startEl || !store.getPracticeOptions) return;
+      var options = null;
+
+      function availableFor(subject) {
+        if (!options) return null;
+        if (subject === "all") return options.total;
+        if (subject === "SUPR" || subject === "REAP") return options.sections[subject] || 0;
+        var match = /^topic:(SUPR|REAP):(.+)$/.exec(subject);
+        if (!match) return null;
+        var hit = options.topics.find(function (t) { return t.section === match[1] && t.topic.toLowerCase() === match[2].toLowerCase(); });
+        return hit ? hit.count : 0;
+      }
+
+      function updateAvailability() {
+        var available = availableFor(subjectEl.value);
+        if (available === null) {
+          availabilityEl.textContent = "";
+          startEl.disabled = false;
+          return;
+        }
+        if (!available) {
+          availabilityEl.textContent = "No questions match this subject and difficulty yet. Try another level or subject.";
+          startEl.disabled = true;
+          return;
+        }
+        var maxCount = Math.min(30, available);
+        countEl.max = String(maxCount);
+        countEl.min = String(Math.min(5, maxCount));
+        if (Number(countEl.value) > maxCount) countEl.value = String(maxCount);
+        availabilityEl.textContent = available + (available === 1 ? " question" : " questions") + " available for this choice.";
+        startEl.disabled = false;
+      }
+
+      function renderSubjects() {
+        var current = subjectEl.value;
+        var html = '<option value="all">All subjects (' + options.total + ')</option>' +
+          '<option value="SUPR">SUPR – all topics (' + (options.sections.SUPR || 0) + ')</option>' +
+          '<option value="REAP">REAP – all topics (' + (options.sections.REAP || 0) + ')</option>';
+        ["SUPR", "REAP"].forEach(function (section) {
+          var topics = options.topics.filter(function (t) { return t.section === section; });
+          if (!topics.length) return;
+          html += '<optgroup label="' + section + ' topics">' + topics.map(function (t) {
+            return '<option value="' + escapeAttribute("topic:" + section + ":" + t.topic) + '">' + escapeHtml(formatTopicName(t.topic)) + ' (' + t.count + ')</option>';
+          }).join("") + '</optgroup>';
+        });
+        subjectEl.innerHTML = html;
+        var keep = Array.prototype.some.call(subjectEl.options, function (option) { return option.value === current; });
+        subjectEl.value = keep ? current : "all";
+        updateAvailability();
+      }
+
+      function load() {
+        var difficulty = difficultyEl.value;
+        Promise.resolve(store.getPracticeOptions(difficulty)).then(function (data) {
+          if (!data || difficultyEl.value !== difficulty || !document.body.contains(subjectEl)) return;
+          options = data;
+          renderSubjects();
+        }).catch(function () { });
+      }
+
+      subjectEl.addEventListener("change", updateAvailability);
+      difficultyEl.addEventListener("change", load);
+      load();
+    })();
+
     var pracBtn = document.getElementById("start-practice-btn");
     if (pracBtn) {
       pracBtn.addEventListener("click", function () {
@@ -4369,6 +4668,7 @@
         var difficulty = document.getElementById("prac-difficulty") ? document.getElementById("prac-difficulty").value : "all";
         var countEl = document.getElementById("prac-count");
         var count = countEl ? parseInt(countEl.value, 10) : 15;
+        count = Math.max(1, Math.min(Number((countEl && countEl.max) || 30), count || 15));
         var timerEl = document.getElementById("prac-timer");
         var timerMinutes = timerEl ? parseInt(timerEl.value, 10) : 30;
         
@@ -4433,7 +4733,7 @@
   function renderProgress(user, subTab) {
     subTab = subTab === "reports" ? "reports" : "performance";
     var snapshot = store.getDashboardSnapshot(user.id);
-    var stats = summarizeAttempts(snapshot.attempts);
+    var stats = summarizeAttempts(mockAttemptsOnly(snapshot.attempts));
     var newestFirst = stats.submitted.slice().reverse();
     var testTitle = function (attempt) {
       var test = store.getTestById ? store.getTestById(attempt.testId) : null;
@@ -4622,9 +4922,16 @@
         '<div class="bookmark-grid">' + visibleBookmarks.map(renderBookmarkCard).join("") + '</div>'
       : bookmarksEmptyHtml;
 
-    var studyData = store.getStudyMaterials ? store.getStudyMaterials() : { folders: [], files: [] };
-    var materialsHtml = "";
-    if (studyData.folders.length === 0 && studyData.files.length === 0) {
+    // Study material is server-backed and free for every signed-in student. Folders without
+    // files are left out; each file opens in the browser or downloads through a short-lived link.
+    var studyData = store.getStudyMaterials ? store.getStudyMaterials() : { folders: [], loadedAt: 0 };
+    var studyFolders = (studyData.folders || []).filter(function (folder) { return (folder.files || []).length; });
+    var materialsHtml;
+    if (!studyData.loadedAt) {
+      materialsHtml = runtime.studentMaterialsError
+        ? '<div class="portal-empty-card" role="alert"><h4 class="portal-empty-title">Couldn&rsquo;t load study material</h4><p class="portal-empty-text">Check your connection and try again.</p><button type="button" class="button button-secondary js-materials-retry">Try again</button></div>'
+        : '<p class="materials-status" role="status">Loading study material…</p>';
+    } else if (!studyFolders.length) {
       materialsHtml =
         '<div class="portal-empty-card">' +
         '<h4 class="portal-empty-title">No study material yet</h4>' +
@@ -4632,34 +4939,32 @@
         '<a href="#resources/bookmarks" class="button button-secondary">Revise your bookmarks</a>' +
         '</div>';
     } else {
-      materialsHtml += '<div style="display:flex; flex-direction:column; gap:32px;">';
-      studyData.folders.forEach(function(folder) {
-        var folderFiles = studyData.files.filter(function(f) { return f.folderId === folder.id; });
-        materialsHtml += '<div>' +
-          '<h3 style="display:flex; align-items:center; gap:8px; margin-bottom:16px; color:' + escapeAttribute(folder.color) + ';">' +
-          '<span>' + escapeHtml(folder.icon) + '</span> ' + escapeHtml(folder.name) +
+      materialsHtml = '<div class="material-folders">' + studyFolders.map(function (folder) {
+        var files = folder.files || [];
+        // The folder colour is admin-chosen data, so it stays inline; layout lives in the CSS.
+        return '<section class="material-folder" aria-labelledby="material-folder-' + escapeAttribute(folder.id) + '">' +
+          '<h3 class="material-folder-title" id="material-folder-' + escapeAttribute(folder.id) + '"' + (folder.color ? ' style="color:' + escapeAttribute(folder.color) + ';"' : '') + '>' +
+          '<span aria-hidden="true">' + escapeHtml(folder.icon || "📁") + '</span> ' + escapeHtml(folder.name) +
+          '<span class="material-folder-count">' + files.length + (files.length === 1 ? ' file' : ' files') + '</span>' +
           '</h3>' +
-          '<div class="study-materials-grid">';
-        if (folderFiles.length === 0) {
-          materialsHtml += '<div class="empty-state" style="grid-column:1/-1; padding:16px;">This folder is empty.</div>';
-        } else {
-          folderFiles.forEach(function(file) {
-            materialsHtml += 
-              '<div class="study-material-card">' +
-              '<div style="display:flex; align-items:center; justify-content:space-between;">' +
-              '<div>' +
-              '<span class="meta-chip" style="background:' + escapeAttribute(folder.color) + '20; color:' + escapeAttribute(folder.color) + ';">' + escapeHtml(file.name.split('.').pop().toUpperCase() || 'FILE') + '</span>' +
-              '<h4 style="margin:6px 0 4px; font-size:1.05rem;">' + escapeHtml(file.name) + '</h4>' +
-              '<span style="font-size:0.78rem; color:var(--ink-soft);">' + escapeHtml(file.size) + ' &bull; Added ' + escapeHtml(formatDateOnly(file.createdAt)) + '</span>' +
+          '<div class="study-materials-grid">' + files.map(function (file) {
+            var href = "/api/materials/files/" + encodeURIComponent(file.id) + "/download";
+            return '<div class="study-material-card">' +
+              '<div class="study-material-card-body">' +
+              '<div class="study-material-info">' +
+              materialTypeBadge(file.name) +
+              '<h4 class="study-material-name">' + escapeHtml(file.name) + '</h4>' +
+              '<span class="study-material-meta">' + escapeHtml(formatBytes(file.bytes)) + ' &bull; Added ' + escapeHtml(formatDateOnly(file.createdAt)) + '</span>' +
               '</div>' +
-              '<button class="button button-secondary button-compact js-download-material" data-url="' + escapeAttribute(file.url) + '" data-name="' + escapeAttribute(file.name) + '">Download</button>' +
+              '<div class="study-material-actions">' +
+              '<a class="button button-secondary button-compact" href="' + href + '?inline=1" target="_blank" rel="noopener" aria-label="Open ' + escapeAttribute(file.name) + '">Open</a>' +
+              '<a class="button button-primary button-compact" href="' + href + '" aria-label="Download ' + escapeAttribute(file.name) + '">Download</a>' +
+              '</div>' +
               '</div>' +
               '</div>';
-          });
-        }
-        materialsHtml += '</div></div>';
-      });
-      materialsHtml += '</div>';
+          }).join("") + '</div>' +
+          '</section>';
+      }).join("") + '</div>';
     }
 
     var activeContentHtml = subTab === "materials" ? materialsHtml : bookmarksHtml;
@@ -4680,16 +4985,27 @@
       { fluid: true }
     );
     
-    app.querySelectorAll(".js-download-material").forEach(function(btn) {
-      btn.addEventListener("click", function() {
-        var a = document.createElement("a");
-        a.href = btn.dataset.url;
-        a.download = btn.dataset.name;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
+    // Study material: load (or refresh, after a minute) from the server, then redraw if the
+    // student is still on this tab.
+    if (subTab === "materials" && store.refreshStudyMaterials) {
+      var loadMaterials = function () {
+        runtime.studentMaterialsError = false;
+        runtime.studentMaterialsLoading = true;
+        Promise.resolve(store.refreshStudyMaterials()).catch(function () {
+          runtime.studentMaterialsError = true;
+        }).then(function () {
+          runtime.studentMaterialsLoading = false;
+          if (/resources\/materials/.test(window.location.hash || "")) renderResources(user, subTab);
+        });
+      };
+      var cached = store.getStudyMaterials();
+      if (!runtime.studentMaterialsLoading && !runtime.studentMaterialsError && (!cached.loadedAt || Date.now() - cached.loadedAt > 60 * 1000)) {
+        loadMaterials();
+      }
+      app.querySelectorAll(".js-materials-retry").forEach(function (button) {
+        button.addEventListener("click", loadMaterials);
       });
-    });
+    }
 
     app.querySelectorAll(".js-bookmark-filter").forEach(function (btn) {
       btn.addEventListener("click", function () {
@@ -4727,11 +5043,11 @@
     var plannerEvents = store.getPlannerEvents ? store.getPlannerEvents(user.id) : [];
 
     var noticesHtml = (
-      '<div style="display:flex; flex-direction:column; gap:16px;">' +
-      '<div style="background:var(--surface); border:1px solid rgba(200,150,62,0.35); border-left:4px solid var(--gold-strong); border-radius:8px; padding:24px;">' +
-      '<span class="meta-chip" style="margin-bottom:8px;">IMPORTANT NOTICE</span>' +
-      '<h3 style="margin:4px 0 8px; font-size:1.15rem;">' + escapeHtml(appConfig.noticeTitle || (targetExamLabel() + " Examination Portal Update")) + '</h3>' +
-      '<p style="margin:0; font-size:0.9rem; color:var(--ink-soft); line-height:1.5; white-space:pre-wrap; word-break:break-word;">' + escapeHtml(appConfig.noticeBody || "Official mock test series registrations are live. Complete all practice papers before final UGEE dates.") + '</p>' +
+      '<div class="updates-notice-list">' +
+      '<div class="updates-notice-card">' +
+      '<span class="meta-chip">IMPORTANT NOTICE</span>' +
+      '<h3>' + escapeHtml(appConfig.noticeTitle || (targetExamLabel() + " Examination Portal Update")) + '</h3>' +
+      '<p>' + escapeHtml(appConfig.noticeBody || "Official mock test series registrations are live. Complete all practice papers before final UGEE dates.") + '</p>' +
       '</div>' +
       '</div>'
     );
@@ -4977,7 +5293,7 @@
         (hasAttempted ? escapeHtml(describeQotdResult(qotdAttempt)) : '') + '</div>' +
         (hasAttempted && qotdAttempt.explanation ? '<div class="qotd-explanation rich-text">' + formatRichText(qotdAttempt.explanation) + '</div>' : '');
 
-      qotdHtml = '<div class="rail-block qotd-block" style="border-top: 1px solid var(--border-color); padding-top: 24px;">' +
+      qotdHtml = '<div class="rail-block qotd-block">' +
         '<div class="rail-header">' +
         '<span class="editorial-num-tag"><svg class="editorial-traced-icon" xmlns="http://www.w3.org/2000/svg" width="72" height="90" viewBox="0 0 72 90"><g shape-rendering="geometricPrecision"><path fill="#ffed92" fill-rule="evenodd" d="M 26 48 26 51 27 52 27 54 31 58 31 75 48 75 49 74 49 69 50 68 50 61 51 60 51 55 52 54 52 52 53 51 52 50 52 48 Z M 34 52 45 52 47 54 47 63 42 68 33 68 32 67 32 66 31 65 31 55 Z"/><path fill="#000000" fill-rule="evenodd" d="M 41 62 41 66 42 65 41 64 Z M 46 56 46 61 45 62 46 61 Z M 45 54 34 54 33 55 33 65 33 55 34 54 Z M 22 43 22 45 24 47 25 46 53 46 54 47 54 49 54 47 55 46 23 46 22 45 Z M 48 33 48 35 49 35 48 34 Z M 50 28 49 29 49 31 49 29 Z M 29 28 30 28 31 29 31 30 31 29 30 28 Z M 43 27 43 35 43 32 45 30 44 31 43 30 Z M 21 25 21 26 22 27 21 26 Z M 29 20 29 22 28 23 29 23 30 24 30 25 30 24 29 23 Z M 36 21 38 19 41 19 43 21 41 19 38 19 Z"/><path fill="#b3d8fb" fill-rule="evenodd" d="M 44 55 35 55 35 65 39 65 39 62 41 60 44 60 Z M 38 21 37 22 37 29 38 30 38 34 41 34 41 29 42 28 42 22 41 21 Z"/><path fill="#8795da" fill-rule="evenodd" d="M 16 66 16 75 28 75 28 66 Z M 38 37 38 40 41 40 41 37 Z"/><path fill="#50423a" fill-rule="evenodd" d="M 14 59 15 60 15 63 16 64 28 64 16 64 15 63 15 60 Z M 45 25 46 26 46 27 46 26 Z M 37 16 38 17 38 18 38 17 Z"/><path fill="#ff85ae" fill-rule="evenodd" d="M 16 59 16 63 28 63 28 60 27 59 27 58 26 57 18 57 Z M 28 21 27 20 27 19 26 19 25 20 22 20 21 21 21 22 22 23 24 23 25 22 27 22 Z"/><path fill="#d69d69" fill-rule="evenodd" d="M 24 43 24 45 54 45 55 44 55 43 Z"/><path fill="#616b68" fill-rule="evenodd" d="M 45 55 45 60 44 61 41 61 44 61 45 60 Z"/><path fill="#8cb07a" fill-rule="evenodd" d="M 57 20 55 20 54 19 53 19 53 20 54 20 56 22 55 23 52 23 54 25 53 26 52 26 51 27 53 27 54 28 54 29 53 30 50 30 52 32 51 33 50 33 49 34 51 34 52 35 52 36 51 37 49 37 50 38 50 39 49 40 48 40 52 40 52 39 53 38 53 35 54 34 54 31 55 30 55 27 56 26 56 24 57 23 Z"/><path fill="#0f100e" fill-rule="evenodd" d="M 44 62 44 63 43 64 44 63 Z"/><path fill="#21221f" fill-rule="evenodd" d="M 15 59 14 60 14 64 15 64 14 63 14 60 Z M 43 23 43 24 44 24 Z"/><path fill="#151616" fill-rule="evenodd" d="M 38 16 37 17 37 18 37 17 Z"/><path fill="#3a2f31" fill-rule="evenodd" d="M 19 56 25 56 26 55 25 56 24 55 20 55 Z M 36 37 36 40 37 40 37 37 Z M 30 27 31 28 31 27 Z M 42 17 41 17 41 18 Z"/><path fill="#f0db7c" fill-rule="evenodd" d="M 24 31 25 32 25 34 26 35 26 38 27 39 27 40 28 40 27 39 27 36 26 35 26 32 25 31 Z M 28 30 29 31 29 33 30 34 30 37 31 38 31 40 32 40 32 39 31 38 31 35 30 34 30 31 29 30 Z"/><path fill="#f1efde" fill-rule="evenodd" d="M 28 26 27 25 26 25 25 26 23 26 24 27 24 28 25 27 28 27 Z"/><path fill="#070706" fill-rule="evenodd" d="M 22 29 23 30 23 31 23 30 Z"/></g></svg></span>' +
         '<p class="section-label">DAILY MICRO-QUIZ</p>' +
@@ -4993,7 +5309,7 @@
 
     if (!qotdHtml) {
       // Fallback empty state if no valid questions exist in the DB
-      qotdHtml = '<div class="rail-block qotd-block" style="border-top: 1px solid var(--border-color); padding-top: 24px;">' +
+      qotdHtml = '<div class="rail-block qotd-block">' +
         '<div class="rail-header">' +
         '<span class="editorial-num-tag"><svg class="editorial-traced-icon" xmlns="http://www.w3.org/2000/svg" width="72" height="90" viewBox="0 0 72 90"><g shape-rendering="geometricPrecision"><path fill="#ffed92" fill-rule="evenodd" d="M 26 48 26 51 27 52 27 54 31 58 31 75 48 75 49 74 49 69 50 68 50 61 51 60 51 55 52 54 52 52 53 51 52 50 52 48 Z M 34 52 45 52 47 54 47 63 42 68 33 68 32 67 32 66 31 65 31 55 Z"/><path fill="#000000" fill-rule="evenodd" d="M 41 62 41 66 42 65 41 64 Z M 46 56 46 61 45 62 46 61 Z M 45 54 34 54 33 55 33 65 33 55 34 54 Z M 22 43 22 45 24 47 25 46 53 46 54 47 54 49 54 47 55 46 23 46 22 45 Z M 48 33 48 35 49 35 48 34 Z M 50 28 49 29 49 31 49 29 Z M 29 28 30 28 31 29 31 30 31 29 30 28 Z M 43 27 43 35 43 32 45 30 44 31 43 30 Z M 21 25 21 26 22 27 21 26 Z M 29 20 29 22 28 23 29 23 30 24 30 25 30 24 29 23 Z M 36 21 38 19 41 19 43 21 41 19 38 19 Z"/><path fill="#b3d8fb" fill-rule="evenodd" d="M 44 55 35 55 35 65 39 65 39 62 41 60 44 60 Z M 38 21 37 22 37 29 38 30 38 34 41 34 41 29 42 28 42 22 41 21 Z"/><path fill="#8795da" fill-rule="evenodd" d="M 16 66 16 75 28 75 28 66 Z M 38 37 38 40 41 40 41 37 Z"/><path fill="#50423a" fill-rule="evenodd" d="M 14 59 15 60 15 63 16 64 28 64 16 64 15 63 15 60 Z M 45 25 46 26 46 27 46 26 Z M 37 16 38 17 38 18 38 17 Z"/><path fill="#ff85ae" fill-rule="evenodd" d="M 16 59 16 63 28 63 28 60 27 59 27 58 26 57 18 57 Z M 28 21 27 20 27 19 26 19 25 20 22 20 21 21 21 22 22 23 24 23 25 22 27 22 Z"/><path fill="#d69d69" fill-rule="evenodd" d="M 24 43 24 45 54 45 55 44 55 43 Z"/><path fill="#616b68" fill-rule="evenodd" d="M 45 55 45 60 44 61 41 61 44 61 45 60 Z"/><path fill="#8cb07a" fill-rule="evenodd" d="M 57 20 55 20 54 19 53 19 53 20 54 20 56 22 55 23 52 23 54 25 53 26 52 26 51 27 53 27 54 28 54 29 53 30 50 30 52 32 51 33 50 33 49 34 51 34 52 35 52 36 51 37 49 37 50 38 50 39 49 40 48 40 52 40 52 39 53 38 53 35 54 34 54 31 55 30 55 27 56 26 56 24 57 23 Z"/><path fill="#0f100e" fill-rule="evenodd" d="M 44 62 44 63 43 64 44 63 Z"/><path fill="#21221f" fill-rule="evenodd" d="M 15 59 14 60 14 64 15 64 14 63 14 60 Z M 43 23 43 24 44 24 Z"/><path fill="#151616" fill-rule="evenodd" d="M 38 16 37 17 37 18 37 17 Z"/><path fill="#3a2f31" fill-rule="evenodd" d="M 19 56 25 56 26 55 25 56 24 55 20 55 Z M 36 37 36 40 37 40 37 37 Z M 30 27 31 28 31 27 Z M 42 17 41 17 41 18 Z"/><path fill="#f0db7c" fill-rule="evenodd" d="M 24 31 25 32 25 34 26 35 26 38 27 39 27 40 28 40 27 39 27 36 26 35 26 32 25 31 Z M 28 30 29 31 29 33 30 34 30 37 31 38 31 40 32 40 32 39 31 38 31 35 30 34 30 31 29 30 Z"/><path fill="#f1efde" fill-rule="evenodd" d="M 28 26 27 25 26 25 25 26 23 26 24 27 24 28 25 27 28 27 Z"/><path fill="#070706" fill-rule="evenodd" d="M 22 29 23 30 23 31 23 30 Z"/></g></svg></span>' +
         '<p class="section-label">DAILY MICRO-QUIZ</p>' +
@@ -5013,7 +5329,7 @@
       attemptsByTest[attempt.testId].push(attempt);
     });
 
-    var attemptStats = summarizeAttempts(snapshot.attempts);
+    var attemptStats = summarizeAttempts(mockAttemptsOnly(snapshot.attempts));
 
     // Determine "NEXT UP" Test
     var dashboardTests = snapshot.tests.filter(function (t) { return !t.isPractice; });
@@ -5169,7 +5485,9 @@
         var test = store.getTestById(attempt.testId);
         var isSubmitted = attempt.status === "submitted";
         var stateLabel = isSubmitted
-          ? "Score: " + attempt.result.score + " (" + attempt.result.percentile + "%ile)"
+          ? (isPracticeAttempt(attempt)
+            ? "Practice · Score " + attempt.result.score
+            : "Score: " + attempt.result.score + " (" + attempt.result.percentile + "%ile)")
           : "In progress";
 
         return (
@@ -5406,6 +5724,21 @@
         '<p>Your progress shows up here after your first mock.</p>' +
         '</section>';
 
+    // Notice Board: in the right rail on desktop. When the columns stack (≤992px) a notice
+    // moves up to sit right after Next Up, so it is seen as soon as the page opens; the rail
+    // copy is then hidden (display: none), so it is never read twice.
+    var noticeHeaderHtml = function (labelId) {
+      return '<div class="rail-header">' +
+        '<span class="editorial-num-tag"><svg class="editorial-traced-icon" xmlns="http://www.w3.org/2000/svg" width="72" height="90" viewBox="0 0 72 90"><g shape-rendering="geometricPrecision"><path fill="#000000" fill-rule="evenodd" d="M 10 75 10 76 19 76 11 76 Z M 62 71 63 71 64 72 64 74 64 72 63 71 Z M 9 63 9 64 8 65 9 64 Z M 22 36 21 37 21 38 20 39 18 39 19 40 19 42 20 43 21 42 20 43 19 42 19 41 22 38 23 38 23 37 Z M 42 30 41 29 40 29 39 28 34 28 33 27 31 27 30 26 30 25 30 26 31 27 29 29 28 29 27 28 26 28 26 29 25 30 26 31 25 32 23 32 21 34 24 34 25 35 26 35 25 34 25 33 26 32 27 32 28 33 29 33 30 34 29 35 30 36 30 40 32 38 32 37 33 36 38 36 39 35 41 35 41 34 42 33 Z M 37 33 38 34 36 36 35 36 34 35 36 33 Z M 38 30 39 29 40 30 39 31 Z M 26 31 28 29 29 29 30 30 30 31 29 32 27 32 Z M 33 30 33 29 34 28 38 28 39 29 37 31 36 31 35 30 34 31 Z M 29 29 30 28 31 29 30 30 Z"/><path fill="#125fa4" fill-rule="evenodd" d="M 25 65 26 65 27 66 32 66 31 66 30 65 28 65 27 66 26 65 Z M 19 47 14 52 14 53 13 54 14 54 15 53 16 53 17 54 16 55 16 57 15 58 15 59 14 60 14 61 12 63 11 62 11 60 12 59 11 59 11 64 10 65 10 71 11 72 11 74 25 74 25 73 23 73 22 72 21 72 18 69 18 68 16 66 17 65 18 65 19 64 20 65 19 64 19 63 18 62 18 61 19 60 23 64 23 62 21 60 21 59 20 58 20 57 19 58 18 57 18 50 19 49 Z M 13 65 14 66 14 67 13 68 14 69 14 70 12 72 11 71 11 70 10 69 10 68 Z"/><path fill="#b4783e" fill-rule="evenodd" d="M 38 74 55 74 56 73 63 73 47 73 46 74 Z M 64 69 55 69 54 70 36 70 36 71 41 71 42 70 64 70 Z M 6 59 5 60 5 67 6 68 6 72 7 73 7 75 8 75 8 73 7 72 7 66 6 65 Z M 40 58 40 59 41 60 40 59 Z M 49 31 49 32 51 34 52 34 51 34 49 32 Z M 60 19 64 23 64 30 59 35 54 35 59 35 60 34 61 34 62 33 62 32 64 30 64 23 Z M 58 18 54 18 53 19 52 19 49 22 49 24 48 25 48 29 48 25 49 24 49 22 51 20 52 20 54 18 Z"/><path fill="#0082c9" fill-rule="evenodd" d="M 18 66 19 67 19 68 22 71 23 71 24 72 25 72 26 73 26 74 28 74 28 73 29 72 29 70 28 69 26 69 25 68 24 68 23 67 22 67 21 66 Z M 20 49 19 50 20 51 19 52 19 55 20 55 22 57 22 59 24 61 25 61 27 63 29 63 30 64 32 64 33 65 33 66 32 67 34 67 35 66 36 66 37 65 37 62 34 62 33 61 30 61 29 60 26 60 25 59 24 59 21 56 21 55 20 54 21 53 22 53 25 56 26 56 27 57 28 57 28 56 26 54 25 54 Z"/><path fill="#d3a274" fill-rule="evenodd" d="M 43 64 41 64 40 63 40 66 39 67 41 67 43 65 Z M 41 38 40 37 39 37 38 38 34 38 33 39 33 40 31 42 24 42 23 41 23 43 22 44 22 45 21 46 22 47 22 48 23 48 22 47 22 44 23 43 24 43 25 44 25 46 28 49 31 49 30 48 30 47 31 46 31 45 32 44 33 45 33 46 34 47 34 48 35 48 36 47 37 47 38 46 39 46 40 47 41 47 39 45 39 43 40 42 40 41 41 40 Z M 37 39 39 41 39 43 38 44 36 44 35 43 35 41 Z"/><path fill="#65523f" fill-rule="evenodd" d="M 38 76 39 75 44 75 39 75 Z M 51 68 52 68 53 69 52 68 Z M 62 64 61 65 61 66 61 65 Z M 5 59 4 60 4 62 3 63 4 62 4 60 Z M 39 56 39 57 40 57 40 56 Z M 27 40 26 41 25 41 26 41 Z M 59 33 59 34 60 35 59 34 Z M 48 24 49 25 50 24 49 25 Z M 57 22 57 24 56 25 56 26 56 25 57 24 Z M 50 20 51 21 50 22 51 22 51 21 Z M 61 19 63 21 64 20 63 19 62 20 Z M 62 20 63 19 64 20 63 21 Z"/><path fill="#513928" fill-rule="evenodd" d="M 9 75 7 77 8 77 8 76 Z M 61 74 60 74 59 75 60 75 Z M 36 72 37 72 38 73 40 73 39 73 38 72 Z M 65 69 65 70 66 71 65 70 Z M 53 68 52 69 43 69 52 69 Z M 39 68 38 67 38 68 37 69 36 69 35 70 34 69 35 70 36 69 38 69 Z M 7 62 7 63 8 63 Z M 41 59 40 60 41 61 40 60 Z M 29 39 28 40 29 40 Z M 57 16 56 17 55 17 57 17 Z"/><path fill="#242726" fill-rule="evenodd" d="M 38 60 38 61 39 61 Z M 27 26 28 27 28 28 29 27 28 27 Z"/><path fill="#1e1915" fill-rule="evenodd" d="M 56 71 55 71 54 72 51 72 55 72 Z M 40 61 41 62 42 62 41 62 Z M 22 39 21 40 22 40 Z M 51 32 52 33 53 33 52 33 Z M 25 29 22 32 21 32 22 32 Z M 23 27 22 26 21 27 22 26 Z"/><path fill="#d6d6d1" fill-rule="evenodd" d="M 51 29 51 30 52 31 54 31 53 30 53 29 Z M 61 23 59 21 58 21 57 20 56 20 55 21 54 21 53 22 52 22 51 23 51 27 51 25 55 21 56 21 57 20 58 21 58 22 60 24 61 24 Z"/><path fill="#b5b5b4" fill-rule="evenodd" d="M 66 72 65 73 65 74 65 73 Z M 58 25 58 26 59 25 60 25 61 26 60 27 61 26 60 25 Z"/><path fill="#080808" fill-rule="evenodd" d="M 47 31 48 32 48 33 48 32 Z M 20 28 20 29 19 30 19 31 20 31 19 30 20 29 Z"/><path fill="#0e1518" fill-rule="evenodd" d="M 22 65 23 66 23 65 Z M 29 57 28 58 29 59 Z M 14 55 13 56 14 57 13 58 14 57 13 56 Z M 28 53 28 54 29 54 Z M 35 27 36 27 37 26 36 27 35 26 Z"/><path fill="#164568" fill-rule="evenodd" d="M 24 63 24 65 25 64 26 64 27 65 26 66 27 65 26 64 26 63 Z M 19 61 19 62 20 62 22 64 Z M 15 54 15 55 13 57 14 58 12 60 13 61 13 60 14 59 14 58 15 57 14 56 15 55 Z M 13 57 14 56 15 57 14 58 Z"/><path fill="#868684" fill-rule="evenodd" d="M 31 69 33 69 34 70 33 69 Z M 52 66 51 67 52 67 Z M 59 27 59 28 57 30 59 28 Z"/><path fill="#010101" fill-rule="evenodd" d="M 21 33 20 33 20 34 Z M 23 28 22 29 22 30 23 29 Z"/><path fill="#846d56" fill-rule="evenodd" d="M 50 67 49 68 48 68 50 68 Z M 44 67 44 68 46 68 45 68 Z"/><path fill="#cf9f72" fill-rule="evenodd" d="M 23 49 24 50 25 50 26 51 24 49 Z M 22 43 23 44 23 47 23 45 24 44 23 44 Z M 26 36 28 38 27 39 28 38 28 37 27 37 Z"/><path fill="#0b5f9e" fill-rule="evenodd" d="M 11 69 12 69 13 70 12 71 13 70 12 69 Z M 22 54 24 56 23 57 24 56 Z"/><path fill="#0772b6" fill-rule="evenodd" d="M 19 57 20 56 21 57 21 58 21 57 22 56 21 57 20 56 19 56 Z"/></g></svg></span>' +
+        '<p class="section-label"' + (labelId ? ' id="' + labelId + '"' : '') + '>NOTICE BOARD</p>' +
+        '</div>';
+    };
+    var hasNotice = !!(appConfig && (appConfig.noticeTitle || appConfig.noticeBody));
+    var noticeRailBlockHtml = '<div class="rail-block rail-notice-block">' + noticeHeaderHtml("") + noticeBoardHtml + '</div>';
+    var noticeStackedHtml = hasNotice
+      ? '<section class="rail-block dashboard-notice-stacked" aria-labelledby="notice-board-stacked-title">' + noticeHeaderHtml("notice-board-stacked-title") + noticeBoardHtml + '</section>'
+      : '';
+
     app.innerHTML = buildShell(
       renderPrimaryNav("dashboard", user) +
       '<div class="dashboard-layout-shell">' +
@@ -5432,6 +5765,7 @@
       '</div>' +
       '</section>' +
       nextUpHtml +
+      noticeStackedHtml +
       '<section class="dashboard-grid-asymmetric">' +
       '<div class="dashboard-main-col">' +
       '<div class="available-tests-header">' +
@@ -5449,18 +5783,12 @@
       '<button type="button" class="filter-tab-btn js-filter-test" data-filter="completed">COMPLETED</button>' +
       '</div>' +
       '</div>' +
-      '<div class="dashboard-editorial-list" id="available-tests-list" style="margin-bottom: 48px;">' + cards + '</div>' +
+      '<div class="dashboard-editorial-list dashboard-tests-list" id="available-tests-list">' + cards + '</div>' +
 
       qotdHtml +
       '</div>' + // end dashboard-main-col
       '<aside class="dashboard-sidebar-rail">' +
-      '<div class="rail-block rail-notice-block">' +
-      '<div class="rail-header">' +
-      '<span class="editorial-num-tag"><svg class="editorial-traced-icon" xmlns="http://www.w3.org/2000/svg" width="72" height="90" viewBox="0 0 72 90"><g shape-rendering="geometricPrecision"><path fill="#000000" fill-rule="evenodd" d="M 10 75 10 76 19 76 11 76 Z M 62 71 63 71 64 72 64 74 64 72 63 71 Z M 9 63 9 64 8 65 9 64 Z M 22 36 21 37 21 38 20 39 18 39 19 40 19 42 20 43 21 42 20 43 19 42 19 41 22 38 23 38 23 37 Z M 42 30 41 29 40 29 39 28 34 28 33 27 31 27 30 26 30 25 30 26 31 27 29 29 28 29 27 28 26 28 26 29 25 30 26 31 25 32 23 32 21 34 24 34 25 35 26 35 25 34 25 33 26 32 27 32 28 33 29 33 30 34 29 35 30 36 30 40 32 38 32 37 33 36 38 36 39 35 41 35 41 34 42 33 Z M 37 33 38 34 36 36 35 36 34 35 36 33 Z M 38 30 39 29 40 30 39 31 Z M 26 31 28 29 29 29 30 30 30 31 29 32 27 32 Z M 33 30 33 29 34 28 38 28 39 29 37 31 36 31 35 30 34 31 Z M 29 29 30 28 31 29 30 30 Z"/><path fill="#125fa4" fill-rule="evenodd" d="M 25 65 26 65 27 66 32 66 31 66 30 65 28 65 27 66 26 65 Z M 19 47 14 52 14 53 13 54 14 54 15 53 16 53 17 54 16 55 16 57 15 58 15 59 14 60 14 61 12 63 11 62 11 60 12 59 11 59 11 64 10 65 10 71 11 72 11 74 25 74 25 73 23 73 22 72 21 72 18 69 18 68 16 66 17 65 18 65 19 64 20 65 19 64 19 63 18 62 18 61 19 60 23 64 23 62 21 60 21 59 20 58 20 57 19 58 18 57 18 50 19 49 Z M 13 65 14 66 14 67 13 68 14 69 14 70 12 72 11 71 11 70 10 69 10 68 Z"/><path fill="#b4783e" fill-rule="evenodd" d="M 38 74 55 74 56 73 63 73 47 73 46 74 Z M 64 69 55 69 54 70 36 70 36 71 41 71 42 70 64 70 Z M 6 59 5 60 5 67 6 68 6 72 7 73 7 75 8 75 8 73 7 72 7 66 6 65 Z M 40 58 40 59 41 60 40 59 Z M 49 31 49 32 51 34 52 34 51 34 49 32 Z M 60 19 64 23 64 30 59 35 54 35 59 35 60 34 61 34 62 33 62 32 64 30 64 23 Z M 58 18 54 18 53 19 52 19 49 22 49 24 48 25 48 29 48 25 49 24 49 22 51 20 52 20 54 18 Z"/><path fill="#0082c9" fill-rule="evenodd" d="M 18 66 19 67 19 68 22 71 23 71 24 72 25 72 26 73 26 74 28 74 28 73 29 72 29 70 28 69 26 69 25 68 24 68 23 67 22 67 21 66 Z M 20 49 19 50 20 51 19 52 19 55 20 55 22 57 22 59 24 61 25 61 27 63 29 63 30 64 32 64 33 65 33 66 32 67 34 67 35 66 36 66 37 65 37 62 34 62 33 61 30 61 29 60 26 60 25 59 24 59 21 56 21 55 20 54 21 53 22 53 25 56 26 56 27 57 28 57 28 56 26 54 25 54 Z"/><path fill="#d3a274" fill-rule="evenodd" d="M 43 64 41 64 40 63 40 66 39 67 41 67 43 65 Z M 41 38 40 37 39 37 38 38 34 38 33 39 33 40 31 42 24 42 23 41 23 43 22 44 22 45 21 46 22 47 22 48 23 48 22 47 22 44 23 43 24 43 25 44 25 46 28 49 31 49 30 48 30 47 31 46 31 45 32 44 33 45 33 46 34 47 34 48 35 48 36 47 37 47 38 46 39 46 40 47 41 47 39 45 39 43 40 42 40 41 41 40 Z M 37 39 39 41 39 43 38 44 36 44 35 43 35 41 Z"/><path fill="#65523f" fill-rule="evenodd" d="M 38 76 39 75 44 75 39 75 Z M 51 68 52 68 53 69 52 68 Z M 62 64 61 65 61 66 61 65 Z M 5 59 4 60 4 62 3 63 4 62 4 60 Z M 39 56 39 57 40 57 40 56 Z M 27 40 26 41 25 41 26 41 Z M 59 33 59 34 60 35 59 34 Z M 48 24 49 25 50 24 49 25 Z M 57 22 57 24 56 25 56 26 56 25 57 24 Z M 50 20 51 21 50 22 51 22 51 21 Z M 61 19 63 21 64 20 63 19 62 20 Z M 62 20 63 19 64 20 63 21 Z"/><path fill="#513928" fill-rule="evenodd" d="M 9 75 7 77 8 77 8 76 Z M 61 74 60 74 59 75 60 75 Z M 36 72 37 72 38 73 40 73 39 73 38 72 Z M 65 69 65 70 66 71 65 70 Z M 53 68 52 69 43 69 52 69 Z M 39 68 38 67 38 68 37 69 36 69 35 70 34 69 35 70 36 69 38 69 Z M 7 62 7 63 8 63 Z M 41 59 40 60 41 61 40 60 Z M 29 39 28 40 29 40 Z M 57 16 56 17 55 17 57 17 Z"/><path fill="#242726" fill-rule="evenodd" d="M 38 60 38 61 39 61 Z M 27 26 28 27 28 28 29 27 28 27 Z"/><path fill="#1e1915" fill-rule="evenodd" d="M 56 71 55 71 54 72 51 72 55 72 Z M 40 61 41 62 42 62 41 62 Z M 22 39 21 40 22 40 Z M 51 32 52 33 53 33 52 33 Z M 25 29 22 32 21 32 22 32 Z M 23 27 22 26 21 27 22 26 Z"/><path fill="#d6d6d1" fill-rule="evenodd" d="M 51 29 51 30 52 31 54 31 53 30 53 29 Z M 61 23 59 21 58 21 57 20 56 20 55 21 54 21 53 22 52 22 51 23 51 27 51 25 55 21 56 21 57 20 58 21 58 22 60 24 61 24 Z"/><path fill="#b5b5b4" fill-rule="evenodd" d="M 66 72 65 73 65 74 65 73 Z M 58 25 58 26 59 25 60 25 61 26 60 27 61 26 60 25 Z"/><path fill="#080808" fill-rule="evenodd" d="M 47 31 48 32 48 33 48 32 Z M 20 28 20 29 19 30 19 31 20 31 19 30 20 29 Z"/><path fill="#0e1518" fill-rule="evenodd" d="M 22 65 23 66 23 65 Z M 29 57 28 58 29 59 Z M 14 55 13 56 14 57 13 58 14 57 13 56 Z M 28 53 28 54 29 54 Z M 35 27 36 27 37 26 36 27 35 26 Z"/><path fill="#164568" fill-rule="evenodd" d="M 24 63 24 65 25 64 26 64 27 65 26 66 27 65 26 64 26 63 Z M 19 61 19 62 20 62 22 64 Z M 15 54 15 55 13 57 14 58 12 60 13 61 13 60 14 59 14 58 15 57 14 56 15 55 Z M 13 57 14 56 15 57 14 58 Z"/><path fill="#868684" fill-rule="evenodd" d="M 31 69 33 69 34 70 33 69 Z M 52 66 51 67 52 67 Z M 59 27 59 28 57 30 59 28 Z"/><path fill="#010101" fill-rule="evenodd" d="M 21 33 20 33 20 34 Z M 23 28 22 29 22 30 23 29 Z"/><path fill="#846d56" fill-rule="evenodd" d="M 50 67 49 68 48 68 50 68 Z M 44 67 44 68 46 68 45 68 Z"/><path fill="#cf9f72" fill-rule="evenodd" d="M 23 49 24 50 25 50 26 51 24 49 Z M 22 43 23 44 23 47 23 45 24 44 23 44 Z M 26 36 28 38 27 39 28 38 28 37 27 37 Z"/><path fill="#0b5f9e" fill-rule="evenodd" d="M 11 69 12 69 13 70 12 71 13 70 12 69 Z M 22 54 24 56 23 57 24 56 Z"/><path fill="#0772b6" fill-rule="evenodd" d="M 19 57 20 56 21 57 21 58 21 57 22 56 21 57 20 56 19 56 Z"/></g></svg></span>' +
-      '<p class="section-label">NOTICE BOARD</p>' +
-      '</div>' +
-      noticeBoardHtml +
-      '</div>' +
+      noticeRailBlockHtml +
       '<div class="rail-divider"></div>' +
       '<div class="rail-block">' +
       '<div class="rail-header">' +
@@ -5471,9 +5799,9 @@
       '</div>' +
       '<div class="rail-divider"></div>' +
       '<div class="rail-block">' +
-      '<div class="rail-header" style="display: flex; align-items: center;">' +
+      '<div class="rail-header rail-header-calendar">' +
       '<span class="editorial-num-tag"><svg class="editorial-traced-icon" xmlns="http://www.w3.org/2000/svg" width="93" height="115" viewBox="0 0 93 115"><g shape-rendering="geometricPrecision"><path fill="#c76d39" fill-rule="evenodd" d="M 27 57 27 60 76 60 76 57 Z"/><path fill="#000000" fill-rule="evenodd" d="M 73 76 55 76 54 75 54 62 54 64 53 65 30 65 53 65 54 66 54 75 55 76 Z M 62 44 72 44 73 45 73 47 73 45 72 44 Z M 78 55 71 55 70 54 70 52 70 54 69 55 60 55 59 54 59 42 59 54 58 55 45 55 44 54 43 55 25 55 Z"/><path fill="#2f1c10" fill-rule="evenodd" d="M 74 62 74 68 73 69 74 70 74 75 Z M 65 48 74 48 75 49 75 50 74 51 65 51 74 51 75 50 75 49 74 48 Z M 41 32 42 33 42 34 43 34 Z"/><path fill="#a75225" fill-rule="evenodd" d="M 75 63 75 84 76 84 76 63 Z M 27 63 27 84 28 84 28 63 Z"/><path fill="#858585" fill-rule="evenodd" d="M 75 47 76 48 76 51 75 52 72 52 75 52 76 51 76 48 Z M 26 34 25 35 26 36 27 35 Z M 25 35 26 34 27 35 26 36 Z"/><path fill="#3a444b" fill-rule="evenodd" d="M 73 68 72 69 55 69 72 69 Z M 29 53 29 54 35 54 35 53 Z M 52 44 52 46 50 48 51 49 51 54 52 53 Z M 52 41 53 42 54 42 55 41 58 41 Z M 73 33 72 34 72 36 75 36 75 34 74 33 Z"/><path fill="#120e0b" fill-rule="evenodd" d="M 26 62 27 61 28 61 29 62 30 61 76 61 77 62 76 61 27 61 Z M 50 42 51 43 52 42 51 43 Z M 71 34 71 36 73 38 71 36 Z"/><path fill="#f6cd91" fill-rule="evenodd" d="M 56 70 56 74 72 74 72 70 Z M 61 72 62 71 65 71 66 72 66 73 65 74 62 74 61 73 Z"/><path fill="#cdb587" fill-rule="evenodd" d="M 55 70 55 74 56 75 72 75 56 75 55 74 Z"/><path fill="#eaeaea" fill-rule="evenodd" d="M 53 76 54 77 72 77 54 77 Z M 71 53 72 54 78 54 72 54 Z"/><path fill="#ffdfb2" fill-rule="evenodd" d="M 56 63 56 67 72 67 72 63 Z M 61 65 63 63 65 63 67 65 66 66 62 66 Z"/><path fill="#85b393" fill-rule="evenodd" d="M 63 45 63 46 72 46 71 45 Z M 53 43 53 53 54 53 54 43 Z"/><path fill="#76736c" fill-rule="evenodd" d="M 73 63 73 67 72 68 56 68 72 68 73 67 Z"/><path fill="#ef2d3a" fill-rule="evenodd" d="M 60 53 60 54 69 54 69 53 Z M 50 43 49 43 48 44 48 46 47 47 47 49 46 50 46 52 45 53 46 53 47 52 47 50 48 49 48 47 49 46 49 44 Z"/><path fill="#202534" fill-rule="evenodd" d="M 75 33 76 34 76 35 77 34 76 34 Z"/><path fill="#ffd300" fill-rule="evenodd" d="M 41 34 40 34 39 33 37 33 35 35 35 36 36 37 36 38 37 39 40 36 40 35 Z"/><path fill="#da9542" fill-rule="evenodd" d="M 66 49 66 50 74 50 74 49 Z M 34 31 32 33 33 34 34 33 Z"/></g></svg></span>' +
-      '<p class="section-label" style="margin-left: 8px;">EXAM CALENDAR</p>' +
+      '<p class="section-label">EXAM CALENDAR</p>' +
       renderGoogleCalendarControl() +
       '</div>' +
       calendarHtml +
@@ -5493,7 +5821,7 @@
       if (!mascot || !bubble) return;
       var tips = buildMascotTips({
         user: user,
-        attempts: snapshot.attempts,
+        attempts: mockAttemptsOnly(snapshot.attempts),
         tests: snapshot.tests,
         nextUpTest: nextUpTest,
         inProgressAttempt: inProgressAttempt,
@@ -6089,11 +6417,19 @@
     var reapMaxMarks = sectionSummaryData ? Number(sectionSummaryData.REAP.marks || 0) : (grouped.REAP || []).reduce(function (sum, question) {
       return sum + Number(question.marks || 0);
     }, 0);
-    var sectionSummary = [
-      "SECTION 1: SUPR | Duration: " + test.sectionDurations.SUPR + " minutes | Maximum marks: " + suprMaxMarks,
-      "SECTION 2: REAP | Duration: " + test.sectionDurations.REAP + " minutes | Maximum marks: " + reapMaxMarks,
-      "Negative marking applies according to the penalty configured for each question."
-    ];
+    // Practice papers may hold one section only (its time is 0) and can be untimed; marks are
+    // shown only when known.
+    var untimedPaper = !!test.untimed;
+    var presentSections = ["SUPR", "REAP"].filter(function (key) {
+      return !test.isPractice || Number((test.sectionDurations && test.sectionDurations[key]) || 0) > 0;
+    });
+    var sectionTimeText = function (key) {
+      return untimedPaper ? "untimed" : test.sectionDurations[key] + " minutes";
+    };
+    var sectionSummary = presentSections.map(function (key, index) {
+      var marks = key === "SUPR" ? suprMaxMarks : reapMaxMarks;
+      return "SECTION " + (index + 1) + ": " + key + " | Duration: " + sectionTimeText(key) + (marks ? " | Maximum marks: " + marks : "");
+    }).concat(["Negative marking applies according to the penalty configured for each question."]);
 
     app.innerHTML = buildShell(
       '<section class="instructions-layout utility-layout">' +
@@ -6120,7 +6456,9 @@
       }).join("") +
       '<p>No clarification will be provided during the exam. A built-in on-screen calculator is available from the question screen whenever the paper requires it. Your answers are saved to the server automatically as you work, so you can safely recover from a refresh or a dropped connection. The timer is controlled by the server and keeps running even if you close this window.</p>' +
       buildIntegrityDisclosure(test) +
-      '<p>This test contains ' + totalQuestionCount + ' questions and the total duration is ' + getTotalDuration(test) + ' minutes.</p>' +
+      (untimedPaper
+        ? '<p>This practice paper contains ' + totalQuestionCount + ' questions and has no time limit.</p>'
+        : '<p>This test contains ' + totalQuestionCount + ' questions and the total duration is ' + getTotalDuration(test) + ' minutes.</p>') +
       '</div>' +
       '</div>' +
       '<label class="checkbox-row checkbox-row-utility">' +
@@ -6140,8 +6478,9 @@
       '</div>' +
       '<div class="instructions-sideinfo">' +
       '<p><strong>Test:</strong> ' + escapeHtml(test.title) + '</p>' +
-      '<p><strong>SUPR:</strong> ' + test.sectionDurations.SUPR + ' minutes</p>' +
-      '<p><strong>REAP:</strong> ' + test.sectionDurations.REAP + ' minutes</p>' +
+      presentSections.map(function (key) {
+        return '<p><strong>' + key + ':</strong> ' + (untimedPaper ? 'Untimed' : test.sectionDurations[key] + ' minutes') + '</p>';
+      }).join("") +
       '<p><strong>Questions:</strong> ' + totalQuestionCount + '</p>' +
       '</div>' +
       '</aside>' +
@@ -6253,6 +6592,10 @@
     var questions = initialQuestions.length ? initialQuestions : store.getQuestionsForTest(attempt.testId);
     var suprQuestions = getSectionQuestions(questions, "SUPR");
     var reapQuestions = getSectionQuestions(questions, "REAP");
+    // Custom practice papers can hold one section only; the absent one is skipped.
+    var hasSupr = suprQuestions.length > 0;
+    var hasReap = reapQuestions.length > 0;
+    var untimedPaper = !!(test && test.untimed);
 
     async function submitAndNavigate() {
       if (runtime.submittingAttemptId === attempt.id) {
@@ -6323,6 +6666,12 @@
 
     if (attempt.activeSection !== "REAP") {
       var suprTimeLeft = getSectionTimeLeft(attempt, "SUPR");
+      if (suprTimeLeft <= 0 && !hasReap) {
+        // SUPR-only paper: its time is the paper's time.
+        flushQuestionTime();
+        submitAndNavigate();
+        return;
+      }
       if (suprTimeLeft <= 0 && !runtime.pendingSectionTransition) {
         runtime.pendingSectionTransition = {
           title: "SUPR time is over",
@@ -6339,6 +6688,13 @@
     }) || activeQuestions[0];
 
     if (!currentQuestion) {
+      if (activeSection === "SUPR" && hasReap) {
+        // Nothing to answer in SUPR (a REAP-only paper from before the server skipped it).
+        activateReap().then(function (advanced) {
+          if (advanced) renderTest(user, attempt.id);
+        });
+        return;
+      }
       submitAndNavigate();
       return;
     }
@@ -6433,7 +6789,9 @@
         var label = describeAutosave(save);
         return '<span class="mobile-timer-pill">' +
           '<span class="mobile-save-state" id="autosave-chip-mobile" role="status" aria-live="polite" data-state="' + escapeAttribute(save ? save.status : "saved") + '" title="' + escapeAttribute(label) + '"><i aria-hidden="true"></i><span class="sr-only">' + escapeHtml(label) + '</span></span>' +
-          '<strong id="timer-display-mobile" role="timer" aria-label="Time left in ' + activeSection + '">' + formatTime(remainingSeconds) + '</strong>' +
+          (untimedPaper
+            ? '<strong id="timer-display-mobile" class="is-untimed">Untimed</strong>'
+            : '<strong id="timer-display-mobile" role="timer" aria-label="Time left in ' + activeSection + '">' + formatTime(remainingSeconds) + '</strong>') +
           '</span>';
       })() +
       '<button class="mobile-icon-btn js-open-instructions" type="button" data-test="' + escapeAttribute(test.id) + '" aria-label="Exam instructions">i</button>' +
@@ -6446,14 +6804,16 @@
       '<div class="exam-paper-tabs">' +
       '<button class="paper-tab is-active" type="button">' + escapeHtml(test.title) + '</button>' +
       '</div>' +
-      '<div class="exam-timerline">' + activeSection + ' Time Left : <strong id="timer-display">' + formatTime(remainingSeconds) + '</strong>' +
+      '<div class="exam-timerline">' + (untimedPaper
+        ? 'Untimed practice'
+        : activeSection + ' Time Left : <strong id="timer-display">' + formatTime(remainingSeconds) + '</strong>') +
       ' <span class="autosave-chip" id="autosave-chip" role="status" aria-live="polite">' + escapeHtml(describeAutosave(store.getAutosaveStatus ? store.getAutosaveStatus(attempt.id) : null)) + '</span></div>' +
       '</div>' +
       '<div class="exam-sectionheader">Sections</div>' +
       '<div class="exam-sectionbar">' +
       '<div class="exam-tabs">' +
-      '<button class="tab-button ' + (activeSection === "SUPR" ? "is-active" : "") + '" data-section="SUPR" ' + (activeSection === "REAP" ? "disabled" : "") + '>SUPR</button>' +
-      '<button class="tab-button ' + (activeSection === "REAP" ? "is-active" : "") + '" data-section="REAP" ' + (activeSection === "SUPR" ? "disabled" : "") + '>REAP</button>' +
+      (hasSupr ? '<button class="tab-button ' + (activeSection === "SUPR" ? "is-active" : "") + '" data-section="SUPR" ' + (activeSection === "REAP" ? "disabled" : "") + '>SUPR</button>' : '') +
+      (hasReap ? '<button class="tab-button ' + (activeSection === "REAP" ? "is-active" : "") + '" data-section="REAP" ' + (activeSection === "SUPR" ? "disabled" : "") + '>REAP</button>' : '') +
       '</div>' +
       '<div class="exam-submeta-group">' +
       '<div class="exam-submeta">Question No. ' + sectionQuestionNumber + '</div>' +
@@ -6850,7 +7210,7 @@
     document.getElementById("submit-test").addEventListener("click", function () {
       // Once the final submission is under way, extra taps (double-tap on a phone) do nothing.
       if (runtime.submittingAttemptId === attempt.id) return;
-      if (activeSection === "SUPR") {
+      if (activeSection === "SUPR" && hasReap) {
         runtime.pendingSectionTransition = {
           title: "Submit SUPR",
           message: "Submit this section and move to REAP? After this, SUPR cannot be revisited.",
@@ -7009,6 +7369,11 @@
 
       if (liveAttempt.activeSection !== "REAP") {
         var suprLiveTimeLeft = getSectionTimeLeft(liveAttempt, "SUPR");
+        if (suprLiveTimeLeft <= 0 && !hasReap) {
+          flushQuestionTime();
+          submitAndNavigate();
+          return;
+        }
         if (suprLiveTimeLeft <= 0) {
           if (!runtime.pendingSectionTransition) {
             runtime.pendingSectionTransition = {
@@ -7029,12 +7394,12 @@
         store.patchAttempt(liveAttempt.id, function () { });
         runtime.lastPresencePingAt = Date.now();
       }
-      if (timerDisplay) {
+      if (timerDisplay && !untimedPaper) {
         timerDisplay.textContent = formatTime(secondsLeft);
         timerDisplay.classList.toggle("is-warning", secondsLeft <= 600 && secondsLeft > 300);
         timerDisplay.classList.toggle("is-danger", secondsLeft <= 300);
       }
-      if (timerDisplayMobile) {
+      if (timerDisplayMobile && !untimedPaper) {
         timerDisplayMobile.textContent = formatTime(secondsLeft);
         timerDisplayMobile.classList.toggle("is-warning", secondsLeft <= 600 && secondsLeft > 300);
         timerDisplayMobile.classList.toggle("is-danger", secondsLeft <= 300);
@@ -7348,9 +7713,7 @@
       return (
         '<section class="rs-card rs-plan analysis-stage"' + stageStyle(1) + ' aria-labelledby="rs-plan-title" data-attempt="' + escapeAttribute(String(attempt.id)) + '">' +
         '<div class="rs-card-head"><h2 class="section-label" id="rs-plan-title">Your plan for the next mock</h2></div>' +
-        '<div id="rs-plan-notes" aria-live="polite"></div>' +
         '<div id="rs-plan-body">' + buildPlanBody(summary) + '</div>' +
-        '<p class="rs-plan-disclosure" id="rs-plan-disclosure" hidden></p>' +
         '</section>'
       );
     }
@@ -7655,6 +8018,7 @@
           options: review.options || [],
           correctOption: review.correctOption,
           imageUrls: review.imageUrls || [],
+          imageWidths: review.imageWidths || [],
           explanation: review.explanation,
           questionNumber: offset + index + 1,
           testTitle: (test && test.title) || "",
@@ -7677,8 +8041,9 @@
           passageHtml +
           '<div class="analysis-review-block rich-text">' + formatRichText(review.prompt || "") + '</div>' +
           ((review.imageUrls || []).length
-            ? '<div class="analysis-review-images">' + review.imageUrls.map(function (url) {
-              return '<button class="analysis-inline-image js-open-image-lightbox" type="button" data-url="' + escapeAttribute(url) + '" aria-label="View question image"><img src="' + escapeAttribute(url) + '" alt="Question diagram"></button>';
+            ? '<div class="analysis-review-images">' + review.imageUrls.map(function (url, imageIndex) {
+              var width = Number((review.imageWidths || [])[imageIndex]) || 0;
+              return '<button class="analysis-inline-image js-open-image-lightbox' + (width ? ' figure-sized' : '') + '"' + figureSizeAttrs(width) + ' type="button" data-url="' + escapeAttribute(url) + '" aria-label="View question image"><img src="' + escapeAttribute(url) + '" alt="Question diagram"></button>';
             }).join("") + '</div>'
             : '') +
           '<ol class="analysis-option-list">' +
@@ -7712,6 +8077,10 @@
       var cohortLabel = attemptNumber > 1 ? 'vs other ' + ordinal(attemptNumber) + ' attempts' : 'vs other first attempts';
       var scoreValue = Number(result.score || 0);
       var accuracyValue = Math.round(Number(result.accuracy || 0) * 10) / 10;
+      // Practice papers are unranked (rank and percentile would be meaningless) and may be untimed.
+      var practiceAttempt = isPracticeAttempt(attempt);
+      var untimedAttempt = !!(test && test.untimed);
+      var showCoach = !practiceAttempt && !endedEarly;
 
       function kpi(label, valueHtml, sub, extraClass) {
         return (
@@ -7724,16 +8093,17 @@
       }
 
       var kpisHtml =
-        '<div class="rs-kpis analysis-stage"' + stageStyle(0) + '>' +
+        '<div class="rs-kpis analysis-stage' + (practiceAttempt ? ' is-four' : '') + '"' + stageStyle(0) + '>' +
         kpi("Score",
           '<span data-animate-number="' + escapeAttribute(String(scoreValue)) + '" data-decimals="' + decimalsFor(scoreValue, 2) + '"></span>' + (maxScore ? '<small>/ ' + escapeHtml(formatMarks(maxScore)) + '</small>' : ''),
           maxScore ? formatPct((scoreValue / maxScore) * 100) + ' of total marks' : '', "is-primary") +
-        kpi("Rank",
-          rankValue ? '<span data-animate-number="' + rankValue + '"></span>' + (rankTotal ? '<small>of ' + rankTotal + '</small>' : '') : '—',
-          rankValue ? cohortLabel : (result.invalidated ? 'Removed from ranking' : 'Not ranked')) +
-        kpi("Percentile",
-          rankValue ? escapeHtml(ordinal(result.percentile)) : '—',
-          rankValue ? (rankTotal > 1 ? 'ahead of ' + (rankTotal - rankValue) + ' of ' + (rankTotal - 1) + ' others' : 'only taker so far') : '') +
+        (practiceAttempt ? '' : (
+          kpi("Rank",
+            rankValue ? '<span data-animate-number="' + rankValue + '"></span>' + (rankTotal ? '<small>of ' + rankTotal + '</small>' : '') : '—',
+            rankValue ? cohortLabel : (result.invalidated ? 'Removed from ranking' : 'Not ranked')) +
+          kpi("Percentile",
+            rankValue ? escapeHtml(ordinal(result.percentile)) : '—',
+            rankValue ? (rankTotal > 1 ? 'ahead of ' + (rankTotal - rankValue) + ' of ' + (rankTotal - 1) + ' others' : 'only taker so far') : ''))) +
         kpi("Accuracy",
           '<span data-animate-number="' + escapeAttribute(String(accuracyValue)) + '" data-suffix="%" data-decimals="' + decimalsFor(accuracyValue, 1) + '"></span>',
           correctCount + ' of ' + attemptedCount + ' answers correct') +
@@ -7742,7 +8112,7 @@
           skippedCount + ' left blank') +
         kpi("Time taken",
           escapeHtml(formatDurationShort(timeTaken)),
-          paperSeconds ? 'of ' + formatDurationShort(paperSeconds) + ' allowed' : '') +
+          untimedAttempt ? 'untimed practice' : (paperSeconds ? 'of ' + formatDurationShort(paperSeconds) + ' allowed' : '')) +
         '</div>' +
         '<div class="rs-outcome analysis-stage"' + stageStyle(0) + '>' +
         buildOutcomeBar(correctCount, wrongCount, skippedCount, "is-large") +
@@ -7758,7 +8128,7 @@
         '<section class="rs-page">' +
         '<header class="rs-hero">' +
         '<div class="rs-hero-text">' +
-        '<p class="section-label">Result · Attempt ' + escapeHtml(String(attemptNumber)) + ' · ' + escapeHtml(formatDateOnly(attempt.submittedAt)) + '</p>' +
+        '<p class="section-label">' + (practiceAttempt ? 'Practice session' : 'Result · Attempt ' + escapeHtml(String(attemptNumber))) + ' · ' + escapeHtml(formatDateOnly(attempt.submittedAt)) + '</p>' +
         '<h1>' + escapeHtml(test && test.title ? test.title : "UGEE Mock Test") + '</h1>' +
         '<p class="rs-hero-sub" id="rs-hero-sub">' + buildHeroSentence(analysis) + '</p>' +
         '</div>' +
@@ -7768,6 +8138,8 @@
         '</div>' +
         '</header>' +
         kpisHtml +
+        // AI coach: full mocks only, and not for an attempt that ended after a few answers.
+        (showCoach ? '<div id="rs-coach-root" data-attempt="' + escapeAttribute(String(attempt.id)) + '" aria-live="polite"></div>' : '') +
         buildEndedEarlyNotice() +
         buildPlanSection(analysis) +
         '<div class="rs-row rs-top' + (analysis && analysis.timeAnalysis ? '' : ' is-solo') + '" id="analysis-summary-root">' + buildTopRow(analysis) + '</div>' +
@@ -7775,7 +8147,7 @@
         '<div id="analysis-review-root">' + buildQuestionReviewShell() + '</div>' +
         '</section>'
       );
-    mountPlanNotes(attempt.id);
+    if (showCoach) mountCoachCard(attempt.id);
 
     // The results view has no dashboard button; guard so the bindings below still run.
     var resultsBackButton = document.getElementById("back-dashboard");
@@ -7986,49 +8358,2002 @@
     renderLatexInElement(document.body);
   }
 
-  // Study notes in the results plan. Only an AI interpretation adds anything: the rule-based one
-  // restates numbers the page already shows. AI-written notes always carry the disclosure line.
-  function renderPlanNotes(attemptId, data) {
-    var plan = document.querySelector(".rs-plan");
-    if (!plan || plan.getAttribute("data-attempt") !== String(attemptId)) return;
-    var notesRoot = document.getElementById("rs-plan-notes");
-    var disclosureRoot = document.getElementById("rs-plan-disclosure");
-    if (!notesRoot || !disclosureRoot) return;
+  // AI coach (Results): the AI's read of a full mock, shown only once an AI interpretation is
+  // ready. While it is being written one quiet line says so; otherwise nothing is shown and
+  // the rule-based plan stands on its own. Numbers in AI text were checked on the server.
+  function renderCoachCard(attemptId, data) {
+    var root = document.getElementById("rs-coach-root");
+    if (!root || root.getAttribute("data-attempt") !== String(attemptId)) return;
     var result = (data && data.result) || {};
-    if (!data || data.source !== "ai" || !(result.headline || result.summary)) {
-      notesRoot.innerHTML = "";
-      disclosureRoot.hidden = true;
-      disclosureRoot.textContent = "";
+    if (data && data.pending) {
+      if (!root.querySelector(".rs-coach-pending")) {
+        root.innerHTML = '<p class="rs-coach-pending">Your AI coach is reviewing this attempt…</p>';
+      }
       return;
     }
-    notesRoot.innerHTML =
-      '<div class="rs-plan-notes">' +
-      '<span class="rs-ai-chip">AI-assisted</span>' +
-      (result.headline ? '<h3>' + escapeHtml(result.headline) + '</h3>' : '') +
-      (result.summary ? '<p>' + escapeHtml(result.summary) + '</p>' : '') +
-      '</div>';
-    disclosureRoot.textContent = "Study notes may be written with help from an AI service. Your score, rank and percentile are always calculated by AceIIIT.";
-    disclosureRoot.hidden = false;
+    if (!data || data.source !== "ai" || !(result.headline || result.summary)) {
+      root.innerHTML = "";
+      return;
+    }
+    var pick = function (items, max) {
+      return (Array.isArray(items) ? items : []).filter(Boolean).slice(0, max);
+    };
+    var item = function (text) { return '<li>' + escapeHtml(text) + '</li>'; };
+    var strengths = pick(result.strengths, 3);
+    var focus = pick(result.priorityAreas, 3).filter(function (area) { return area && area.topic; });
+    var habits = pick(result.behaviorPatterns, 2);
+    var strategy = pick(result.nextTestStrategy, 3);
+    var focusHtml = (focus.length || habits.length)
+      ? '<div class="rs-coach-col"><h4>Focus next</h4>' +
+        (focus.length ? '<ul class="rs-coach-focus">' + focus.map(function (area) {
+          return '<li><strong>' + escapeHtml(formatTopicName(area.topic)) + '</strong>' +
+            (area.reason ? '<span>' + escapeHtml(area.reason) + '</span>' : '') +
+            (area.action ? '<span class="rs-coach-action">Next: ' + escapeHtml(area.action) + '</span>' : '') +
+            '</li>';
+        }).join("") + '</ul>' : '') +
+        (habits.length ? '<p class="rs-coach-sublabel">Habits to watch</p><ul class="rs-coach-list">' + habits.map(item).join("") + '</ul>' : '') +
+        '</div>'
+      : '';
+    var strengthsHtml = strengths.length
+      ? '<div class="rs-coach-col"><h4>What&rsquo;s working</h4><ul class="rs-coach-list">' + strengths.map(item).join("") + '</ul></div>'
+      : '';
+    root.innerHTML =
+      '<section class="rs-card rs-coach" aria-labelledby="rs-coach-title">' +
+      '<div class="rs-card-head"><h2 class="section-label" id="rs-coach-title">AI coach</h2><span class="rs-ai-chip">AI-assisted</span></div>' +
+      (result.headline ? '<h3 class="rs-coach-headline">' + escapeHtml(result.headline) + '</h3>' : '') +
+      (result.summary ? '<p class="rs-coach-summary">' + escapeHtml(result.summary) + '</p>' : '') +
+      (strengthsHtml || focusHtml ? '<div class="rs-coach-grid">' + strengthsHtml + focusHtml + '</div>' : '') +
+      (strategy.length ? '<div class="rs-coach-strategy"><h4>Strategy for your next mock</h4><ol>' + strategy.map(item).join("") + '</ol></div>' : '') +
+      '<p class="rs-coach-disclosure">Written with help from an AI service. Your score, rank and percentile are always calculated by AceIIIT.</p>' +
+      '</section>';
   }
 
-  function mountPlanNotes(attemptId) {
+  function mountCoachCard(attemptId) {
     if (!store.getInterpretation) return;
     var polls = 0;
     var load = function () {
-      var plan = document.querySelector(".rs-plan");
-      if (!plan || plan.getAttribute("data-attempt") !== String(attemptId)) return;
+      var root = document.getElementById("rs-coach-root");
+      if (!root || root.getAttribute("data-attempt") !== String(attemptId)) return;
       Promise.resolve(store.getInterpretation(attemptId)).then(function (data) {
-        if (!data) return;
-        renderPlanNotes(attemptId, data);
         polls += 1;
-        if (data.pending && polls < 30) {
-          window.setTimeout(load, 4000);
-        }
+        if (data && data.pending && polls >= 30) data = null; // gave up waiting: show nothing
+        renderCoachCard(attemptId, data);
+        if (data && data.pending) window.setTimeout(load, 4000);
       }).catch(function () {
-        // The plan stands on its own; notes are an extra.
+        renderCoachCard(attemptId, null); // the plan stands on its own
       });
     };
     load();
+  }
+
+  // ---- ACEIIIT Mentor --------------------------------------------------------------------
+  // The floating help button opens the mentor: a chat panel on document.body, so route
+  // re-renders leave it (and a reply being written) alone. Desktop: a non-modal panel above the
+  // button. Phones: a near-full-screen modal sheet (focus trap, inert background, Back closes).
+  // The server decides the tier and how many replies are left; this only shows them.
+  var MENTOR_SUGGESTIONS = [
+    "Analyse my latest mock test.",
+    "Why am I losing marks?",
+    "Identify my weakest topics.",
+    "Compare my recent mock tests.",
+    "How can I improve my accuracy?",
+    "Create a personalised revision plan."
+  ];
+  var MENTOR_SHEET_QUERY = "(max-width: 780px)";
+  var MENTOR_RETRYABLE = { MENTOR_PROVIDER_ERROR: true, MENTOR_BUSY: true, MENTOR_RATE_LIMITED: true, MENTOR_IN_PROGRESS: true, OFFLINE: true };
+  var MENTOR_ICONS = {
+    history: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3 2"/></svg>',
+    plus: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 5v14M5 12h14"/></svg>',
+    minimise: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m6 9 6 6 6-6"/></svg>',
+    send: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 19V5M5 12l7-7 7 7"/></svg>',
+    trash: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>'
+  };
+
+  function createMentorState(userId) {
+    return {
+      userId: userId || null,
+      el: null,
+      open: false,
+      sheet: false,
+      view: "chat",
+      usage: null,
+      usageError: false,
+      conversations: null,
+      conversationsError: "",
+      conversationId: null,
+      conversation: null,
+      messages: [],
+      loadingConversation: false,
+      loadError: "",
+      linkAttemptId: null,
+      routeAttemptId: null,
+      routeKey: "",
+      autoLinkedAttemptId: null,
+      sending: null,
+      sendError: null,
+      notice: "",
+      draft: "",
+      upgradeDismissed: "",
+      focusComposerOnLoad: false,
+      releaseFocus: null,
+      isolated: [],
+      returnFocus: null,
+      hideTimer: null
+    };
+  }
+  var mentorState = createMentorState(null);
+
+  function mentorUser() {
+    return auth.getCurrentUser ? auth.getCurrentUser() : (store.getCurrentUser ? store.getCurrentUser() : null);
+  }
+
+  function mentorUserKey(user) {
+    return user ? String(user.id || user._id || user.email || "") : "";
+  }
+
+  function mentorRememberKey() {
+    return "aceiiit_mentor_conversation:" + mentorState.userId;
+  }
+
+  function mentorRemember() {
+    try {
+      if (mentorState.conversationId) sessionStorage.setItem(mentorRememberKey(), mentorState.conversationId);
+      else sessionStorage.removeItem(mentorRememberKey());
+    } catch (_e) { }
+  }
+
+  function mentorRecall() {
+    try { return sessionStorage.getItem(mentorRememberKey()) || ""; } catch (_e) { return ""; }
+  }
+
+  function mentorNewMessageId() {
+    var rand = "";
+    try {
+      var bytes = new Uint8Array(12);
+      window.crypto.getRandomValues(bytes);
+      rand = Array.prototype.map.call(bytes, function (b) { return ("0" + b.toString(16)).slice(-2); }).join("");
+    } catch (_e) {
+      rand = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+    }
+    return "m" + Date.now().toString(36) + "-" + rand.slice(0, 24);
+  }
+
+  function mentorResetDate(usage) {
+    if (!usage || !usage.resetsAt) return "";
+    try {
+      return new Date(usage.resetsAt).toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric", timeZone: "Asia/Kolkata" });
+    } catch (_e) {
+      return "";
+    }
+  }
+
+  function mentorShortDate(value) {
+    if (!value) return "";
+    try {
+      return new Date(value).toLocaleDateString("en-IN", { day: "numeric", month: "short", timeZone: "Asia/Kolkata" });
+    } catch (_e) {
+      return "";
+    }
+  }
+
+  function mentorAttemptLabel(attemptId) {
+    try {
+      var attempt = store.getAttemptById ? store.getAttemptById(attemptId) : null;
+      var test = attempt && store.getTestById ? store.getTestById(attempt.testId) : null;
+      if (test && test.title) return test.title;
+    } catch (_e) { }
+    return "the result on screen";
+  }
+
+  function mentorSafeUrl(url) {
+    return /^https:\/\//i.test(String(url || "")) ? String(url) : BUY_SERIES_URL;
+  }
+
+  // Mentor replies: a small, safe Markdown subset. Everything is escaped first; only paragraphs,
+  // line breaks, **bold**, `code`, ``` blocks, headings and lists become markup. Links stay
+  // plain text. Maths is left as text for KaTeX (renderLatexInElement).
+  function mentorInline(text) {
+    return escapeHtml(text)
+      .replace(/`([^`\n]+)`/g, "<code>$1</code>")
+      .replace(/\*\*([^*\n]+?)\*\*/g, "<strong>$1</strong>");
+  }
+
+  function mentorTextBlocks(chunk) {
+    var out = [];
+    var para = [];
+    var list = null;
+    var flushPara = function () {
+      if (para.length) out.push("<p>" + para.map(mentorInline).join("<br>") + "</p>");
+      para = [];
+    };
+    var flushList = function () {
+      if (!list) return;
+      out.push("<" + list.type + (list.type === "ol" && list.start > 1 ? ' start="' + list.start + '"' : "") + ">" +
+        list.items.map(function (item) { return "<li>" + mentorInline(item) + "</li>"; }).join("") +
+        "</" + list.type + ">");
+      list = null;
+    };
+    chunk.split("\n").forEach(function (raw) {
+      var line = raw.replace(/\s+$/, "");
+      if (!line.trim()) {
+        flushPara();
+        flushList();
+        return;
+      }
+      var heading = /^\s{0,3}#{1,6}\s+(.*)$/.exec(line);
+      if (heading) {
+        flushPara();
+        flushList();
+        out.push('<p class="mentor-md-heading"><strong>' + mentorInline(heading[1].replace(/\*\*/g, "")) + "</strong></p>");
+        return;
+      }
+      var bullet = /^\s*[-*•]\s+(.*)$/.exec(line);
+      var numbered = /^\s*(\d{1,2})[.)]\s+(.*)$/.exec(line);
+      if (bullet || numbered) {
+        flushPara();
+        var type = bullet ? "ul" : "ol";
+        if (!list || list.type !== type) {
+          flushList();
+          list = { type: type, items: [], start: numbered ? Number(numbered[1]) : 1 };
+        }
+        list.items.push(bullet ? bullet[1] : numbered[2]);
+        return;
+      }
+      if (list && /^\s{2,}\S/.test(raw)) {
+        list.items[list.items.length - 1] += " " + line.trim();
+        return;
+      }
+      flushList();
+      para.push(line);
+    });
+    flushPara();
+    flushList();
+    return out.join("");
+  }
+
+  function renderMentorMarkdown(text) {
+    return String(text || "").replace(/\r\n?/g, "\n").split("```").map(function (part, index) {
+      if (index % 2 === 1) return '<pre class="mentor-code"><code>' + escapeHtml(part.replace(/^[a-z0-9+#-]*\n/i, "")) + "</code></pre>";
+      return mentorTextBlocks(part);
+    }).join("");
+  }
+
+  function mentorUsageLine(usage) {
+    if (!usage) return "";
+    var remaining = Math.max(0, Number(usage.remaining) || 0);
+    var limit = Math.max(0, Number(usage.limit) || 0);
+    return remaining + " of " + limit + (usage.tier === "enrolled" ? " replies" : " free replies") + " remaining this month.";
+  }
+
+  function mentorOutOfReplies(usage) {
+    return Boolean(usage && usage.available !== false && Number(usage.remaining) <= 0);
+  }
+
+  function mentorUnavailableText(usage) {
+    var reason = usage && usage.reason;
+    if (reason === "disabled") return "ACEIIIT Mentor is switched off right now. Your conversations are still here to read.";
+    if (reason === "daily_limit") return "ACEIIIT Mentor has reached today's limit for everyone. Please try again tomorrow. Nothing was taken from your allowance.";
+    if (reason === "not_configured") return "ACEIIIT Mentor isn't set up yet. Please check back soon.";
+    return "ACEIIIT Mentor can't reply right now. Please try again later. Nothing is taken from your allowance while it's paused.";
+  }
+
+  function buildMentorShellHtml() {
+    var supportHref = "https://wa.me/" + encodeURIComponent(SUPPORT_WHATSAPP_NUMBER) + "?text=" + encodeURIComponent("Hi AceIIIT, I need help with the portal.");
+    return (
+      '<div class="mentor-backdrop" data-mentor-backdrop hidden></div>' +
+      '<section class="mentor-panel" id="mentor-panel" role="dialog" aria-labelledby="mentor-title" aria-describedby="mentor-subtitle" hidden data-state="closed">' +
+      '<header class="mentor-head">' +
+      '<span class="mentor-avatar" aria-hidden="true"><img src="assets/favicon-current.jpeg" alt=""></span>' +
+      '<div class="mentor-head-copy"><h2 class="mentor-title" id="mentor-title">ACEIIIT Mentor</h2>' +
+      '<p class="mentor-subtitle" id="mentor-subtitle">AI guidance on your results</p></div>' +
+      '<div class="mentor-head-actions">' +
+      '<button type="button" class="mentor-icon-button" data-mentor-action="history" aria-pressed="false" aria-label="Your conversations" title="Your conversations">' + MENTOR_ICONS.history + '</button>' +
+      '<button type="button" class="mentor-icon-button" data-mentor-action="new" aria-label="New conversation" title="New conversation">' + MENTOR_ICONS.plus + '</button>' +
+      '<button type="button" class="mentor-icon-button" data-mentor-action="close" aria-label="Minimise ACEIIIT Mentor" title="Minimise (your conversation is kept)">' + MENTOR_ICONS.minimise + '</button>' +
+      '</div>' +
+      '</header>' +
+      '<div class="mentor-body" data-mentor-body></div>' +
+      '<footer class="mentor-foot">' +
+      '<div class="mentor-status" data-mentor-status></div>' +
+      '<form class="mentor-composer" data-mentor-composer novalidate>' +
+      '<label class="sr-only" for="mentor-input">Message ACEIIIT Mentor</label>' +
+      '<textarea id="mentor-input" class="mentor-input" rows="1" placeholder="Ask about your mocks or a doubt" aria-describedby="mentor-usage"></textarea>' +
+      '<button type="submit" class="mentor-send" data-mentor-send aria-label="Send message">' + MENTOR_ICONS.send + '</button>' +
+      '</form>' +
+      '<p class="mentor-usage" id="mentor-usage"><span data-mentor-usage></span><span class="mentor-count" data-mentor-count></span></p>' +
+      '<p class="mentor-fineprint">AI replies can be wrong, so check important advice. Account or payment question? <a href="' + escapeAttribute(supportHref) + '" target="_blank" rel="noreferrer">Chat with us on WhatsApp</a>.</p>' +
+      '</footer>' +
+      '<p class="sr-only" role="status" data-mentor-announce></p>' +
+      '</section>'
+    );
+  }
+
+  function ensureMentorPanel() {
+    var s = mentorState;
+    if (s.el && document.body.contains(s.el)) return s.el;
+    var root = document.createElement("div");
+    root.className = "mentor-root";
+    root.innerHTML = buildMentorShellHtml();
+    document.body.appendChild(root);
+    s.el = root;
+    bindMentorPanel(root);
+    return root;
+  }
+
+  function mentorPart(selector) {
+    return mentorState.el ? mentorState.el.querySelector(selector) : null;
+  }
+
+  function mentorAnnounce(text) {
+    var region = mentorPart("[data-mentor-announce]");
+    if (!region) return;
+    region.textContent = "";
+    window.setTimeout(function () { region.textContent = text; }, 60);
+  }
+
+  function setMentorToggles(expanded) {
+    document.querySelectorAll(".js-mentor-toggle").forEach(function (button) {
+      button.setAttribute("aria-expanded", expanded ? "true" : "false");
+      if (mentorState.el) button.setAttribute("aria-controls", "mentor-panel");
+    });
+  }
+
+  function mentorCanType() {
+    var usage = mentorState.usage;
+    return !usage || (usage.canReply !== false);
+  }
+
+  function focusMentorComposer() {
+    var input = mentorPart("#mentor-input");
+    var composer = mentorPart("[data-mentor-composer]");
+    if (input && composer && !composer.hidden && !mentorState.sheet) {
+      try { input.focus({ preventScroll: true }); } catch (_e) { }
+      return;
+    }
+    var close = mentorPart('[data-mentor-action="close"]');
+    if (close) {
+      try { close.focus({ preventScroll: true }); } catch (_e) { }
+    }
+  }
+
+  function openMentor(trigger) {
+    var user = mentorUser();
+    if (!user) return;
+    if (mentorState.userId !== mentorUserKey(user)) resetMentor(mentorUserKey(user));
+    var s = mentorState;
+    var root = ensureMentorPanel();
+    var panel = root.querySelector(".mentor-panel");
+    var backdrop = root.querySelector("[data-mentor-backdrop]");
+    if (s.open) {
+      focusMentorComposer();
+      return;
+    }
+    window.clearTimeout(s.hideTimer);
+    s.open = true;
+    s.returnFocus = trigger || document.activeElement;
+    s.sheet = Boolean(window.matchMedia && window.matchMedia(MENTOR_SHEET_QUERY).matches);
+    panel.classList.toggle("is-sheet", s.sheet);
+    panel.setAttribute("aria-modal", s.sheet ? "true" : "false");
+    panel.hidden = false;
+    backdrop.hidden = !s.sheet;
+    if (s.sheet) {
+      lockBodyScroll();
+      s.isolated = isolateBackground(root);
+      s.releaseFocus = activateModalFocus(panel, {
+        titleId: "mentor-title",
+        returnFocusEl: s.returnFocus,
+        onEscape: function () { closeMentor(); },
+        initialFocusEl: panel.querySelector('[data-mentor-action="close"]')
+      });
+      if (window.overlayHistory) window.overlayHistory.push("mentor", function () { closeMentor({ fromHistory: true }); });
+    }
+    void panel.offsetWidth; // start the transition from the closed state
+    panel.setAttribute("data-state", "open");
+    backdrop.setAttribute("data-state", "open");
+    setMentorToggles(true);
+    if (!s.conversationId && !s.linkAttemptId) s.conversationId = mentorRecall() || null;
+    var linking = mentorAutoLink(false);
+    renderMentorPanel({ scroll: true });
+    s.focusComposerOnLoad = !s.sheet;
+    loadMentorUsage();
+    if (!linking && s.conversationId && !s.conversation && !s.loadingConversation) loadMentorConversation(s.conversationId);
+    if (!s.sheet) focusMentorComposer();
+  }
+
+  /**
+   * options.restoreFocus defaults to true; route changes pass false (the page is replaced).
+   * options.fromHistory: Back closed it. options.fromRoute: the view changed under it.
+   */
+  function closeMentor(options) {
+    options = options || {};
+    var s = mentorState;
+    if (!s.open || !s.el) return;
+    s.open = false;
+    var panel = s.el.querySelector(".mentor-panel");
+    var backdrop = s.el.querySelector("[data-mentor-backdrop]");
+    var wasSheet = s.sheet;
+    panel.setAttribute("data-state", "closed");
+    backdrop.setAttribute("data-state", "closed");
+    setMentorToggles(false);
+    if (wasSheet) {
+      restoreBackground(s.isolated);
+      s.isolated = [];
+      if (s.releaseFocus) {
+        s.releaseFocus();
+        s.releaseFocus = null;
+      }
+      unlockBodyScroll(options.restoreScroll !== false);
+      if (!options.fromHistory && !options.fromRoute && window.overlayHistory) window.overlayHistory.dismiss("mentor");
+    } else if (options.restoreFocus !== false && panel.contains(document.activeElement)) {
+      var target = s.returnFocus && document.body.contains(s.returnFocus) ? s.returnFocus : document.querySelector(".js-mentor-toggle");
+      if (target && typeof target.focus === "function") {
+        try { target.focus({ preventScroll: true }); } catch (_e) { }
+      }
+    }
+    s.returnFocus = null;
+    s.sheet = false;
+    s.hideTimer = window.setTimeout(function () {
+      if (mentorState !== s || s.open) return;
+      panel.hidden = true;
+      backdrop.hidden = true;
+    }, 360);
+  }
+
+  function toggleMentor(trigger) {
+    if (mentorState.open) closeMentor();
+    else openMentor(trigger);
+  }
+
+  /** Signed out or a different student: drop everything the previous student could see. */
+  function resetMentor(userId) {
+    var old = mentorState;
+    if (old.open) closeMentor({ restoreFocus: false, restoreScroll: false, fromRoute: true });
+    window.clearTimeout(old.hideTimer);
+    if (old.el && old.el.parentNode) old.el.parentNode.removeChild(old.el);
+    mentorState = createMentorState(userId || null);
+    mentorState.routeAttemptId = old.routeAttemptId;
+    mentorState.routeKey = old.routeKey;
+  }
+
+  /** Called on every route render: hide on exam/admin screens, reset on sign-out. */
+  function syncMentorWithRoute(view, parts, user) {
+    if (!user) {
+      if (mentorState.userId || mentorState.el) resetMentor(null);
+      return;
+    }
+    if (mentorState.userId && mentorState.userId !== mentorUserKey(user)) resetMentor(mentorUserKey(user));
+    var s = mentorState;
+    var routeKey = view + "/" + (parts[1] || "");
+    var changed = routeKey !== s.routeKey;
+    s.routeKey = routeKey;
+    s.routeAttemptId = view === "results" && parts[1] ? String(parts[1]) : null;
+    var hiddenHere = view === "instructions" || view === "test" || view === "admin" || view === "admin-activity" || view === "login";
+    if (!s.open) return;
+    if (hiddenHere || (s.sheet && changed)) {
+      closeMentor({ restoreFocus: false, restoreScroll: false, fromRoute: true });
+      return;
+    }
+    if (changed) renderMentorPanel();
+  }
+
+  /** Opened from a results page: continue the conversation about that attempt, or start one. */
+  function mentorAutoLink(force) {
+    var s = mentorState;
+    var attemptId = s.routeAttemptId;
+    if (!attemptId || (!force && s.autoLinkedAttemptId === attemptId)) return false;
+    s.autoLinkedAttemptId = attemptId;
+    if (s.conversation && s.conversation.attempt && s.conversation.attempt.id === attemptId) return false;
+    if (!s.conversationId && s.linkAttemptId === attemptId) return false;
+    s.view = "chat";
+    s.conversationId = null;
+    s.conversation = null;
+    s.messages = [];
+    s.loadingConversation = true;
+    s.loadError = "";
+    loadMentorConversations().then(function (list) {
+      if (mentorState !== s || s.conversationId || s.linkAttemptId === attemptId) return;
+      var match = (list || []).filter(function (c) { return c.attempt && c.attempt.id === attemptId; })[0];
+      if (match) loadMentorConversation(match.id);
+      else startMentorConversation(attemptId);
+    }).catch(function () {
+      if (mentorState === s && !s.conversationId) startMentorConversation(attemptId);
+    });
+    return true;
+  }
+
+  function startMentorConversation(attemptId) {
+    var s = mentorState;
+    s.view = "chat";
+    s.conversationId = null;
+    s.conversation = null;
+    s.messages = [];
+    s.loadingConversation = false;
+    s.loadError = "";
+    s.sendError = null;
+    s.notice = "";
+    s.linkAttemptId = attemptId || null;
+    mentorRemember();
+    renderMentorPanel({ scroll: true });
+  }
+
+  function loadMentorUsage() {
+    var s = mentorState;
+    if (!store.getMentorUsage) return Promise.resolve(null);
+    return Promise.resolve(store.getMentorUsage()).then(function (usage) {
+      if (mentorState !== s) return null;
+      s.usage = usage;
+      s.usageError = false;
+      renderMentorFoot();
+      // Just opened on a desktop: the message box may only now be shown; move focus to it
+      // unless the student already moved on.
+      if (s.focusComposerOnLoad && s.open) {
+        var active = document.activeElement;
+        if (!active || active === document.body || active === mentorPart('[data-mentor-action="close"]')) focusMentorComposer();
+      }
+      s.focusComposerOnLoad = false;
+      return usage;
+    }).catch(function () {
+      if (mentorState !== s) return null;
+      s.usageError = true;
+      renderMentorFoot();
+      return null;
+    });
+  }
+
+  function loadMentorConversations() {
+    var s = mentorState;
+    s.conversationsError = "";
+    return Promise.resolve(store.listMentorConversations()).then(function (list) {
+      if (mentorState !== s) return list;
+      // Unchanged: keep the rendered list, so a tap in progress isn't lost to a re-render.
+      var same = JSON.stringify(list) === JSON.stringify(s.conversations);
+      s.conversations = list;
+      if (s.view === "history" && !same) renderMentorPanel();
+      return list;
+    }).catch(function (error) {
+      if (mentorState === s) {
+        s.conversationsError = (error && error.message) || "Couldn't load your conversations.";
+        if (s.view === "history") renderMentorPanel();
+      }
+      throw error;
+    });
+  }
+
+  function loadMentorConversation(conversationId) {
+    var s = mentorState;
+    s.view = "chat";
+    s.conversationId = conversationId;
+    s.conversation = null;
+    s.messages = [];
+    s.linkAttemptId = null;
+    s.loadingConversation = true;
+    s.loadError = "";
+    s.sendError = null;
+    s.notice = "";
+    mentorRemember();
+    renderMentorPanel();
+    return Promise.resolve(store.getMentorConversation(conversationId)).then(function (data) {
+      if (mentorState !== s || s.conversationId !== conversationId) return;
+      s.conversation = (data && data.conversation) || null;
+      s.messages = (data && Array.isArray(data.messages)) ? data.messages : [];
+      s.loadingConversation = false;
+      renderMentorPanel({ scroll: true });
+    }).catch(function (error) {
+      if (mentorState !== s || s.conversationId !== conversationId) return;
+      s.loadingConversation = false;
+      if (error && (error.status === 404 || error.status === 400)) {
+        startMentorConversation(null);
+        return;
+      }
+      s.loadError = "Couldn't load this conversation.";
+      renderMentorPanel();
+    });
+  }
+
+  function mentorReplaceMessage(localId, message) {
+    var list = mentorState.messages;
+    for (var i = 0; i < list.length; i += 1) {
+      if (list[i].id === localId || (message && list[i].id === message.id)) {
+        list[i] = message;
+        return;
+      }
+    }
+    if (message) list.push(message);
+  }
+
+  function mentorFindByClientId(clientMessageId) {
+    return mentorState.messages.filter(function (m) { return m.role === "user" && m.clientMessageId === clientMessageId; })[0] || null;
+  }
+
+  async function sendMentorMessage(content, retryOf) {
+    var s = mentorState;
+    if (s.sending) return;
+    var text = String(content || "").trim();
+    if (!text) return;
+    var max = (s.usage && s.usage.maxInputChars) || 2000;
+    if (text.length > max) {
+      s.notice = "Messages can be up to " + max + " characters. Shorten it a little and send again.";
+      renderMentorFoot();
+      return;
+    }
+    if (navigator.onLine === false) {
+      s.notice = "You're offline. Reconnect to send your message.";
+      renderMentorFoot();
+      return;
+    }
+    var clientMessageId = retryOf ? retryOf.clientMessageId : mentorNewMessageId();
+    var localId = "local-" + clientMessageId;
+    s.notice = "";
+    s.sendError = null;
+    s.sending = { content: text, clientMessageId: clientMessageId };
+    var existing = mentorFindByClientId(clientMessageId);
+    if (existing) {
+      existing.status = "pending";
+      localId = existing.id;
+    } else {
+      s.messages.push({ id: localId, role: "user", content: text, status: "pending", clientMessageId: clientMessageId, local: true });
+    }
+    if (!retryOf) {
+      s.draft = "";
+      var input = mentorPart("#mentor-input");
+      if (input) {
+        input.value = "";
+        sizeMentorInput(input);
+      }
+    }
+    renderMentorPanel({ scroll: true });
+    mentorAnnounce("ACEIIIT Mentor is thinking.");
+    var conversationId = s.conversationId;
+    try {
+      if (!conversationId) {
+        var created = await store.createMentorConversation(s.linkAttemptId);
+        if (mentorState !== s) return;
+        conversationId = created.id;
+        s.conversationId = created.id;
+        s.conversation = created;
+        s.linkAttemptId = null;
+        mentorRemember();
+      }
+      var result = await store.sendMentorMessage(conversationId, text, clientMessageId);
+      if (mentorState !== s) return;
+      if (result && result.usage) s.usage = result.usage;
+      if (s.conversationId === conversationId) {
+        mentorReplaceMessage(localId, result.userMessage);
+        if (result.assistantMessage) mentorReplaceMessage(null, result.assistantMessage);
+        if (s.conversation && s.conversation.title === "New conversation") s.conversation.title = text.slice(0, 60);
+      }
+      s.conversations = null; // titles and order changed; reload when the list is opened
+      mentorAnnounce("ACEIIIT Mentor replied.");
+    } catch (error) {
+      if (mentorState !== s) return;
+      var data = (error && error.data) || {};
+      var code = (error && error.code) || (error && error.status ? "" : "OFFLINE");
+      if (data.usage) s.usage = data.usage;
+      var message = mentorFindByClientId(clientMessageId);
+      if (code === "MENTOR_EMPTY" || code === "MENTOR_TOO_LONG" || code === "MENTOR_NOT_FOUND" || code === "MENTOR_DUPLICATE") {
+        // Not stored: give the text back so nothing typed is lost.
+        s.messages = s.messages.filter(function (m) { return m !== message; });
+        s.draft = text;
+        var box = mentorPart("#mentor-input");
+        if (box) {
+          box.value = text;
+          sizeMentorInput(box);
+        }
+        if (code === "MENTOR_NOT_FOUND") {
+          s.conversationId = null;
+          s.conversation = null;
+          mentorRemember();
+          s.notice = "That conversation was deleted. Your message is back in the box; send it to start a new one.";
+        } else {
+          s.notice = (error && error.message) || "That message couldn't be sent.";
+        }
+      } else {
+        if (message) message.status = "failed";
+        s.sendError = {
+          clientMessageId: clientMessageId,
+          code: code,
+          retryable: Boolean(data.retryable || MENTOR_RETRYABLE[code]),
+          message: code === "OFFLINE"
+            ? "Couldn't reach AceIIIT. Check your connection and try again. It wasn't counted."
+            : code === "MENTOR_LIMIT"
+              ? "Not sent: you've used this month's replies. It wasn't counted."
+              : ((error && error.message) || "Something went wrong. It wasn't counted.")
+        };
+        if (code === "MENTOR_IN_PROGRESS" && conversationId) {
+          window.setTimeout(function () {
+            if (mentorState === s && s.conversationId === conversationId && !s.sending) loadMentorConversation(conversationId);
+          }, 4000);
+        }
+        mentorAnnounce("No reply. " + s.sendError.message);
+      }
+    } finally {
+      if (mentorState === s) {
+        s.sending = null;
+        renderMentorPanel({ scroll: true });
+        if (s.open && !s.sheet) focusMentorComposer();
+      }
+    }
+  }
+
+  function buildMentorMessageHtml(message) {
+    var s = mentorState;
+    if (message.role === "assistant") {
+      return '<li class="mentor-msg is-assistant"><div class="mentor-bubble rich-mentor">' + renderMentorMarkdown(message.content) + '</div></li>';
+    }
+    var failed = message.status === "failed";
+    var fresh = failed && s.sendError && s.sendError.clientMessageId === message.clientMessageId ? s.sendError : null;
+    var canRetry = failed && message.clientMessageId && (fresh ? fresh.retryable : true) && !s.sending;
+    var errorHtml = failed
+      ? '<p class="mentor-msg-error">' + escapeHtml(fresh ? fresh.message : "This message didn't get a reply. It wasn't counted.") +
+        (canRetry ? ' <button type="button" class="mentor-link-button" data-mentor-retry="' + escapeAttribute(message.clientMessageId) + '">Try again</button>' : '') +
+        '</p>'
+      : '';
+    return '<li class="mentor-msg is-user' + (failed ? ' is-failed' : '') + '"><div class="mentor-bubble">' + escapeHtml(message.content) + '</div>' + errorHtml + '</li>';
+  }
+
+  function buildMentorContextHtml() {
+    var s = mentorState;
+    var linked = s.conversation && s.conversation.attempt;
+    var chip = "";
+    if (linked) {
+      chip = '<p class="mentor-context"><span class="mentor-context-label">About</span> ' + escapeHtml(linked.test || "this attempt") +
+        (linked.attemptNumber > 1 ? ' · attempt ' + escapeHtml(String(linked.attemptNumber)) : '') + '</p>';
+    } else if (!s.conversationId && s.linkAttemptId) {
+      chip = '<p class="mentor-context"><span class="mentor-context-label">About</span> ' + escapeHtml(mentorAttemptLabel(s.linkAttemptId)) + '</p>';
+    }
+    var onScreen = s.routeAttemptId;
+    var linkedId = linked ? linked.id : (!s.conversationId ? s.linkAttemptId : null);
+    var offer = onScreen && linkedId !== onScreen && !s.sending
+      ? '<button type="button" class="mentor-context-offer" data-mentor-action="link-result">Ask about the result on screen</button>'
+      : '';
+    return chip + offer;
+  }
+
+  function buildMentorChatHtml() {
+    var s = mentorState;
+    var user = mentorUser();
+    var html = buildMentorContextHtml();
+    if (s.loadingConversation) {
+      return html + '<div class="mentor-skeleton" aria-busy="true" aria-label="Loading conversation"><span></span><span></span><span></span></div>';
+    }
+    if (s.loadError) {
+      return html + '<p class="mentor-notice is-error">' + escapeHtml(s.loadError) +
+        ' <button type="button" class="mentor-link-button" data-mentor-action="reload">Try again</button></p>';
+    }
+    if (!s.messages.length && !s.sending) {
+      return html +
+        '<div class="mentor-intro">' +
+        '<h3>Hi ' + escapeHtml(firstName(user && user.name)) + ', what should we look at?</h3>' +
+        '<p>I read your AceIIIT mock results to explain where marks go and what to practise next. I can help with doubts too.</p>' +
+        '<ul class="mentor-suggestions" aria-label="Suggested questions">' +
+        MENTOR_SUGGESTIONS.map(function (text) {
+          return '<li><button type="button" class="mentor-suggestion" data-mentor-suggest="' + escapeAttribute(text) + '">' + escapeHtml(text) + '</button></li>';
+        }).join("") +
+        '</ul>' +
+        '<p class="mentor-intro-note">Each answer uses one reply from your monthly allowance, however long it is. Replies that fail aren\'t counted.</p>' +
+        '</div>';
+    }
+    return html +
+      '<ol class="mentor-log" aria-label="Conversation">' +
+      s.messages.map(buildMentorMessageHtml).join("") +
+      (s.sending
+        ? '<li class="mentor-msg is-assistant is-thinking"><div class="mentor-bubble"><span class="mentor-thinking"><span class="mentor-dots" aria-hidden="true"><i></i><i></i><i></i></span>Thinking…</span></div></li>'
+        : '') +
+      '</ol>';
+  }
+
+  function buildMentorHistoryHtml() {
+    var s = mentorState;
+    var head = '<div class="mentor-history-head"><h3>Your conversations</h3>' +
+      '<button type="button" class="mentor-text-button" data-mentor-action="new">New conversation</button></div>';
+    if (s.conversationsError && !Array.isArray(s.conversations)) {
+      return head + '<p class="mentor-notice is-error">' + escapeHtml(s.conversationsError) +
+        ' <button type="button" class="mentor-link-button" data-mentor-action="history-reload">Try again</button></p>';
+    }
+    if (!Array.isArray(s.conversations)) {
+      return head + '<div class="mentor-skeleton" aria-busy="true" aria-label="Loading conversations"><span></span><span></span><span></span></div>';
+    }
+    if (!s.conversations.length) {
+      return head + '<div class="mentor-empty"><p>No conversations yet.</p>' +
+        '<button type="button" class="mentor-text-button" data-mentor-action="new">Start a conversation</button></div>';
+    }
+    return head + '<ul class="mentor-history-list">' + s.conversations.map(function (c) {
+      var meta = [c.attempt ? "About " + c.attempt.test : "", mentorShortDate(c.lastMessageAt || c.createdAt)].filter(Boolean).join(" · ");
+      return '<li class="mentor-history-item' + (c.id === s.conversationId ? ' is-current' : '') + '">' +
+        '<button type="button" class="mentor-history-open" data-mentor-open="' + escapeAttribute(c.id) + '"' + (c.id === s.conversationId ? ' aria-current="true"' : '') + '>' +
+        '<span class="mentor-history-title">' + escapeHtml(c.title || "Conversation") + '</span>' +
+        (meta ? '<span class="mentor-history-meta">' + escapeHtml(meta) + '</span>' : '') +
+        '</button>' +
+        '<button type="button" class="mentor-icon-button is-small" data-mentor-delete="' + escapeAttribute(c.id) + '" aria-label="' + escapeAttribute("Delete conversation: " + (c.title || "Conversation")) + '" title="Delete">' + MENTOR_ICONS.trash + '</button>' +
+        '</li>';
+    }).join("") + '</ul>';
+  }
+
+  function buildMentorStatusHtml() {
+    var s = mentorState;
+    var usage = s.usage;
+    var parts = [];
+    if (navigator.onLine === false) parts.push('<p class="mentor-notice">You\'re offline. Your conversation is still here; reconnect to send messages.</p>');
+    if (s.notice) parts.push('<p class="mentor-notice is-error" role="alert">' + escapeHtml(s.notice) + '</p>');
+    if (s.usageError && !usage) {
+      parts.push('<p class="mentor-notice">Couldn\'t check your mentor allowance. <button type="button" class="mentor-link-button" data-mentor-action="usage-reload">Try again</button></p>');
+    }
+    if (usage && usage.available === false) {
+      parts.push('<p class="mentor-notice">' + escapeHtml(mentorUnavailableText(usage)) + '</p>');
+    } else if (mentorOutOfReplies(usage)) {
+      var resetOn = mentorResetDate(usage);
+      if (usage.tier === "enrolled") {
+        parts.push('<p class="mentor-notice">You\'ve used this month\'s ' + escapeHtml(String(usage.limit)) + ' mentor replies.' + (resetOn ? ' They reset on ' + escapeHtml(resetOn) + '.' : '') + ' Your conversations are still here to read.</p>');
+      } else if (s.upgradeDismissed === usage.period) {
+        parts.push('<p class="mentor-notice">You\'ve used all ' + escapeHtml(String(usage.limit)) + ' free replies this month.' + (resetOn ? ' They reset on ' + escapeHtml(resetOn) + '.' : '') +
+          ' <a class="mentor-link-button" href="' + escapeAttribute(mentorSafeUrl(usage.ctaUrl)) + '" target="_blank" rel="noopener">See the programme</a></p>');
+      } else {
+        parts.push(
+          '<section class="mentor-upgrade" aria-labelledby="mentor-upgrade-title">' +
+          '<h3 id="mentor-upgrade-title">Ready to take your preparation further?</h3>' +
+          '<p>You\'ve used your free AI Mentor messages for this month. Enrol in the ACEIIIT UGEE preparation programme to continue getting personalized guidance on your performance, mistakes, weak topics, and study strategy.</p>' +
+          (resetOn ? '<p class="mentor-upgrade-reset">Your free replies reset on ' + escapeHtml(resetOn) + '.</p>' : '') +
+          '<div class="mentor-upgrade-actions">' +
+          '<a class="mentor-upgrade-cta" href="' + escapeAttribute(mentorSafeUrl(usage.ctaUrl)) + '" target="_blank" rel="noopener">Explore the Preparation Programme</a>' +
+          '<button type="button" class="mentor-upgrade-later" data-mentor-action="later">Maybe Later</button>' +
+          '</div>' +
+          '</section>'
+        );
+      }
+    }
+    return parts.join("");
+  }
+
+  function renderMentorFoot() {
+    var s = mentorState;
+    if (!s.el) return;
+    var status = mentorPart("[data-mentor-status]");
+    var composer = mentorPart("[data-mentor-composer]");
+    var send = mentorPart("[data-mentor-send]");
+    var usageText = mentorPart("[data-mentor-usage]");
+    var input = mentorPart("#mentor-input");
+    var hadFocus = composer && composer.contains(document.activeElement);
+    if (status) status.innerHTML = buildMentorStatusHtml();
+    var canType = mentorCanType() && s.view === "chat";
+    if (composer) composer.hidden = !canType;
+    if (send) {
+      var blocked = Boolean(s.sending) || navigator.onLine === false || s.loadingConversation;
+      send.disabled = blocked;
+      send.setAttribute("aria-label", s.sending ? "Sending… wait for the reply" : "Send message");
+    }
+    if (usageText) usageText.textContent = mentorUsageLine(s.usage);
+    if (input && input.value !== s.draft && document.activeElement !== input) input.value = s.draft;
+    updateMentorCount();
+    if (hadFocus && composer && composer.hidden) {
+      var close = mentorPart('[data-mentor-action="close"]');
+      if (close) close.focus({ preventScroll: true });
+    }
+  }
+
+  function updateMentorCount() {
+    var count = mentorPart("[data-mentor-count]");
+    var input = mentorPart("#mentor-input");
+    if (!count || !input) return;
+    var max = (mentorState.usage && mentorState.usage.maxInputChars) || 2000;
+    var length = input.value.trim().length;
+    count.textContent = length > max * 0.8 ? length + " / " + max : "";
+    count.classList.toggle("is-over", length > max);
+  }
+
+  function sizeMentorInput(input) {
+    input.style.height = "auto";
+    input.style.height = Math.min(input.scrollHeight + 2, 140) + "px";
+  }
+
+  function renderMentorPanel(options) {
+    var s = mentorState;
+    if (!s.el) return;
+    options = options || {};
+    var body = mentorPart("[data-mentor-body]");
+    var historyButton = mentorPart('[data-mentor-action="history"]');
+    if (historyButton) historyButton.setAttribute("aria-pressed", s.view === "history" ? "true" : "false");
+    if (body) {
+      var nearBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 48;
+      body.innerHTML = s.view === "history" ? buildMentorHistoryHtml() : buildMentorChatHtml();
+      if (s.view === "chat") {
+        renderLatexInElement(body);
+        if (options.scroll || nearBottom) {
+          body.scrollTop = body.scrollHeight;
+          window.requestAnimationFrame(function () { body.scrollTop = body.scrollHeight; });
+        }
+      } else {
+        body.scrollTop = 0;
+      }
+    }
+    renderMentorFoot();
+  }
+
+  function showMentorHistory() {
+    var s = mentorState;
+    s.view = s.view === "history" ? "chat" : "history";
+    renderMentorPanel({ scroll: s.view === "chat" });
+    if (s.view === "history") {
+      loadMentorConversations().catch(function () { });
+      var heading = mentorPart(".mentor-history-head h3");
+      if (heading) {
+        heading.setAttribute("tabindex", "-1");
+        try { heading.focus({ preventScroll: true }); } catch (_e) { }
+      }
+    } else {
+      focusMentorComposer();
+    }
+  }
+
+  function deleteMentorConversationById(conversationId) {
+    var s = mentorState;
+    var item = (s.conversations || []).filter(function (c) { return c.id === conversationId; })[0];
+    if (!window.confirm("Delete “" + ((item && item.title) || "this conversation") + "”? This can't be undone.")) return;
+    Promise.resolve(store.deleteMentorConversation(conversationId)).then(function () {
+      if (mentorState !== s) return;
+      s.conversations = (s.conversations || []).filter(function (c) { return c.id !== conversationId; });
+      if (s.conversationId === conversationId) {
+        s.conversationId = null;
+        s.conversation = null;
+        s.messages = [];
+        mentorRemember();
+      }
+      renderMentorPanel();
+      var heading = mentorPart(".mentor-history-head h3");
+      if (heading) {
+        heading.setAttribute("tabindex", "-1");
+        try { heading.focus({ preventScroll: true }); } catch (_e) { }
+      }
+      mentorAnnounce("Conversation deleted.");
+    }).catch(function (error) {
+      if (mentorState !== s) return;
+      s.conversationsError = (error && error.message) || "Couldn't delete it.";
+      window.alert("Couldn't delete the conversation. " + s.conversationsError);
+    });
+  }
+
+  function bindMentorPanel(root) {
+    var panel = root.querySelector(".mentor-panel");
+    var input = root.querySelector("#mentor-input");
+    var composer = root.querySelector("[data-mentor-composer]");
+    root.querySelector("[data-mentor-backdrop]").addEventListener("click", function () { closeMentor(); });
+    panel.addEventListener("keydown", function (event) {
+      if (event.key === "Escape" && !mentorState.sheet) {
+        event.preventDefault();
+        closeMentor();
+      }
+    });
+    composer.addEventListener("submit", function (event) {
+      event.preventDefault();
+      sendMentorMessage(input.value);
+    });
+    input.addEventListener("input", function () {
+      mentorState.draft = input.value;
+      if (mentorState.notice) {
+        mentorState.notice = "";
+        renderMentorFoot();
+      }
+      sizeMentorInput(input);
+      updateMentorCount();
+    });
+    input.addEventListener("keydown", function (event) {
+      // Enter sends on keyboards with a pointer; on touch screens Enter adds a line and the
+      // Send button sends.
+      var coarse = window.matchMedia && window.matchMedia("(pointer: coarse)").matches;
+      if (event.key === "Enter" && !event.shiftKey && !event.isComposing && !coarse) {
+        event.preventDefault();
+        if (!mentorState.sending) sendMentorMessage(input.value);
+      }
+    });
+    panel.addEventListener("click", function (event) {
+      var target = event.target && event.target.closest ? event.target : null;
+      if (!target) return;
+      var action = target.closest("[data-mentor-action]");
+      var suggest = target.closest("[data-mentor-suggest]");
+      var retry = target.closest("[data-mentor-retry]");
+      var openId = target.closest("[data-mentor-open]");
+      var deleteId = target.closest("[data-mentor-delete]");
+      var s = mentorState;
+      if (suggest) {
+        sendMentorMessage(suggest.getAttribute("data-mentor-suggest"));
+        return;
+      }
+      if (retry) {
+        var failed = mentorFindByClientId(retry.getAttribute("data-mentor-retry"));
+        if (failed) sendMentorMessage(failed.content, failed);
+        return;
+      }
+      if (openId) {
+        loadMentorConversation(openId.getAttribute("data-mentor-open")).then(focusMentorComposer);
+        return;
+      }
+      if (deleteId) {
+        deleteMentorConversationById(deleteId.getAttribute("data-mentor-delete"));
+        return;
+      }
+      if (!action) return;
+      var name = action.getAttribute("data-mentor-action");
+      if (name === "close") closeMentor();
+      else if (name === "history") showMentorHistory();
+      else if (name === "new") {
+        startMentorConversation(null);
+        focusMentorComposer();
+      } else if (name === "link-result") {
+        s.autoLinkedAttemptId = null;
+        mentorAutoLink(true);
+        renderMentorPanel();
+      } else if (name === "later") {
+        s.upgradeDismissed = s.usage ? s.usage.period : "";
+        renderMentorFoot();
+        var close = mentorPart('[data-mentor-action="close"]');
+        if (close) close.focus({ preventScroll: true });
+      } else if (name === "reload" && s.conversationId) loadMentorConversation(s.conversationId);
+      else if (name === "history-reload") {
+        s.conversations = null;
+        renderMentorPanel();
+        loadMentorConversations().catch(function () { });
+      } else if (name === "usage-reload") loadMentorUsage();
+    });
+  }
+
+  window.addEventListener("online", function () { if (mentorState.el) renderMentorFoot(); });
+  window.addEventListener("offline", function () { if (mentorState.el) renderMentorFoot(); });
+
+  // ---- Admin Studio → ACEIIIT Mentor (allowances, programme codes, status and usage) --------
+  function buildAdminMentorHtml() {
+    return '<div class="admin-grid mentor-admin" id="mentor-admin-root"><div class="admin-card"><p class="helper-text" aria-busy="true">Loading ACEIIIT Mentor settings…</p></div></div>';
+  }
+
+  function adminMentorStatusText(status) {
+    if (!status) return "";
+    if (status.available) return "Replying normally" + (status.model ? " (" + status.model + ")" : "") + ".";
+    if (status.reason === "disabled") return "Switched off. Students can read past conversations but can't send.";
+    if (status.reason === "not_configured") return "No Gemini API key on the server (GEMINI_API_KEY). Students see that the mentor isn't set up.";
+    if (status.reason === "daily_limit") return "Today's global reply cap is reached. Replies resume tomorrow (IST).";
+    return "Paused after a provider error (key, project access, quota or model). Replies resume automatically" + (status.until ? " after " + formatDateTime(status.until) : "") + ". Check the server log.";
+  }
+
+  function renderAdminMentor(root, data, message) {
+    var settings = data.settings || {};
+    var status = data.status || {};
+    var stats = data.stats || {};
+    var days = (stats.lastDays || []).map(function (d) {
+      return '<tr><td>' + escapeHtml(d.day) + '</td><td class="num">' + escapeHtml(String(d.replies || 0)) + '</td><td class="num">' + escapeHtml(String(d.failures || 0)) + '</td></tr>';
+    }).join("");
+    root.innerHTML =
+      '<div class="admin-card">' +
+      '<p class="section-label">ACEIIIT Mentor</p>' +
+      '<p class="helper-text">Students get the free allowance each calendar month (resets 00:00 IST on the 1st). The enrolled allowance applies only to a verified, active purchase of one of the programme codes below; nobody is enrolled while the list is empty.</p>' +
+      '<form id="mentor-admin-form" class="mentor-admin-form" novalidate>' +
+      '<div class="field"><label><input type="checkbox" name="enabled"' + (settings.enabled ? ' checked' : '') + '> Mentor switched on</label></div>' +
+      '<div class="grid-two">' +
+      '<div class="field"><label for="mentor-free">Free replies per month</label><input id="mentor-free" name="freeMonthlyReplies" type="number" inputmode="numeric" min="0" max="1000" value="' + escapeAttribute(String(settings.freeMonthlyReplies)) + '" required></div>' +
+      '<div class="field"><label for="mentor-enrolled">Enrolled replies per month</label><input id="mentor-enrolled" name="enrolledMonthlyReplies" type="number" inputmode="numeric" min="0" max="10000" value="' + escapeAttribute(String(settings.enrolledMonthlyReplies)) + '" required></div>' +
+      '<div class="field"><label for="mentor-daily">Global replies per day (cost cap)</label><input id="mentor-daily" name="dailyGlobalReplies" type="number" inputmode="numeric" min="0" max="1000000" value="' + escapeAttribute(String(settings.dailyGlobalReplies)) + '" required></div>' +
+      '<div class="field"><label for="mentor-output">Longest reply (output tokens)</label><input id="mentor-output" name="maxOutputTokens" type="number" inputmode="numeric" min="200" max="4000" value="' + escapeAttribute(String(settings.maxOutputTokens)) + '" required></div>' +
+      '<div class="field"><label for="mentor-input-max">Longest student message (characters)</label><input id="mentor-input-max" name="maxInputChars" type="number" inputmode="numeric" min="200" max="8000" value="' + escapeAttribute(String(settings.maxInputChars)) + '" required></div>' +
+      '</div>' +
+      '<div class="field"><label for="mentor-codes">Programme resource codes</label><input id="mentor-codes" name="programCodes" value="' + escapeAttribute((settings.programCodes || []).join(", ")) + '" placeholder="e.g. CLASS_NOTES" aria-describedby="mentor-codes-help">' +
+      '<p class="helper-text" id="mentor-codes-help">Comma-separated. Matches the resource code of an ACTIVE entitlement on the AceIIIT site, or a verified commerce payment recorded here.</p></div>' +
+      '<div class="field"><label for="mentor-url">Programme page (https)</label><input id="mentor-url" name="programUrl" type="url" value="' + escapeAttribute(settings.programUrl || "") + '" placeholder="' + escapeAttribute(BUY_SERIES_URL) + '" aria-describedby="mentor-url-help">' +
+      '<p class="helper-text" id="mentor-url-help">Where "Explore the Preparation Programme" leads. Empty uses ' + escapeHtml(BUY_SERIES_URL) + '.</p></div>' +
+      '<p class="mentor-admin-message" role="status" id="mentor-admin-message">' + escapeHtml(message || "") + '</p>' +
+      '<div class="button-row"><button class="button button-primary" type="submit">Save mentor settings</button></div>' +
+      '</form>' +
+      '</div>' +
+      '<aside class="admin-card admin-sticky-side">' +
+      '<p class="section-label">Status</p>' +
+      '<p class="mentor-admin-status' + (status.available ? ' is-ok' : ' is-off') + '">' + escapeHtml(adminMentorStatusText(status)) + '</p>' +
+      '<p class="helper-text">API key on the server: ' + (status.keyConfigured ? 'set' : 'missing') + '. The key is never shown here or sent to browsers.</p>' +
+      '<div class="divider"></div>' +
+      '<p class="section-label">Usage (' + escapeHtml(stats.period || "") + ', IST)</p>' +
+      '<dl class="mentor-admin-stats">' +
+      '<div><dt>Replies this month</dt><dd>' + escapeHtml(String(stats.monthReplies || 0)) + '</dd></div>' +
+      '<div><dt>Students this month</dt><dd>' + escapeHtml(String(stats.monthStudents || 0)) + '</dd></div>' +
+      '<div><dt>Replies today</dt><dd>' + escapeHtml(String((stats.today && stats.today.replies) || 0)) + '</dd></div>' +
+      '<div><dt>Failed today</dt><dd>' + escapeHtml(String((stats.today && stats.today.failures) || 0)) + '</dd></div>' +
+      '</dl>' +
+      (days ? '<table class="mentor-admin-days"><caption class="sr-only">Mentor replies by day</caption><thead><tr><th scope="col">Day</th><th scope="col" class="num">Replies</th><th scope="col" class="num">Failed</th></tr></thead><tbody>' + days + '</tbody></table>' : '<p class="helper-text">No mentor replies yet.</p>') +
+      '</aside>';
+    var form = root.querySelector("#mentor-admin-form");
+    form.addEventListener("submit", function (event) {
+      event.preventDefault();
+      var fd = new FormData(form);
+      var number = function (name) { return Number(String(fd.get(name) || "").trim()); };
+      var patch = {
+        enabled: fd.get("enabled") === "on",
+        freeMonthlyReplies: number("freeMonthlyReplies"),
+        enrolledMonthlyReplies: number("enrolledMonthlyReplies"),
+        dailyGlobalReplies: number("dailyGlobalReplies"),
+        maxOutputTokens: number("maxOutputTokens"),
+        maxInputChars: number("maxInputChars"),
+        programCodes: String(fd.get("programCodes") || "").split(",").map(function (c) { return c.trim(); }).filter(Boolean),
+        programUrl: String(fd.get("programUrl") || "").trim()
+      };
+      var button = form.querySelector('button[type="submit"]');
+      var note = root.querySelector("#mentor-admin-message");
+      button.disabled = true;
+      note.textContent = "Saving…";
+      Promise.resolve(store.updateAdminMentor(patch)).then(function () {
+        return mountAdminMentor("Saved.");
+      }).catch(function (error) {
+        button.disabled = false;
+        note.textContent = "Not saved: " + ((error && error.message) || "please check the values.");
+      });
+    });
+  }
+
+  function mountAdminMentor(message) {
+    var root = document.getElementById("mentor-admin-root");
+    if (!root || !store.getAdminMentor) return Promise.resolve();
+    return Promise.resolve(store.getAdminMentor()).then(function (data) {
+      var current = document.getElementById("mentor-admin-root");
+      if (current) renderAdminMentor(current, data || {}, message);
+    }).catch(function (error) {
+      var current = document.getElementById("mentor-admin-root");
+      if (current) {
+        current.innerHTML = '<div class="admin-card"><p class="helper-text">Couldn\'t load ACEIIIT Mentor settings: ' + escapeHtml((error && error.message) || "network error") +
+          '</p><button type="button" class="button button-secondary button-compact" id="mentor-admin-retry">Try again</button></div>';
+        var retry = document.getElementById("mentor-admin-retry");
+        if (retry) retry.addEventListener("click", function () { mountAdminMentor(); });
+      }
+    });
+  }
+
+  // ---- Study materials: types, sizes, and Drive-style background uploads ------------------
+  var MATERIAL_KINDS = {
+    pdf: { kind: "pdf", label: "PDF" },
+    png: { kind: "image", label: "IMG" }, jpg: { kind: "image", label: "IMG" }, jpeg: { kind: "image", label: "IMG" }, webp: { kind: "image", label: "IMG" },
+    doc: { kind: "doc", label: "DOC" }, docx: { kind: "doc", label: "DOC" },
+    ppt: { kind: "slides", label: "PPT" }, pptx: { kind: "slides", label: "PPT" },
+    xls: { kind: "sheet", label: "XLS" }, xlsx: { kind: "sheet", label: "XLS" }, csv: { kind: "sheet", label: "CSV" },
+    txt: { kind: "text", label: "TXT" }
+  };
+  var MATERIAL_ACCEPT = ".pdf,.png,.jpg,.jpeg,.webp,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.txt,.csv";
+
+  function materialKind(name) {
+    var match = /\.([a-z0-9]{1,5})$/i.exec(String(name || ""));
+    return MATERIAL_KINDS[match ? match[1].toLowerCase() : ""] || { kind: "file", label: "FILE" };
+  }
+
+  function formatBytes(bytes) {
+    var value = Number(bytes || 0);
+    if (value < 1024) return value + " B";
+    if (value < 1024 * 1024) return Math.round(value / 1024) + " KB";
+    return (value / (1024 * 1024)).toFixed(value < 10 * 1024 * 1024 ? 1 : 0) + " MB";
+  }
+
+  function materialTypeBadge(name) {
+    var kind = materialKind(name);
+    return '<span class="materials-type-badge is-' + kind.kind + '" aria-hidden="true">' + kind.label + '</span>';
+  }
+
+  // Uploads go straight from the browser to Cloudinary (the server signs each one), with real
+  // progress, three at a time, while the admin keeps working. The panel lives on document.body,
+  // so Studio re-renders and route changes leave it alone; only a full reload would stop an
+  // upload, so the page asks before unloading while any are running.
+  var MATERIAL_UPLOAD_CONCURRENCY = 3;
+  var materialUploads = { items: [], nextId: 1, collapsed: false, onChange: null, renderQueued: false, refreshTimer: null };
+
+  function isUploadActive(item) {
+    return item.status === "signing" || item.status === "uploading" || item.status === "finishing";
+  }
+
+  function activeMaterialUploads() {
+    return materialUploads.items.filter(isUploadActive);
+  }
+
+  window.addEventListener("beforeunload", function (event) {
+    if (!activeMaterialUploads().length) return;
+    event.preventDefault();
+    event.returnValue = "";
+  });
+
+  function queueMaterialUploads(folder, files, batch) {
+    Array.prototype.forEach.call(files || [], function (file) {
+      materialUploads.items.push({
+        id: materialUploads.nextId++,
+        file: file,
+        folderId: folder.id,
+        folderName: folder.name,
+        status: "waiting",
+        loaded: 0,
+        total: file.size || 0,
+        error: "",
+        xhr: null,
+        batch: batch || null
+      });
+      if (batch) batch.pending += 1;
+    });
+    materialUploads.collapsed = false;
+    renderMaterialUploadPanel();
+    pumpMaterialUploads();
+  }
+
+  function pumpMaterialUploads() {
+    var free = MATERIAL_UPLOAD_CONCURRENCY - activeMaterialUploads().length;
+    materialUploads.items.filter(function (item) { return item.status === "waiting"; }).slice(0, Math.max(0, free)).forEach(startMaterialUpload);
+  }
+
+  function sendToStorage(item, signed) {
+    return new Promise(function (resolve, reject) {
+      var form = new FormData();
+      Object.keys(signed.fields).forEach(function (key) { form.append(key, String(signed.fields[key])); });
+      form.append("file", item.file);
+      var xhr = new XMLHttpRequest();
+      item.xhr = xhr;
+      xhr.open("POST", signed.uploadUrl);
+      xhr.upload.onprogress = function (event) {
+        if (event.lengthComputable) {
+          item.loaded = event.loaded;
+          item.total = event.total;
+        }
+        scheduleMaterialUploadRender();
+      };
+      xhr.onload = function () {
+        item.xhr = null;
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve(signed);
+          return;
+        }
+        var message = "";
+        try { message = JSON.parse(xhr.responseText).error.message; } catch (_err) { }
+        reject(new Error(message || ("Upload failed (" + xhr.status + ").")));
+      };
+      xhr.onerror = function () {
+        item.xhr = null;
+        reject(new Error("Network error. Check your connection and retry."));
+      };
+      xhr.onabort = function () {
+        item.xhr = null;
+        reject(Object.assign(new Error("Cancelled"), { cancelled: true }));
+      };
+      xhr.send(form);
+    });
+  }
+
+  function startMaterialUpload(item) {
+    item.status = "signing";
+    item.error = "";
+    item.loaded = 0;
+    scheduleMaterialUploadRender();
+    Promise.resolve(store.signMaterialUpload({ folderId: item.folderId, name: item.file.name, bytes: item.file.size }))
+      .then(function (signed) {
+        if (item.status === "cancelled") return null;
+        item.status = "uploading";
+        scheduleMaterialUploadRender();
+        return sendToStorage(item, signed);
+      })
+      .then(function (signed) {
+        if (!signed || item.status === "cancelled") return null;
+        item.status = "finishing";
+        item.loaded = item.total;
+        scheduleMaterialUploadRender();
+        return store.registerMaterialFile({ folderId: item.folderId, name: item.file.name, publicId: signed.publicId, resourceType: signed.resourceType });
+      })
+      .then(function (file) {
+        if (!file) return;
+        item.status = "done";
+        item.savedName = file.name;
+        item.file = null; // nothing left to retry; let the bytes go
+        announceMaterialUpload(item.savedName + " uploaded to " + item.folderName + ".");
+        refreshMaterialsSoon();
+        if (item.batch) item.batch.done += 1;
+      })
+      .catch(function (error) {
+        if (item.status === "cancelled" || (error && error.cancelled)) {
+          item.status = "cancelled";
+          return;
+        }
+        item.status = "failed";
+        item.error = error && error.message ? error.message : "Upload failed.";
+        announceMaterialUpload(item.file.name + " couldn't be uploaded.");
+      })
+      .then(function () {
+        if (item.batch && item.status !== "waiting") settleMaterialBatch(item.batch);
+        renderMaterialUploadPanel();
+        pumpMaterialUploads();
+      });
+  }
+
+  function settleMaterialBatch(batch) {
+    var items = materialUploads.items.filter(function (item) { return item.batch === batch; });
+    if (items.some(function (item) { return item.status !== "done"; })) return;
+    if (typeof batch.onAllDone === "function" && !batch.finished) {
+      batch.finished = true;
+      batch.onAllDone();
+    }
+  }
+
+  function cancelMaterialUpload(id) {
+    var item = materialUploads.items.find(function (entry) { return entry.id === id; });
+    if (!item || item.status === "finishing" || item.status === "done") return;
+    var xhr = item.xhr;
+    item.status = "cancelled";
+    if (xhr) xhr.abort();
+    renderMaterialUploadPanel();
+    pumpMaterialUploads();
+  }
+
+  function retryMaterialUpload(id) {
+    var item = materialUploads.items.find(function (entry) { return entry.id === id; });
+    if (!item || !item.file || (item.status !== "failed" && item.status !== "cancelled")) return;
+    item.status = "waiting";
+    item.error = "";
+    renderMaterialUploadPanel();
+    pumpMaterialUploads();
+  }
+
+  function refreshMaterialsSoon() {
+    window.clearTimeout(materialUploads.refreshTimer);
+    materialUploads.refreshTimer = window.setTimeout(function () {
+      Promise.resolve(store.refreshStudyMaterials && store.refreshStudyMaterials()).then(function () {
+        if (typeof materialUploads.onChange === "function") materialUploads.onChange();
+      }).catch(function () { });
+    }, 400);
+  }
+
+  function announceMaterialUpload(text) {
+    var live = document.getElementById("upload-panel-live");
+    if (live) live.textContent = text;
+  }
+
+  function scheduleMaterialUploadRender() {
+    if (materialUploads.renderQueued) return;
+    materialUploads.renderQueued = true;
+    window.requestAnimationFrame(function () {
+      materialUploads.renderQueued = false;
+      renderMaterialUploadPanel();
+    });
+  }
+
+  function uploadStatusText(item) {
+    if (item.status === "waiting") return "Waiting…";
+    if (item.status === "signing") return "Starting…";
+    if (item.status === "uploading") {
+      var pct = item.total ? Math.min(100, Math.floor((item.loaded / item.total) * 100)) : 0;
+      return pct + "% · " + formatBytes(item.loaded) + " of " + formatBytes(item.total);
+    }
+    if (item.status === "finishing") return "Finishing…";
+    if (item.status === "done") return "Uploaded to " + item.folderName;
+    if (item.status === "cancelled") return "Cancelled";
+    return item.error || "Upload failed";
+  }
+
+  function uploadProgress(item) {
+    if (item.status === "done" || item.status === "finishing") return 1;
+    if (item.status === "uploading" && item.total) return Math.min(1, item.loaded / item.total);
+    return 0;
+  }
+
+  function renderMaterialUploadPanel() {
+    var items = materialUploads.items;
+    var panel = document.getElementById("material-upload-panel");
+    if (!items.length) {
+      if (panel) panel.remove();
+      return;
+    }
+    if (!panel) {
+      panel = document.createElement("section");
+      panel.id = "material-upload-panel";
+      panel.className = "upload-panel";
+      panel.setAttribute("role", "region");
+      panel.setAttribute("aria-label", "Uploads");
+      document.body.appendChild(panel);
+      panel.addEventListener("click", onMaterialUploadPanelClick);
+    }
+    var focused = document.activeElement && panel.contains(document.activeElement) ? document.activeElement.getAttribute("data-upload-focus") : null;
+    var liveText = (document.getElementById("upload-panel-live") || {}).textContent || "";
+    var active = activeMaterialUploads().length;
+    var waiting = items.filter(function (item) { return item.status === "waiting"; }).length;
+    var done = items.filter(function (item) { return item.status === "done"; }).length;
+    var failed = items.filter(function (item) { return item.status === "failed"; }).length;
+    var inFlight = active + waiting;
+    var title = inFlight
+      ? "Uploading " + inFlight + (inFlight === 1 ? " item" : " items") + (done ? " · " + done + " complete" : "")
+      : (failed ? failed + (failed === 1 ? " upload" : " uploads") + " failed" + (done ? " · " + done + " complete" : "") : done + (done === 1 ? " upload" : " uploads") + " complete");
+    panel.innerHTML =
+      '<header class="upload-panel-head">' +
+      '<strong class="upload-panel-title">' + escapeHtml(title) + '</strong>' +
+      '<div class="upload-panel-tools">' +
+      '<button type="button" class="upload-panel-icon" data-upload-action="collapse" data-upload-focus="collapse" aria-expanded="' + (materialUploads.collapsed ? "false" : "true") + '" aria-label="' + (materialUploads.collapsed ? "Show uploads" : "Hide uploads") + '">' + (materialUploads.collapsed ? "▴" : "▾") + '</button>' +
+      '<button type="button" class="upload-panel-icon" data-upload-action="close" data-upload-focus="close" aria-label="Close uploads">✕</button>' +
+      '</div>' +
+      '</header>' +
+      '<ul class="upload-panel-list"' + (materialUploads.collapsed ? " hidden" : "") + '>' +
+      items.slice().reverse().map(function (item) {
+        var name = item.savedName || (item.file && item.file.name) || "File";
+        var action = "";
+        if (item.status === "waiting" || item.status === "signing" || item.status === "uploading") {
+          action = '<button type="button" class="upload-row-action" data-upload-action="cancel" data-id="' + item.id + '" data-upload-focus="cancel-' + item.id + '" aria-label="Cancel upload of ' + escapeAttribute(name) + '">Cancel</button>';
+        } else if ((item.status === "failed" || item.status === "cancelled") && item.file) {
+          action = '<button type="button" class="upload-row-action" data-upload-action="retry" data-id="' + item.id + '" data-upload-focus="retry-' + item.id + '" aria-label="Retry upload of ' + escapeAttribute(name) + '">Retry</button>';
+        } else if (item.status === "done") {
+          action = '<button type="button" class="upload-row-action" data-upload-action="show" data-id="' + item.id + '" data-upload-focus="show-' + item.id + '" aria-label="Show ' + escapeAttribute(name) + ' in its folder">Show</button>';
+        }
+        return '<li class="upload-row is-' + item.status + '">' +
+          materialTypeBadge(name) +
+          '<div class="upload-row-main">' +
+          '<span class="upload-row-name">' + escapeHtml(name) + '</span>' +
+          '<span class="upload-row-status">' + escapeHtml(uploadStatusText(item)) + '</span>' +
+          (item.status === "uploading" || item.status === "signing" || item.status === "finishing"
+            ? '<span class="upload-row-bar" aria-hidden="true"><span style="transform: scaleX(' + uploadProgress(item).toFixed(3) + ');"></span></span>'
+            : '') +
+          '</div>' +
+          action +
+          '</li>';
+      }).join("") +
+      '</ul>' +
+      '<p class="sr-only" id="upload-panel-live" aria-live="polite">' + escapeHtml(liveText) + '</p>';
+    if (focused) {
+      var again = panel.querySelector('[data-upload-focus="' + focused + '"]');
+      if (again) again.focus();
+    }
+  }
+
+  function onMaterialUploadPanelClick(event) {
+    var button = event.target && event.target.closest ? event.target.closest("[data-upload-action]") : null;
+    if (!button) return;
+    var action = button.getAttribute("data-upload-action");
+    var id = Number(button.getAttribute("data-id"));
+    if (action === "collapse") {
+      materialUploads.collapsed = !materialUploads.collapsed;
+      renderMaterialUploadPanel();
+    } else if (action === "close") {
+      var running = materialUploads.items.filter(function (item) { return item.status === "waiting" || isUploadActive(item); });
+      if (running.length && !window.confirm("Cancel " + running.length + (running.length === 1 ? " upload" : " uploads") + " in progress?")) return;
+      running.forEach(function (item) { cancelMaterialUpload(item.id); });
+      materialUploads.items = materialUploads.items.filter(function (item) { return item.status === "finishing"; });
+      renderMaterialUploadPanel();
+    } else if (action === "cancel") {
+      cancelMaterialUpload(id);
+    } else if (action === "retry") {
+      retryMaterialUpload(id);
+    } else if (action === "show") {
+      var item = materialUploads.items.find(function (entry) { return entry.id === id; });
+      if (!item) return;
+      runtime.adminStudioTab = "materials";
+      runtime.materialsFolderId = item.folderId;
+      if ((window.location.hash || "").indexOf("admin") === -1) {
+        navigate("admin");
+      } else if (typeof materialUploads.onChange === "function") {
+        materialUploads.onChange();
+      }
+    }
+  }
+
+  // ---- Admin Studio → Study Materials (folders and files, Drive-style) ------------------
+  var MATERIAL_FOLDER_COLORS = [
+    ["", "Default"], ["var(--gold-strong)", "Brand gold"], ["#3b82f6", "Blue"], ["#10b981", "Green"], ["#ef4444", "Red"], ["#8b5cf6", "Purple"]
+  ];
+
+  function materialFileDate(value) {
+    return value ? formatDateOnly(value) : "";
+  }
+
+  function buildAdminMaterialsHtml() {
+    var data = store.getStudyMaterials ? store.getStudyMaterials() : { folders: [], loadedAt: 0 };
+    if (!data.loadedAt) {
+      return '<div class="materials-studio" id="materials-studio">' +
+        (runtime.materialsError
+          ? '<div class="materials-status" role="alert"><p>Couldn&rsquo;t load study materials: ' + escapeHtml(runtime.materialsError) + '</p><button type="button" class="button button-secondary button-compact js-material-reload">Try again</button></div>'
+          : '<p class="materials-status" role="status">Loading study materials…</p>') +
+        '</div>';
+    }
+    var folders = data.folders || [];
+    var selected = folders.find(function (f) { return f.id === runtime.materialsFolderId; }) || folders[0] || null;
+    runtime.materialsFolderId = selected ? selected.id : "";
+    var maxMb = data.maxBytes ? Math.round(data.maxBytes / (1024 * 1024)) : 10;
+
+    var legacy = store.getLegacyStudyMaterials ? store.getLegacyStudyMaterials() : null;
+    var legacyCount = legacy ? (legacy.files || []).filter(function (f) { return /^data:/.test(String(f.url || "")); }).length : 0;
+    var legacyHtml = legacyCount
+      ? '<div class="materials-legacy" role="status">' +
+        '<p><strong>' + legacyCount + (legacyCount === 1 ? ' file is' : ' files are') + ' saved only in this browser</strong> from an older version of the Studio, so students can&rsquo;t see ' + (legacyCount === 1 ? 'it' : 'them') + ' yet.</p>' +
+        '<button type="button" class="button button-primary button-compact js-material-legacy-upload">Upload ' + (legacyCount === 1 ? 'it' : 'all ' + legacyCount) + '</button>' +
+        '</div>'
+      : '';
+
+    var folderListHtml = folders.length
+      ? '<ul class="materials-folder-list">' + folders.map(function (f) {
+        var isActive = selected && f.id === selected.id;
+        return '<li><button type="button" class="materials-folder-btn js-material-folder' + (isActive ? ' is-active' : '') + '" data-id="' + escapeAttribute(f.id) + '"' + (isActive ? ' aria-current="true"' : '') + '>' +
+          '<span class="materials-folder-icon" aria-hidden="true">' + escapeHtml(f.icon || "📁") + '</span>' +
+          '<span class="materials-folder-name"' + (f.color ? ' style="color:' + escapeAttribute(f.color) + ';"' : '') + '>' + escapeHtml(f.name) + '</span>' +
+          '<span class="materials-folder-count" aria-label="' + f.files.length + ' files">' + f.files.length + '</span>' +
+          '</button></li>';
+      }).join("") + '</ul>'
+      : '<p class="materials-muted">No folders yet. Create one to start adding files.</p>';
+
+    var newFolderHtml =
+      '<form id="materials-new-folder" class="materials-new-folder">' +
+      '<p class="materials-subhead">New folder</p>' +
+      '<div class="field"><label for="materials-folder-name">Name</label><input id="materials-folder-name" name="name" required maxlength="80" placeholder="e.g. Physics notes"></div>' +
+      '<div class="materials-folder-meta">' +
+      '<div class="field"><label for="materials-folder-icon">Icon</label><input id="materials-folder-icon" name="icon" value="📁" maxlength="8"></div>' +
+      '<div class="field"><label for="materials-folder-color">Colour</label><select id="materials-folder-color" name="color">' +
+      MATERIAL_FOLDER_COLORS.map(function (c) { return '<option value="' + escapeAttribute(c[0]) + '">' + escapeHtml(c[1]) + '</option>'; }).join("") +
+      '</select></div>' +
+      '</div>' +
+      '<button type="submit" class="button button-primary button-compact">Create folder</button>' +
+      '</form>';
+
+    var filesHtml;
+    if (!selected) {
+      filesHtml = '<div class="materials-empty"><p>Create a folder on the left, then upload files into it.</p></div>';
+    } else {
+      var files = selected.files || [];
+      var headHtml = runtime.materialsRenamingFolder
+        ? '<form class="materials-inline-form js-material-folder-rename-form">' +
+          '<label class="sr-only" for="materials-folder-rename">Folder name</label>' +
+          '<input id="materials-folder-rename" name="name" required maxlength="80" value="' + escapeAttribute(selected.name) + '">' +
+          '<button type="submit" class="button button-primary button-compact">Save</button>' +
+          '<button type="button" class="button button-secondary button-compact js-material-folder-rename-cancel">Cancel</button>' +
+          '</form>'
+        : '<h3 class="materials-files-title"><span aria-hidden="true">' + escapeHtml(selected.icon || "📁") + '</span> ' + escapeHtml(selected.name) + '</h3>';
+      var rows = files.map(function (file) {
+        var renaming = runtime.materialsRenameFileId === file.id;
+        var baseName = file.ext ? file.name.replace(new RegExp("\\." + file.ext + "$", "i"), "") : file.name;
+        return '<li class="materials-file-row">' +
+          materialTypeBadge(file.name) +
+          (renaming
+            ? '<form class="materials-inline-form js-material-rename-form" data-id="' + escapeAttribute(file.id) + '">' +
+              '<label class="sr-only" for="materials-rename-' + escapeAttribute(file.id) + '">New name for ' + escapeHtml(file.name) + '</label>' +
+              '<input id="materials-rename-' + escapeAttribute(file.id) + '" name="name" required maxlength="150" value="' + escapeAttribute(baseName) + '">' +
+              (file.ext ? '<span class="materials-ext">.' + escapeHtml(file.ext) + '</span>' : '') +
+              '<button type="submit" class="button button-primary button-compact">Save</button>' +
+              '<button type="button" class="button button-secondary button-compact js-material-rename-cancel">Cancel</button>' +
+              '</form>'
+            : '<span class="materials-file-name">' + escapeHtml(file.name) + '</span>') +
+          '<span class="materials-file-meta">' + escapeHtml(formatBytes(file.bytes)) + ' · ' + escapeHtml(materialFileDate(file.createdAt)) + '</span>' +
+          (renaming ? '' :
+            '<span class="materials-file-actions">' +
+            '<a class="button button-secondary button-compact" href="/api/materials/files/' + encodeURIComponent(file.id) + '/download?inline=1" target="_blank" rel="noopener" aria-label="Open ' + escapeAttribute(file.name) + '">Open</a>' +
+            '<button type="button" class="button button-secondary button-compact js-material-rename" data-id="' + escapeAttribute(file.id) + '" aria-label="Rename ' + escapeAttribute(file.name) + '">Rename</button>' +
+            '<button type="button" class="button button-danger button-compact js-material-delete" data-id="' + escapeAttribute(file.id) + '" data-name="' + escapeAttribute(file.name) + '" aria-label="Delete ' + escapeAttribute(file.name) + '">Delete</button>' +
+            '</span>') +
+          '</li>';
+      }).join("");
+      filesHtml =
+        '<div class="materials-files-head">' + headHtml +
+        (runtime.materialsRenamingFolder ? '' :
+          '<div class="materials-files-actions">' +
+          '<label class="button button-primary button-compact materials-upload-btn">Upload files' +
+          '<input type="file" id="materials-file-input" multiple accept="' + MATERIAL_ACCEPT + '"></label>' +
+          '<button type="button" class="button button-secondary button-compact js-material-rename-folder">Rename</button>' +
+          '<button type="button" class="button button-danger button-compact js-material-delete-folder">Delete folder</button>' +
+          '</div>') +
+        '</div>' +
+        '<p class="materials-hint">Drag files here or use Upload files · up to ' + maxMb + ' MB each · PDF, images, Word, PowerPoint, Excel, TXT, CSV · free for every student</p>' +
+        (rows ? '<ul class="materials-file-list">' + rows + '</ul>' : '<div class="materials-empty"><p>This folder is empty.</p><p>Drop files here or use Upload files.</p></div>') +
+        '<div class="materials-drop-overlay" aria-hidden="true"><span>Drop to upload to <strong>' + escapeHtml(selected.name) + '</strong></span></div>';
+    }
+
+    return '<div class="materials-studio" id="materials-studio">' +
+      legacyHtml +
+      '<div class="materials-layout">' +
+      '<aside class="admin-card materials-folders" aria-label="Folders">' +
+      '<h3 class="materials-panel-title">Folders</h3>' +
+      folderListHtml +
+      newFolderHtml +
+      '</aside>' +
+      '<section class="admin-card materials-files" id="materials-drop-zone" aria-label="' + escapeAttribute(selected ? "Files in " + selected.name : "Files") + '">' +
+      filesHtml +
+      '</section>' +
+      '</div>' +
+      '</div>';
+  }
+
+  // A data: URL from an old browser-only upload, as a File the upload manager can send.
+  function materialDataUrlToFile(dataUrl, name) {
+    var match = /^data:([^;,]*)(;base64)?,(.*)$/.exec(String(dataUrl || ""));
+    if (!match) return null;
+    var raw = match[2] ? window.atob(match[3]) : decodeURIComponent(match[3]);
+    var bytes = new Uint8Array(raw.length);
+    for (var i = 0; i < raw.length; i += 1) bytes[i] = raw.charCodeAt(i);
+    return new File([bytes], name || "file", { type: match[1] || "application/octet-stream" });
+  }
+
+  function bindAdminMaterials(user, selectedTestId) {
+    var root = document.getElementById("materials-studio");
+    if (!root) {
+      materialUploads.onChange = null;
+      return;
+    }
+    var rerender = function () {
+      if (runtime.adminStudioTab === "materials" && document.getElementById("materials-studio")) {
+        rerenderAdminPreserveScroll(user, selectedTestId);
+      }
+    };
+    materialUploads.onChange = rerender;
+    var reload = function () {
+      runtime.materialsError = "";
+      return Promise.resolve(store.refreshStudyMaterials()).then(rerender).catch(function (error) {
+        runtime.materialsError = error && error.message ? error.message : "Network error";
+        rerender();
+      });
+    };
+    var data = store.getStudyMaterials();
+    if (!runtime.materialsError && (!data.loadedAt || Date.now() - data.loadedAt > 60 * 1000) && !runtime.materialsLoading) {
+      runtime.materialsLoading = true;
+      reload().then(function () { runtime.materialsLoading = false; });
+    }
+    var folders = data.folders || [];
+    var selected = folders.find(function (f) { return f.id === runtime.materialsFolderId; }) || null;
+    var act = function (button, work) {
+      if (button) button.disabled = true;
+      Promise.resolve().then(work).then(reload).catch(function (error) {
+        if (button) button.disabled = false;
+        window.alert(error && error.message ? error.message : "That didn't work. Please try again.");
+      });
+    };
+
+    root.querySelectorAll(".js-material-reload").forEach(function (button) {
+      button.addEventListener("click", function () { reload(); });
+    });
+    root.querySelectorAll(".js-material-folder").forEach(function (button) {
+      button.addEventListener("click", function () {
+        runtime.materialsFolderId = button.dataset.id;
+        runtime.materialsRenameFileId = "";
+        runtime.materialsRenamingFolder = false;
+        rerender();
+      });
+    });
+
+    var newFolder = document.getElementById("materials-new-folder");
+    if (newFolder) {
+      newFolder.addEventListener("submit", function (event) {
+        event.preventDefault();
+        var form = new FormData(newFolder);
+        act(newFolder.querySelector('[type="submit"]'), function () {
+          return store.createMaterialFolder({ name: form.get("name"), icon: form.get("icon") || "📁", color: form.get("color") || "" }).then(function (folder) {
+            runtime.materialsFolderId = folder.id;
+          });
+        });
+      });
+    }
+
+    var renameFolderButton = root.querySelector(".js-material-rename-folder");
+    if (renameFolderButton) {
+      renameFolderButton.addEventListener("click", function () {
+        runtime.materialsRenamingFolder = true;
+        rerender();
+        window.requestAnimationFrame(function () {
+          var input = document.getElementById("materials-folder-rename");
+          if (input) { input.focus(); input.select(); }
+        });
+      });
+    }
+    var folderRenameForm = root.querySelector(".js-material-folder-rename-form");
+    if (folderRenameForm && selected) {
+      var cancelFolderRename = function () { runtime.materialsRenamingFolder = false; rerender(); };
+      folderRenameForm.addEventListener("submit", function (event) {
+        event.preventDefault();
+        var name = String(new FormData(folderRenameForm).get("name") || "").trim();
+        act(folderRenameForm.querySelector('[type="submit"]'), function () {
+          return store.updateMaterialFolder(selected.id, { name: name }).then(function () { runtime.materialsRenamingFolder = false; });
+        });
+      });
+      folderRenameForm.querySelector(".js-material-folder-rename-cancel").addEventListener("click", cancelFolderRename);
+      folderRenameForm.addEventListener("keydown", function (event) { if (event.key === "Escape") cancelFolderRename(); });
+    }
+
+    var deleteFolderButton = root.querySelector(".js-material-delete-folder");
+    if (deleteFolderButton && selected) {
+      deleteFolderButton.addEventListener("click", function () {
+        var count = (selected.files || []).length;
+        if (!window.confirm("Delete the folder “" + selected.name + "”" + (count ? " and its " + count + (count === 1 ? " file" : " files") : "") + "? Students will no longer see " + (count ? "them" : "it") + ".")) return;
+        act(deleteFolderButton, function () {
+          return store.deleteMaterialFolder(selected.id).then(function () { runtime.materialsFolderId = ""; });
+        });
+      });
+    }
+
+    var fileInput = document.getElementById("materials-file-input");
+    if (fileInput && selected) {
+      fileInput.addEventListener("change", function () {
+        if (fileInput.files && fileInput.files.length) queueMaterialUploads(selected, fileInput.files);
+        fileInput.value = "";
+      });
+    }
+
+    // Drag and drop onto the open folder.
+    var dropZone = document.getElementById("materials-drop-zone");
+    if (dropZone && selected) {
+      var depth = 0;
+      var hasFiles = function (event) {
+        return event.dataTransfer && Array.prototype.indexOf.call(event.dataTransfer.types || [], "Files") !== -1;
+      };
+      dropZone.addEventListener("dragenter", function (event) {
+        if (!hasFiles(event)) return;
+        event.preventDefault();
+        depth += 1;
+        dropZone.classList.add("is-drag-over");
+      });
+      dropZone.addEventListener("dragover", function (event) {
+        if (!hasFiles(event)) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "copy";
+      });
+      dropZone.addEventListener("dragleave", function () {
+        depth = Math.max(0, depth - 1);
+        if (!depth) dropZone.classList.remove("is-drag-over");
+      });
+      dropZone.addEventListener("drop", function (event) {
+        if (!hasFiles(event)) return;
+        event.preventDefault();
+        depth = 0;
+        dropZone.classList.remove("is-drag-over");
+        if (event.dataTransfer.files && event.dataTransfer.files.length) queueMaterialUploads(selected, event.dataTransfer.files);
+      });
+    }
+
+    root.querySelectorAll(".js-material-rename").forEach(function (button) {
+      button.addEventListener("click", function () {
+        runtime.materialsRenameFileId = button.dataset.id;
+        rerender();
+        window.requestAnimationFrame(function () {
+          var input = document.getElementById("materials-rename-" + button.dataset.id);
+          if (input) { input.focus(); input.select(); }
+        });
+      });
+    });
+    root.querySelectorAll(".js-material-rename-form").forEach(function (form) {
+      var cancel = function () { runtime.materialsRenameFileId = ""; rerender(); };
+      form.addEventListener("submit", function (event) {
+        event.preventDefault();
+        var name = String(new FormData(form).get("name") || "").trim();
+        act(form.querySelector('[type="submit"]'), function () {
+          return store.renameMaterialFile(form.dataset.id, name).then(function () { runtime.materialsRenameFileId = ""; });
+        });
+      });
+      form.querySelector(".js-material-rename-cancel").addEventListener("click", cancel);
+      form.addEventListener("keydown", function (event) { if (event.key === "Escape") cancel(); });
+    });
+    root.querySelectorAll(".js-material-delete").forEach(function (button) {
+      button.addEventListener("click", function () {
+        if (!window.confirm("Delete “" + button.dataset.name + "”? Students will no longer see it.")) return;
+        act(button, function () { return store.deleteMaterialFile(button.dataset.id); });
+      });
+    });
+
+    // Old browser-only files: recreate their folders on the server and upload them.
+    var legacyButton = root.querySelector(".js-material-legacy-upload");
+    if (legacyButton) {
+      legacyButton.addEventListener("click", function () {
+        var legacy = store.getLegacyStudyMaterials() || { folders: [], files: [] };
+        legacyButton.disabled = true;
+        var byName = {};
+        folders.forEach(function (f) { byName[f.name.toLowerCase()] = f; });
+        var batch = { pending: 0, done: 0, onAllDone: function () { store.clearLegacyStudyMaterials(); rerender(); } };
+        var chain = Promise.resolve();
+        (legacy.folders || []).forEach(function (oldFolder) {
+          var files = (legacy.files || []).filter(function (f) { return f.folderId === oldFolder.id && /^data:/.test(String(f.url || "")); });
+          if (!files.length) return;
+          chain = chain.then(function () {
+            var existing = byName[String(oldFolder.name || "").toLowerCase()];
+            return existing ? existing : store.createMaterialFolder({ name: oldFolder.name || "Study material", icon: oldFolder.icon || "📁", color: "" });
+          }).then(function (folder) {
+            byName[String(folder.name).toLowerCase()] = folder;
+            queueMaterialUploads(folder, files.map(function (f) { return materialDataUrlToFile(f.url, f.name); }).filter(Boolean), batch);
+          });
+        });
+        chain.then(reload).catch(function (error) {
+          legacyButton.disabled = false;
+          window.alert(error && error.message ? error.message : "Couldn't start those uploads.");
+        });
+      });
+    }
+  }
+
+  // ---- Studio → User Payments: all users (server-paginated) and the user details window ---
+  var ADMIN_USERS_PAGE_SIZE = 50;
+
+  function loadAdminUsers(onDone) {
+    var filter = runtime.adminUserFilterTab || "paid";
+    var search = String(runtime.adminUserSearchQuery || "").trim();
+    var page = Math.max(1, Number(runtime.adminUsersPage || 1));
+    var key = filter + "|" + search + "|" + page;
+    var previous = runtime.adminUsersList || {};
+    if (previous.key === key && (previous.loading || previous.users || previous.error)) return;
+    // Keep the previous page on screen while the next one loads.
+    runtime.adminUsersList = { key: key, loading: true, users: previous.users || null, counts: previous.counts || null, pagination: previous.pagination || null };
+    var params = { page: String(page), limit: String(ADMIN_USERS_PAGE_SIZE) };
+    if (search) params.search = search;
+    if (filter === "paid") params.isEnrolledOnly = "true";
+    Promise.resolve(store.listUsersExtended(params)).then(function (data) {
+      if (!runtime.adminUsersList || runtime.adminUsersList.key !== key) return;
+      runtime.adminUsersList = {
+        key: key,
+        loading: false,
+        users: Array.isArray(data && data.users) ? data.users : [],
+        counts: (data && data.counts) || null,
+        pagination: (data && data.pagination) || { page: page, pages: 1, total: 0, limit: ADMIN_USERS_PAGE_SIZE }
+      };
+    }).catch(function (error) {
+      if (!runtime.adminUsersList || runtime.adminUsersList.key !== key) return;
+      runtime.adminUsersList = { key: key, loading: false, users: null, counts: previous.counts || null, error: error && error.message ? error.message : "Network error" };
+    }).then(function () {
+      if (typeof onDone === "function") onDone();
+    });
+  }
+
+  var RESOURCE_LABELS = { PAID_MOCK_SERIES: "Paid mock test series" };
+
+  function resourceLabel(code) {
+    var key = String(code || "").trim();
+    if (!key) return "";
+    if (RESOURCE_LABELS[key]) return RESOURCE_LABELS[key];
+    var words = key.toLowerCase().split("_").filter(Boolean).join(" ");
+    return words.charAt(0).toUpperCase() + words.slice(1);
+  }
+
+  function detailDate(value) {
+    if (!value) return "—";
+    var date = new Date(value);
+    return isNaN(date.getTime()) ? "—" : formatDateOnly(date) + " " + date.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" });
+  }
+
+  function statusChip(text, tone) {
+    return '<span class="user-detail-chip is-' + tone + '">' + escapeHtml(text) + '</span>';
+  }
+
+  var SITE_METHOD_LABELS = { MANUAL_UPI: "UPI (manual)", RAZORPAY: "Razorpay" };
+
+  function siteTone(status) {
+    var s = String(status || "").toUpperCase();
+    if (s === "VERIFIED" || s === "PAID" || s === "ACTIVE") return "good";
+    if (s.indexOf("PENDING") === 0) return "warn";
+    if (s === "REJECTED" || s === "CANCELLED" || s === "REVOKED" || s === "EXPIRED") return "bad";
+    return "muted";
+  }
+
+  function siteStatusLabel(status) {
+    var words = String(status || "").toLowerCase().split("_").join(" ");
+    return words.charAt(0).toUpperCase() + words.slice(1);
+  }
+
+  function rupees(value) {
+    var n = Number(value);
+    return Number.isFinite(n) ? "₹" + n.toLocaleString("en-IN") : "—";
+  }
+
+  // Orders, payments and screenshots from the AceIIIT site (read-only, through the portal).
+  function buildSiteOrdersHtml(userId, site) {
+    var body;
+    if (!site || site.error) {
+      body = '<p class="user-detail-muted">Couldn&rsquo;t reach the AceIIIT site' + (site && site.error ? ' (' + escapeHtml(site.error) + ')' : '') + '. Open Details again in a moment.</p>';
+    } else if (site.configured === false) {
+      body = '<p class="user-detail-muted">The AceIIIT site isn&rsquo;t connected yet.</p>';
+    } else if (!site.found) {
+      body = '<p class="user-detail-muted">No AceIIIT site account uses this email.</p>';
+    } else if (!(site.orders || []).length) {
+      body = '<p class="user-detail-muted">No orders on the AceIIIT site yet.</p>';
+    } else {
+      body = '<div class="site-orders">' + site.orders.map(function (order) {
+        var items = order.items || [];
+        var payments = order.payments || [];
+        return '<article class="site-order">' +
+          '<header class="site-order-head"><strong>Order ' + escapeHtml(order.orderNumber || "") + '</strong> ' + statusChip(siteStatusLabel(order.status), siteTone(order.status)) +
+          '<span class="user-detail-meta">' + escapeHtml(detailDate(order.createdAt)) + ' · ' + escapeHtml(rupees(order.total)) + '</span></header>' +
+          (items.length ? '<ul class="site-order-items">' + items.map(function (item) {
+            return '<li>' + escapeHtml(item.productName || "Item") + (Number(item.quantity) > 1 ? ' × ' + escapeHtml(String(item.quantity)) : '') + ' <span class="user-detail-meta">' + escapeHtml(rupees(item.lineTotal)) + '</span></li>';
+          }).join("") + '</ul>' : '') +
+          payments.map(function (payment) {
+            var receiptUrl = "/api/admin/users/" + encodeURIComponent(userId) + "/site-receipts/" + encodeURIComponent(payment.id);
+            var receiptHtml = "";
+            if (payment.hasReceipt) {
+              receiptHtml = payment.receiptType === "pdf"
+                ? '<a class="button button-secondary button-compact" href="' + receiptUrl + '" target="_blank" rel="noopener">Open payment screenshot (PDF)</a>'
+                : '<a class="site-receipt" href="' + receiptUrl + '" target="_blank" rel="noopener" aria-label="Open the payment screenshot for order ' + escapeAttribute(order.orderNumber || "") + '">' +
+                  '<img src="' + receiptUrl + '" alt="Payment screenshot for order ' + escapeAttribute(order.orderNumber || "") + '" loading="lazy"></a>';
+            }
+            return '<div class="site-payment">' +
+              '<p class="site-payment-line"><strong>' + escapeHtml(SITE_METHOD_LABELS[payment.method] || siteStatusLabel(payment.method)) + '</strong> ' + statusChip(siteStatusLabel(payment.status), siteTone(payment.status)) +
+              ' <span class="user-detail-meta">' + escapeHtml(rupees(payment.amount)) +
+              (payment.utr ? ' · UTR ' + escapeHtml(payment.utr) : '') +
+              (payment.verifiedAt ? ' · verified ' + escapeHtml(detailDate(payment.verifiedAt)) : ' · submitted ' + escapeHtml(detailDate(payment.createdAt))) + '</span></p>' +
+              (payment.rejectionReason ? '<p class="user-detail-meta">Rejected: ' + escapeHtml(payment.rejectionReason) + '</p>' : '') +
+              receiptHtml +
+              '</div>';
+          }).join("") +
+          '</article>';
+      }).join("") + '</div>';
+      var ents = site.entitlements || [];
+      if (ents.length) {
+        body += '<p class="user-detail-meta">Site access: ' + ents.map(function (e) {
+          return escapeHtml(String(e.resourceCode || "")) + ' (' + escapeHtml(siteStatusLabel(e.status)) + ')';
+        }).join(", ") + '</p>';
+      }
+    }
+    return '<section class="user-detail-section"><h4>On the AceIIIT site</h4>' + body + '</section>';
+  }
+
+  function buildAdminUserDetailsHtml(details, site) {
+    var u = (details && details.user) || {};
+    var entitlements = (details && details.entitlements) || [];
+    var payments = (details && details.payments) || [];
+    var attempts = (details && details.attempts) || [];
+    var activeEntitlements = entitlements.filter(function (e) { return e.status === "active"; });
+    var paid = !!u.isPaid || activeEntitlements.length > 0;
+    var signIn = (u.signInMethods || []).map(function (m) { return m === "google" ? "Google" : m === "apple" ? "Apple" : m; });
+
+    var row = function (label, value) {
+      return '<div><dt>' + escapeHtml(label) + '</dt><dd>' + value + '</dd></div>';
+    };
+
+    var accessHtml =
+      '<section class="user-detail-section">' +
+      '<h4>Access</h4>' +
+      '<p class="user-detail-lead">' + (paid ? statusChip("Paid", "good") + ' Full test series unlocked' : statusChip("Free tier", "muted") + ' Free mocks and one custom practice session') + '</p>' +
+      (entitlements.length
+        ? '<ul class="user-detail-list">' + entitlements.map(function (e) {
+          var season = e.seasonId && e.seasonId.name ? e.seasonId.name : "Season";
+          return '<li><strong>' + escapeHtml(season) + '</strong> · ' + escapeHtml(String(e.tier || "paid")) + ' ' +
+            statusChip(String(e.status || ""), e.status === "active" ? "good" : "muted") +
+            '<span class="user-detail-meta">Granted ' + escapeHtml(detailDate(e.grantedAt || e.createdAt)) + (e.source ? ' · via ' + escapeHtml(e.source === "commerce" ? "AceIIIT checkout" : e.source) : '') + '</span></li>';
+        }).join("") + '</ul>'
+        : '') +
+      '</section>';
+
+    var paymentsHtml =
+      '<section class="user-detail-section">' +
+      '<h4>Payments</h4>' +
+      (payments.length
+        ? '<ul class="user-detail-list">' + payments.map(function (p) {
+          var raw = p.rawPayload || {};
+          var what = raw.resourceCode ? resourceLabel(raw.resourceCode) : "Test series access";
+          var tone = p.status === "verified" ? "good" : (p.status === "pending" ? "warn" : "bad");
+          var season = p.seasonId && p.seasonId.name ? p.seasonId.name : "";
+          return '<li><strong>' + escapeHtml(what) + '</strong>' + (season ? ' · ' + escapeHtml(season) : '') + ' ' + statusChip(String(p.status || ""), tone) +
+            '<span class="user-detail-meta">' + escapeHtml(p.source === "commerce" ? "Paid on the AceIIIT site" : "Added by an admin") +
+            ' · recorded ' + escapeHtml(detailDate(p.createdAt)) +
+            (p.verifiedAt ? ' · verified ' + escapeHtml(detailDate(p.verifiedAt)) : '') + '</span>' +
+            (raw.note ? '<span class="user-detail-meta">Note: ' + escapeHtml(String(raw.note)) + '</span>' : '') +
+            '</li>';
+        }).join("") + '</ul>'
+        : '<p class="user-detail-muted">No payments recorded.</p>') +
+      '</section>';
+
+    var profileHtml =
+      '<section class="user-detail-section">' +
+      '<h4>Profile</h4>' +
+      '<dl class="user-detail-grid">' +
+      row("Email", escapeHtml(u.email || "—")) +
+      row("Role", escapeHtml(u.role || "student")) +
+      row("Account", escapeHtml(u.status || "—") + (u.lockedUntil ? ' · locked until ' + escapeHtml(detailDate(u.lockedUntil)) : '')) +
+      row("Email verified", u.emailVerified ? "Yes" : "No") +
+      row("Sign-in", escapeHtml(signIn.length ? signIn.join(", ") : "Email and password")) +
+      row("Joined", escapeHtml(detailDate(u.createdAt))) +
+      row("Last seen", escapeHtml(detailDate(u.lastSeenAt))) +
+      '</dl>' +
+      '</section>';
+
+    var mocks = attempts.filter(function (a) { return !a.isPractice; });
+    var practice = attempts.length - mocks.length;
+    var attemptsHtml =
+      '<section class="user-detail-section">' +
+      '<h4>Activity</h4>' +
+      '<p class="user-detail-lead">' + mocks.length + (mocks.length === 1 ? ' mock' : ' mocks') + ' submitted' + (practice ? ' · ' + practice + ' practice' + (practice === 1 ? ' session' : ' sessions') : '') + '</p>' +
+      (mocks.length
+        ? '<div class="table-like user-detail-attempts">' +
+          '<div class="table-row header"><span>Test</span><span>Date</span><span>Score</span><span>Rank</span></div>' +
+          mocks.slice(0, 10).map(function (a) {
+            var test = store.getTestById ? store.getTestById(String(a.testId)) : null;
+            return '<div class="table-row">' +
+              '<span>' + escapeHtml(test && test.title ? test.title : "Mock test") + (a.attemptNumber > 1 ? ' · attempt ' + a.attemptNumber : '') + '</span>' +
+              '<span>' + escapeHtml(formatDateOnly(a.submittedAt)) + '</span>' +
+              '<span>' + escapeHtml(formatMarks(a.score)) + '</span>' +
+              '<span>' + (a.invalidatedAt ? 'Removed' : (a.rank ? '#' + escapeHtml(String(a.rank)) : '—')) + '</span>' +
+              '</div>';
+          }).join("") +
+          '</div>'
+        : '') +
+      '</section>';
+
+    return '<div class="user-detail">' +
+      '<p class="user-detail-email">' + escapeHtml(u.email || "") + '</p>' +
+      accessHtml + paymentsHtml + buildSiteOrdersHtml(u.id, site) + profileHtml + attemptsHtml +
+      '</div>';
   }
 
   function validateTestForPublish(test, questions) {
@@ -8185,28 +10510,11 @@
         '<div class="field"><label for="question-section">Section</label><select id="question-section" name="section"><option ' + (editingQuestion && editingQuestion.section === "SUPR" ? 'selected' : '') + '>SUPR</option><option ' + (editingQuestion && editingQuestion.section === "REAP" ? 'selected' : '') + '>REAP</option></select></div>' +
         '<div class="field"><label for="question-topic">Topic</label><input id="question-topic" name="topic" placeholder="logic / DI / comprehension" value="' + escapeAttribute(editingQuestion ? editingQuestion.topic : "") + '" required></div>' +
         '<div class="field"><label for="question-difficulty">Difficulty</label><select id="question-difficulty" name="difficulty"><option ' + (editingQuestion && editingQuestion.difficulty === "easy" ? 'selected' : '') + '>easy</option><option ' + (editingQuestion && editingQuestion.difficulty === "medium" ? 'selected' : '') + '>medium</option><option ' + (editingQuestion && editingQuestion.difficulty === "hard" ? 'selected' : '') + '>hard</option></select></div>' +
-        (editingQuestion && getQuestionImageUrls(editingQuestion).length ? (
-          '<div class="field" style="grid-column: 1 / -1;">' +
-          '<label>Existing images</label>' +
-          '<div class="helper-text">' + escapeHtml(getQuestionImageUrls(editingQuestion).length + " image(s) already attached") + '</div>' +
-          '<div class="question-figure-stack">' +
-          getQuestionImageUrls(editingQuestion).slice(0, 4).map(function (url, index) {
-            return '<button type="button" class="question-figure-button" data-open-image="' + escapeAttribute(safeImageUrl(url)) + '"><img class="question-figure" src="' + safeImageUrl(url) + '" alt="Existing image ' + (index + 1) + '"></button>';
-          }).join("") +
-          '</div>' +
-          '</div>'
-        ) : '') +
-        '<div class="field" style="grid-column: 1 / -1;">' +
-        '<label for="question-files">Upload local images</label>' +
-        '<input id="question-files" name="questionFiles" type="file" multiple accept="image/*">' +
-        '<div class="helper-text" id="question-files-status">' + escapeHtml(runtime.pendingQuestionFileNames.length ? runtime.pendingQuestionFileNames.join(", ") : "No image selected") + '</div>' +
-        '<div class="button-row" style="margin-top: 12px;">' +
-        '<button class="button button-secondary" type="button" id="upload-question-images" ' + (runtime.pendingQuestionFiles.length ? "" : "disabled") + '>Upload selected images</button>' +
-        '</div>' +
-        '</div>' +
-        '<div class="field" style="grid-column: 1 / -1;"><label for="question-drive-links">Google Drive image links</label><textarea id="question-drive-links" name="driveImageLinks" rows="2" placeholder="Paste public Google Drive image share links, one per line">' + escapeHtml(editingQuestion ? getQuestionDriveLinks(editingQuestion).join("\n") : "") + '</textarea></div>' +
         '<div class="field" style="grid-column: 1 / -1;"><label for="question-prompt">Question prompt</label><textarea id="question-prompt" name="prompt" rows="3" required>' + escapeHtml(editingQuestion ? editingQuestion.prompt : "") + '</textarea><div class="helper-text">Supports LaTeX: $...$ (inline), $$...$$ (display math).</div></div>' +
         '<div class="field" style="grid-column: 1 / -1;"><label for="question-passage">Passage or context</label><textarea id="question-passage" name="passage" rows="2" placeholder="Optional">' + escapeHtml(editingQuestion ? editingQuestion.passage || "" : "") + '</textarea></div>' +
+        // Images: one working copy (add, replace, remove, reorder, size), saved with the question.
+        (ensureQuestionImageDraft(editingQuestion), '') +
+        '<div class="field qimg-field" id="qimg-root" style="grid-column: 1 / -1;">' + buildQuestionImageManagerHtml() + '</div>' +
         '<div class="field"><label for="option-0">Option A</label><input id="option-0" name="option0" value="' + escapeAttribute(editingQuestion ? editingQuestion.options[0] : "") + '" required></div>' +
         '<div class="field"><label for="option-1">Option B</label><input id="option-1" name="option1" value="' + escapeAttribute(editingQuestion ? editingQuestion.options[1] : "") + '" required></div>' +
         '<div class="field"><label for="option-2">Option C</label><input id="option-2" name="option2" value="' + escapeAttribute(editingQuestion ? editingQuestion.options[2] : "") + '" required></div>' +
@@ -8335,7 +10643,9 @@
           (selectedTestQuestions.length ? selectedTestQuestions.map(function (q, idx) {
             return '<div class="question-card" style="margin-bottom:16px; padding:16px; border-radius:12px; background:var(--surface); border:1px solid rgba(20,17,15,0.08);">' +
               '<strong>Q' + (idx + 1) + ' [' + escapeHtml(q.section) + '] (' + escapeHtml(q.topic) + ')</strong>' +
+              (q.passage ? '<div class="student-preview-passage rich-text">' + formatRichText(q.passage) + '</div>' : '') +
               '<div style="margin:10px 0;">' + formatRichText(q.prompt) + '</div>' +
+              renderQuestionFigures(q) +
               '<div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">' +
               q.options.map(function (opt, oIdx) {
                 var letter = String.fromCharCode(65 + oIdx);
@@ -8566,18 +10876,15 @@
           ) : '<div class="empty-state">No tests created yet.</div>') +
           '</div>';
       } else if (activeTab === "payments") {
-        var allUsers = (adminSnapshot && Array.isArray(adminSnapshot.users)) ? adminSnapshot.users : [];
-        var searchQuery = (runtime.adminUserSearchQuery || "").toLowerCase().trim();
+        // Every registered user, from the server, 50 a page (the snapshot only carries 500).
         var filterTab = runtime.adminUserFilterTab || "paid";
-        var paidCount = allUsers.filter(function (u) { return u.isPaid; }).length;
-
-        var filteredUsers = allUsers.filter(function (u) {
-          if (filterTab === "paid" && !u.isPaid) {
-            return false;
-          }
-          if (!searchQuery) return true;
-          return (u.name || "").toLowerCase().indexOf(searchQuery) !== -1 || (u.email || "").toLowerCase().indexOf(searchQuery) !== -1;
-        });
+        var usersState = runtime.adminUsersList || {};
+        var listUsers = usersState.users || [];
+        var userCounts = usersState.counts || null;
+        var userPages = usersState.pagination || { page: 1, pages: 1, total: 0, limit: 50 };
+        var countText = function (value) { return userCounts ? Number(value || 0).toLocaleString("en-IN") : "…"; };
+        var firstShown = userPages.total ? (userPages.page - 1) * userPages.limit + 1 : 0;
+        var lastShown = Math.min(userPages.total, userPages.page * userPages.limit);
 
         activeTabContent =
           '<div class="admin-card">' +
@@ -8598,23 +10905,27 @@
           '</form>' +
 
           '<div class="grid-three" style="margin-bottom: 20px;">' +
-          '<div class="metric-card" style="border-left: 4px solid var(--green);"><span class="metric-value" style="color:var(--green);">' + paidCount + '</span><span class="metric-label">Total Paid Verified Users</span></div>' +
-          '<div class="metric-card"><span class="metric-value">' + allUsers.length + '</span><span class="metric-label">Total Registered Users</span></div>' +
+          '<div class="metric-card" style="border-left: 4px solid var(--green);"><span class="metric-value" style="color:var(--green);">' + countText(userCounts && userCounts.paid) + '</span><span class="metric-label">Total Paid Verified Users</span></div>' +
+          '<div class="metric-card"><span class="metric-value">' + countText(userCounts && userCounts.all) + '</span><span class="metric-label">Total Registered Users</span></div>' +
           '</div>' +
 
           '<div class="button-row" style="gap: 8px; margin-bottom: 14px; flex-wrap: wrap;">' +
-          '<button class="button button-compact ' + (filterTab === "paid" ? "button-primary" : "button-secondary") + ' js-admin-user-filter" data-filter="paid">🎓 Paid / Enrolled (' + paidCount + ')</button>' +
-          '<button class="button button-compact ' + (filterTab === "all" ? "button-primary" : "button-secondary") + ' js-admin-user-filter" data-filter="all">👥 All Registered Users (' + allUsers.length + ')</button>' +
+          '<button class="button button-compact ' + (filterTab === "paid" ? "button-primary" : "button-secondary") + ' js-admin-user-filter" data-filter="paid" aria-pressed="' + (filterTab === "paid") + '">🎓 Paid / Enrolled (' + countText(userCounts && userCounts.paid) + ')</button>' +
+          '<button class="button button-compact ' + (filterTab === "all" ? "button-primary" : "button-secondary") + ' js-admin-user-filter" data-filter="all" aria-pressed="' + (filterTab === "all") + '">👥 All Registered Users (' + countText(userCounts && userCounts.all) + ')</button>' +
           '</div>' +
 
           '<div class="field" style="margin-bottom: 16px;">' +
-          '<input type="text" id="admin-user-search" value="' + escapeAttribute(runtime.adminUserSearchQuery || "") + '" placeholder="🔍 Search users by name or email address...">' +
+          '<input type="search" id="admin-user-search" value="' + escapeAttribute(runtime.adminUserSearchQuery || "") + '" placeholder="🔍 Search users by name or email address..." aria-label="Search users by name or email">' +
           '</div>' +
 
-          (filteredUsers.length ? (
+          (usersState.error
+            ? '<div class="empty-state" role="alert">Couldn&rsquo;t load users: ' + escapeHtml(usersState.error) + ' <button type="button" class="button button-secondary button-compact js-admin-users-reload">Try again</button></div>'
+            : '') +
+          (!usersState.users && !usersState.error ? '<div class="empty-state" role="status">Loading users…</div>' : '') +
+          (listUsers.length ? (
             '<div class="table-like users-table table-scroll-card">' +
             '<div class="table-row header"><span>User</span><span>Email</span><span>Role</span><span>Payment Access</span><span>Actions</span></div>' +
-            filteredUsers.map(function (u) {
+            listUsers.map(function (u) {
               var isPaid = !!u.isPaid;
               return '<div class="table-row">' +
                 '<span><strong>' + escapeHtml(u.name || "Student") + '</strong></span>' +
@@ -8633,8 +10944,16 @@
                 '</div></span>' +
                 '</div>';
             }).join("") +
+            '</div>' +
+            '<div class="admin-users-pager">' +
+            '<span class="admin-users-range" role="status">' + (usersState.loading ? 'Loading…' : 'Showing ' + firstShown.toLocaleString("en-IN") + '–' + lastShown.toLocaleString("en-IN") + ' of ' + Number(userPages.total).toLocaleString("en-IN")) + '</span>' +
+            '<div class="button-row" style="gap:6px;">' +
+            '<button type="button" class="button button-secondary button-compact js-admin-users-page" data-page="' + (userPages.page - 1) + '"' + (userPages.page <= 1 || usersState.loading ? ' disabled' : '') + '>← Previous</button>' +
+            '<span class="admin-users-pageno">Page ' + userPages.page + ' of ' + userPages.pages + '</span>' +
+            '<button type="button" class="button button-secondary button-compact js-admin-users-page" data-page="' + (userPages.page + 1) + '"' + (userPages.page >= userPages.pages || usersState.loading ? ' disabled' : '') + '>Next →</button>' +
+            '</div>' +
             '</div>'
-          ) : '<div class="empty-state">No matching paid users found. Try "All Registered Users" or add a payment above.</div>') +
+          ) : (usersState.users ? '<div class="empty-state">' + (runtime.adminUserSearchQuery ? 'No users match this search.' : (filterTab === "paid" ? 'No paid users yet. Switch to "All Registered Users" or add a payment above.' : 'No registered users yet.')) + '</div>' : '')) +
           '</div>';
       } else if (activeTab === "seasons") {
         var seasonsList = (runtime.adminSeasonsList || []);
@@ -8697,67 +11016,9 @@
             : Array.isArray(runtime.adminAuditLogsList) ? 'No audit logs recorded yet.' : 'Loading audit logs…') + '</div>') +
           '</div>';
       } else if (activeTab === "materials") {
-        var studyData = store.getStudyMaterials ? store.getStudyMaterials() : { folders: [], files: [] };
-        
-        var folderListHtml = studyData.folders.length === 0 
-          ? '<div class="empty-state">No folders created yet. Use the form to create one.</div>' 
-          : studyData.folders.map(function(f) {
-              var files = studyData.files.filter(function(file) { return file.folderId === f.id; });
-              return (
-                '<div class="admin-card" style="margin-bottom:16px;">' +
-                  '<div class="button-row" style="justify-content:space-between; margin-bottom:12px;">' +
-                    '<h4 style="color:' + escapeAttribute(f.color) + '; margin:0;"><span style="margin-right:6px;">' + escapeHtml(f.icon) + '</span>' + escapeHtml(f.name) + '</h4>' +
-                    '<button class="button button-danger button-compact js-admin-delete-folder" data-id="' + escapeAttribute(f.id) + '">Delete Folder</button>' +
-                  '</div>' +
-                  (files.length > 0 ? (
-                    '<div class="table-like">' +
-                    '<div class="table-row header"><span>Filename</span><span>Size</span><span>Date</span><span>Actions</span></div>' +
-                    files.map(function(file) {
-                      return '<div class="table-row">' +
-                        '<span>' + escapeHtml(file.name) + '</span>' +
-                        '<span>' + escapeHtml(file.size) + '</span>' +
-                        '<span>' + escapeHtml(formatDateOnly(file.createdAt)) + '</span>' +
-                        '<span><button class="button button-danger button-compact js-admin-delete-file" data-id="' + escapeAttribute(file.id) + '">Delete</button></span>' +
-                      '</div>';
-                    }).join("") +
-                    '</div>'
-                  ) : '<div class="empty-state" style="padding:12px;">No files in this folder.</div>') +
-                  '<div style="margin-top:12px;">' +
-                    '<label class="button button-secondary button-compact" style="cursor:pointer;">' +
-                      'Upload File' +
-                      '<input type="file" class="js-admin-upload-file" data-folder="' + escapeAttribute(f.id) + '" style="display:none;" />' +
-                    '</label>' +
-                  '</div>' +
-                '</div>'
-              );
-            }).join("");
-
-        activeTabContent = 
-          '<div class="admin-materials-layout">' +
-            '<div class="admin-materials-folders">' +
-              '<h3 style="margin-bottom:16px;">Study Materials Folders</h3>' +
-              folderListHtml +
-            '</div>' +
-            '<aside class="admin-sticky-side">' +
-              '<div class="admin-card">' +
-                '<h4 style="margin-top:0;">Create New Folder</h4>' +
-                '<form id="admin-create-folder-form">' +
-                  '<div class="field"><label>Folder Name</label><input name="name" required placeholder="e.g. Physics Notes" /></div>' +
-                  '<div class="field"><label>Folder Icon (Emoji)</label><input name="icon" value="📁" required /></div>' +
-                  '<div class="field"><label>Color</label>' +
-                    '<select name="color">' +
-                      '<option value="var(--brand-accent)">Brand Gold</option>' +
-                      '<option value="#3b82f6">Blue</option>' +
-                      '<option value="#10b981">Green</option>' +
-                      '<option value="#ef4444">Red</option>' +
-                      '<option value="#8b5cf6">Purple</option>' +
-                    '</select>' +
-                  '</div>' +
-                  '<button type="submit" class="button button-primary">Create Folder</button>' +
-                '</form>' +
-              '</div>' +
-            '</aside>' +
-          '</div>';
+        activeTabContent = buildAdminMaterialsHtml();
+      } else if (activeTab === "mentor") {
+        activeTabContent = buildAdminMentorHtml();
       }
 
       app.innerHTML = buildShell(
@@ -8797,6 +11058,7 @@
         '<button type="button" class="studio-step-btn js-studio-tab ' + (activeTab === "seasons" ? 'is-active' : '') + '" data-tab="seasons"><span class="studio-step-num">7</span> Seasons</button>' +
         '<button type="button" class="studio-step-btn js-studio-tab ' + (activeTab === "audit" ? 'is-active' : '') + '" data-tab="audit"><span class="studio-step-num">8</span> Audit Logs</button>' +
         '<button type="button" class="studio-step-btn js-studio-tab ' + (activeTab === "materials" ? 'is-active' : '') + '" data-tab="materials"><span class="studio-step-num">9</span> Study Materials</button>' +
+        '<button type="button" class="studio-step-btn js-studio-tab ' + (activeTab === "mentor" ? 'is-active' : '') + '" data-tab="mentor"><span class="studio-step-num">10</span> ACEIIIT Mentor</button>' +
         '</div>' +
 
         '<div class="studio-body">' +
@@ -8829,7 +11091,7 @@
       var questionDraftContext = (runtime.adminEditingQuestionId ? ("edit:" + runtime.adminEditingQuestionId) : "create") + "|test:" + (selectedTestId || "");
 
       if (runtime.questionUploadContext && runtime.questionUploadContext !== questionDraftContext) {
-        resetPendingQuestionUploads();
+        resetPendingQuestionUploads({ keepImages: true });
       }
       if (!runtime.questionUploadContext) {
         runtime.questionUploadContext = questionDraftContext;
@@ -9514,10 +11776,13 @@
         if (previewFull) {
           previewFull.addEventListener("click", function () {
             var body = '<div class="latex-preview latex-preview-modal">' + buildLatexPreviewHtml(questionForm) + '</div>';
-            var overlay = showAdminModal("LaTeX Preview", body, true);
+            var overlay = showAdminModal("Question preview", body, true);
             if (overlay) {
               var root = overlay.querySelector(".latex-preview-modal");
               renderLatexInElement(root);
+              root.querySelectorAll("[data-open-image]").forEach(function (button) {
+                button.addEventListener("click", function () { openImageLightbox(button.getAttribute("data-open-image")); });
+              });
             }
           });
         }
@@ -9545,43 +11810,7 @@
           questionSectionSelect.addEventListener("change", applySectionMarkDefaults);
         }
 
-        var questionFilesInput = questionForm.querySelector("#question-files");
-        if (questionFilesInput) {
-          questionFilesInput.addEventListener("change", function () {
-            updateQuestionFileStatus(questionFilesInput.files);
-          });
-        }
-        renderQuestionUploadUi();
-        var uploadQuestionImagesButton = questionForm.querySelector("#upload-question-images") || document.getElementById("upload-question-images");
-        if (uploadQuestionImagesButton) {
-          uploadQuestionImagesButton.addEventListener("click", async function () {
-            if (!runtime.pendingQuestionFiles.length) {
-              window.alert("Choose at least one image first.");
-              return;
-            }
-            var originalLabel = uploadQuestionImagesButton.textContent;
-            uploadQuestionImagesButton.disabled = true;
-            uploadQuestionImagesButton.textContent = "Uploading...";
-            try {
-              var preparedFiles = await prepareQuestionUploadFiles(runtime.pendingQuestionFiles);
-              showOverlayLoader("Uploading image to Cloudinary.", { delayMs: 320 });
-              var uploadedUrls = await store.uploadQuestionImages(preparedFiles);
-              runtime.pendingUploadedQuestionImageUrls = dedupeUrls((runtime.pendingUploadedQuestionImageUrls || []).concat(uploadedUrls || []));
-              if (questionFilesInput) {
-                questionFilesInput.value = "";
-              }
-              updateQuestionFileStatus([]);
-              hideOverlayLoader();
-              rerenderAdminPreserveScroll(user, selectedTestId);
-            } catch (error) {
-              hideOverlayLoader();
-              window.alert(error && error.message ? error.message : "Image upload failed.");
-            } finally {
-              uploadQuestionImagesButton.disabled = !runtime.pendingQuestionFiles.length;
-              uploadQuestionImagesButton.textContent = originalLabel || "Upload selected images";
-            }
-          });
-        }
+        mountQuestionImageManager();
 
         async function handleSaveQuestion(isSaveAndAddNext) {
           if (!questionForm) return;
@@ -9597,19 +11826,20 @@
           if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = "Saving..."; }
           if (saveNextBtn) { saveNextBtn.disabled = true; saveNextBtn.textContent = "Saving..."; }
 
+          // Images were uploaded when they were added; the working copy is saved as it stands.
+          var imageDraft = runtime.questionImageDraft;
+          if (imageDraft && imageDraft.items.some(function (item) { return item.busy; })) {
+            window.alert("An image is still uploading. Save again once it has finished.");
+            if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = originalSaveText; }
+            if (saveNextBtn) { saveNextBtn.disabled = false; saveNextBtn.textContent = originalNextText; }
+            return;
+          }
+          var savedImages = imageDraft ? imageDraft.items.filter(function (item) { return item.url; }) : [];
+
           try {
             var form = new FormData(questionForm);
             var activeTestId = String(form.get("testId") || "");
-            var fileInputEl = questionForm.querySelector("#question-files");
-            var rawSelectedFiles = runtime.pendingQuestionFiles.length
-              ? runtime.pendingQuestionFiles
-              : Array.prototype.slice.call((fileInputEl && fileInputEl.files) || []);
-            var selectedFiles = await prepareQuestionUploadFiles(rawSelectedFiles);
-            var driveImages = parseQuestionImageLinksText(form.get("driveImageLinks"));
-            var existingNonDriveImages = editingQuestion ? getQuestionImageUrls(editingQuestion).filter(function (url) {
-              return !isGoogleDriveImageLink(url);
-            }) : [];
-            var uploadedCloudinaryImages = dedupeUrls(runtime.pendingUploadedQuestionImageUrls || []);
+            var selectedFiles = [];
             runtime.adminSelectedTestId = activeTestId;
             var payload = {
               testId: activeTestId,
@@ -9618,7 +11848,8 @@
               difficulty: form.get("difficulty"),
               prompt: form.get("prompt"),
               passage: form.get("passage"),
-              imageUrls: dedupeUrls(existingNonDriveImages.concat(uploadedCloudinaryImages, driveImages)),
+              imageUrls: savedImages.map(function (item) { return item.url; }),
+              imageWidths: savedImages.map(function (item) { return Number(item.width) || 0; }),
               options: [form.get("option0"), form.get("option1"), form.get("option2"), form.get("option3")],
               correctOption: form.get("correctOption"),
               explanation: form.get("explanation"),
@@ -10046,6 +12277,10 @@
           rerenderAdminPreserveScroll(user, selectedTestId);
         });
       }
+      // Student preview: question images open in the lightbox, as in the exam.
+      document.querySelectorAll("#student-preview-overlay [data-open-image]").forEach(function (button) {
+        button.addEventListener("click", function () { openImageLightbox(button.getAttribute("data-open-image")); });
+      });
       var closeStudentPreviewBtn = document.getElementById("close-student-preview");
       if (closeStudentPreviewBtn) {
         closeStudentPreviewBtn.addEventListener("click", function () {
@@ -10320,9 +12555,28 @@
       });
 
       // 8. Payment Management Event Listeners
+      // User Payments: the list comes from the server (all users, paginated, searched there).
+      if (runtime.adminStudioTab === "payments") {
+        loadAdminUsers(function () {
+          if (runtime.adminStudioTab === "payments") rerenderAdminPreserveScroll(user, selectedTestId);
+        });
+      }
       app.querySelectorAll(".js-admin-user-filter").forEach(function (btn) {
         btn.addEventListener("click", function () {
           runtime.adminUserFilterTab = btn.dataset.filter || "paid";
+          runtime.adminUsersPage = 1;
+          rerenderAdminPreserveScroll(user, selectedTestId);
+        });
+      });
+      app.querySelectorAll(".js-admin-users-page").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          runtime.adminUsersPage = Math.max(1, Number(btn.dataset.page) || 1);
+          rerenderAdminPreserveScroll(user, selectedTestId);
+        });
+      });
+      app.querySelectorAll(".js-admin-users-reload").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          runtime.adminUsersList = null;
           rerenderAdminPreserveScroll(user, selectedTestId);
         });
       });
@@ -10360,10 +12614,16 @@
           var uId = btn.dataset.id;
           showOverlayLoader("Fetching user profile...", { delayMs: 200 });
           try {
-            var details = await store.getUserDetailsExtended(uId);
-            runtime.adminSelectedUser = details.user;
-            runtime.adminUserDetailsOpen = true;
-            rerenderAdminPreserveScroll(user, selectedTestId);
+            var loaded = await Promise.all([
+              store.getUserDetailsExtended(uId),
+              // The site lookup is an extra: if it fails, the rest of the window still opens.
+              Promise.resolve(store.getUserSiteOrders ? store.getUserSiteOrders(uId) : null).catch(function (siteError) {
+                return { error: siteError && siteError.message ? siteError.message : "network error" };
+              })
+            ]);
+            var details = loaded[0];
+            hideOverlayLoader();
+            showAdminModal(details.user.name || details.user.email || "Student", buildAdminUserDetailsHtml(details, loaded[1]), true);
           } catch (err) {
             window.alert("Failed to load user details: " + (err.message || String(err)));
           } finally {
@@ -10381,6 +12641,7 @@
           try {
             await store.verifyUserPayment(userId);
             window.alert("Payment verified! Paid Access activated and confirmation email dispatched to " + email);
+            runtime.adminUsersList = null;
             rerenderAdminPreserveScroll(user, selectedTestId);
           } catch (err) {
             window.alert("Failed to verify user payment: " + (err.message || String(err)));
@@ -10397,6 +12658,7 @@
           showOverlayLoader("Revoking access...", { delayMs: 200 });
           try {
             await store.revokeUserPayment(userId);
+            runtime.adminUsersList = null;
             rerenderAdminPreserveScroll(user, selectedTestId);
           } catch (err) {
             window.alert("Failed to revoke access: " + (err.message || String(err)));
@@ -10537,68 +12799,18 @@
         });
       }
 
-      var createFolderForm = document.getElementById("admin-create-folder-form");
-      if (createFolderForm) {
-        createFolderForm.addEventListener("submit", function (e) {
-          e.preventDefault();
-          var fd = new FormData(createFolderForm);
-          if (store.createFolder) {
-            store.createFolder(fd.get("name"), fd.get("color"), fd.get("icon"));
-            rerenderAdminPreserveScroll(user, selectedTestId);
-          }
-        });
-      }
-
-      app.querySelectorAll(".js-admin-delete-folder").forEach(function (btn) {
-        btn.addEventListener("click", function () {
-          if (!window.confirm("Delete this folder and ALL files inside it?")) return;
-          if (store.deleteFolder) {
-            store.deleteFolder(btn.dataset.id);
-            rerenderAdminPreserveScroll(user, selectedTestId);
-          }
-        });
-      });
-
-      app.querySelectorAll(".js-admin-delete-file").forEach(function (btn) {
-        btn.addEventListener("click", function () {
-          if (!window.confirm("Delete this file?")) return;
-          if (store.deleteMaterial) {
-            store.deleteMaterial(btn.dataset.id);
-            rerenderAdminPreserveScroll(user, selectedTestId);
-          }
-        });
-      });
-
-      app.querySelectorAll(".js-admin-upload-file").forEach(function (input) {
-        input.addEventListener("change", function () {
-          var file = input.files[0];
-          if (!file) return;
-          var folderId = input.dataset.folder;
-          showOverlayLoader("Uploading file...", { delayMs: 200 });
-          var reader = new FileReader();
-          reader.onload = function(e) {
-            var dataUrl = e.target.result;
-            var sizeKb = Math.round(file.size / 1024);
-            var sizeStr = sizeKb > 1024 ? (sizeKb / 1024).toFixed(1) + " MB" : sizeKb + " KB";
-            if (store.uploadMaterial) {
-              store.uploadMaterial(folderId, {
-                name: file.name,
-                size: sizeStr,
-                url: dataUrl
-              });
-              hideOverlayLoader();
-              rerenderAdminPreserveScroll(user, selectedTestId);
-            }
-          };
-          reader.readAsDataURL(file);
-        });
-      });
+      bindAdminMaterials(user, selectedTestId);
+      if (runtime.adminStudioTab === "mentor") mountAdminMentor();
 
       var userSearchInput = document.getElementById("admin-user-search");
       if (userSearchInput) {
         userSearchInput.addEventListener("input", function () {
           runtime.adminUserSearchQuery = userSearchInput.value;
-          rerenderAdminPreserveScroll(user, selectedTestId);
+          runtime.adminUsersPage = 1;
+          window.clearTimeout(runtime.adminUserSearchTimer);
+          runtime.adminUserSearchTimer = window.setTimeout(function () {
+            rerenderAdminPreserveScroll(user, selectedTestId);
+          }, 300);
         });
       }
 
@@ -10672,7 +12884,7 @@
     var snapshot = store.getAdminSnapshot() || {};
     var tests = store.getTests();
     var users = Array.isArray(snapshot.users) ? snapshot.users : [];
-    var paidCount = users.filter(function (u) { return u && u.isPaid; }).length;
+    var paidCount = snapshot.paidUserCount !== undefined ? snapshot.paidUserCount : users.filter(function (u) { return u && u.isPaid; }).length;
     var attemptsCount = Array.isArray(snapshot.attempts) ? snapshot.attempts.length : 0;
     var liveCount = tests.filter(function (t) { return t && t.status === "live"; }).length;
 
@@ -11089,6 +13301,7 @@
     var savedLastView = (function () { try { return localStorage.getItem("aceiiit_last_view"); } catch (_e) { return ""; } })();
     var view = route.view || (user ? (savedLastView || "dashboard") : "login");
     applyTheme();
+    syncMentorWithRoute(view, parts, user);
 
     if (view !== "test") {
       stopRuntime(true);
@@ -11320,6 +13533,12 @@
     var toggle = event.target && event.target.closest ? event.target.closest("[data-theme-toggle='true']") : null;
     if (!toggle) return;
     switchThemeWithCurtain(toggle);
+  });
+  document.addEventListener("click", function (event) {
+    var toggle = event.target && event.target.closest ? event.target.closest(".js-mentor-toggle") : null;
+    if (!toggle) return;
+    event.preventDefault();
+    toggleMentor(toggle);
   });
   ensureThemeCurtain();
 

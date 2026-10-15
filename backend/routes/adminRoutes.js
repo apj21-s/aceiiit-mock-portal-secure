@@ -5,10 +5,12 @@ const admin = require("../controllers/adminController");
 const season = require("../controllers/seasonController");
 const payment = require("../controllers/paymentController");
 const ai = require("../controllers/aiController");
+const mentorAdmin = require("../controllers/mentorController");
 const upload = require("../middleware/upload");
 const { z } = require("zod");
 const { validate, objectIdParam, objectId } = require("../middleware/validate");
 const { audit } = require("../middleware/audit");
+const { readLimiter } = require("../middleware/rateLimit");
 
 const router = express.Router();
 
@@ -79,6 +81,8 @@ function maybeUploadQuestionImages() {
 router.get("/snapshot", requireAuth, requireAdmin, admin.snapshot);
 router.get("/dashboard", requireAuth, requireAdmin, admin.getDashboardMetrics);
 router.get("/ai-status", requireAuth, requireAdmin, ai.getAiStatus);
+router.get("/mentor", requireAuth, requireAdmin, readLimiter(), mentorAdmin.adminMentor);
+router.put("/mentor", requireAuth, requireAdmin, readLimiter(), audit("MENTOR_SETTINGS_UPDATED", "AppConfig"), mentorAdmin.updateAdminMentor);
 router.get("/trash", requireAuth, requireAdmin, admin.trash);
 router.put("/config", requireAuth, requireAdmin, audit("CONFIG_UPDATED", "AppConfig"), admin.updateAppConfig);
 router.get("/audit-logs", requireAuth, requireAdmin, validate(schemas.auditLogs), admin.getAuditLogsController);
@@ -93,6 +97,8 @@ router.post("/attempts/:id/invalidate", requireAuth, requireAdmin, validate(sche
 // Extended User Management
 router.get("/users-list", requireAuth, requireAdmin, validate(schemas.usersList), admin.listUsersExtended);
 router.get("/users/:id/details", requireAuth, requireAdmin, admin.getUserDetailExtended);
+router.get("/users/:id/site-orders", requireAuth, requireAdmin, readLimiter(), admin.getUserSiteOrders);
+router.get("/users/:id/site-receipts/:paymentId", requireAuth, requireAdmin, readLimiter(), admin.getUserSiteReceipt);
 router.delete("/users/:id", requireAuth, requireAdmin, audit("USER_DELETED", "User"), admin.deleteUser);
 router.post("/users/:id/revoke-sessions", requireAuth, requireAdmin, admin.revokeUserSessions);
 router.post("/users/:id/verify-payment", requireAuth, requireAdmin, audit("USER_ACCESS_GRANTED", "User"), admin.verifyUserPayment);

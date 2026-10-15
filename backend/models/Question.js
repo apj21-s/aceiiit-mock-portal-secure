@@ -8,6 +8,9 @@ const questionSchema = new mongoose.Schema(
     prompt: { type: String, required: true, trim: true },
     passage: { type: String, default: "" },
     imageUrls: { type: [String], default: [] },
+    // Display width of each image in the exam, by index with imageUrls: a percentage of the
+    // question column (20–100), or 0 for Auto (natural size, capped at 560px).
+    imageWidths: { type: [Number], default: [] },
     options: { type: [String], default: [] },
     marks: { type: Number, default: 4 },
     negativeMarks: { type: Number, default: -1 },

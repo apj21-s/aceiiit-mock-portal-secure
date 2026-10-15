@@ -9,8 +9,8 @@ loaded.
 | Command | What it runs |
 |---|---|
 | `npm run lint` | ESLint flat config (`eslint.config.js`): correctness rules; `no-console` in server code |
-| `npm test` | Jest, 26 suites / 239 tests (unit + HTTP integration via supertest) |
-| `npm run test:e2e` | Puppeteer: production boot, student exam flow, Admin Studio, responsive audit, mobile flows |
+| `npm test` | Jest, 33 suites / 292 tests (unit + HTTP integration via supertest) |
+| `npm run test:e2e` | Puppeteer: production boot, student exam flow, custom practice and results, ACEIIIT Mentor, Admin Studio, responsive audit, mobile flows |
 | `npm run load-test` | Concurrent students through the full HTTP flow (20 → 150) |
 | `npm audit --omit=dev` | Production dependency advisories (CI fails on high/critical) |
 
@@ -25,8 +25,11 @@ The first test run downloads a MongoDB binary (needs network once).
 | Exam integrity | `integrity/exam-session`, `integrity-telemetry`, `repeated-submit` | Server deadlines and clock skew; SUPR lock; one active session (index-enforced), resume/409/takeover; abandoned-session finalize; idempotent submit; scoring and negative marking; ranks on read and tie-breaks; practice; shuffling maps back; telemetry rate limits and server-owned counts; strict auto-submit only past the server threshold; no auto-invalidation; concurrent submits with different idempotency keys finalize one Attempt and one interpretation job |
 | Payments | `payments/entitlements`, `data-integrity` | Free / no entitlement / right season / wrong season / revoked / expired / admin; internal provisioning (secret, schema, 422 unmapped, idempotent replay, revoke); catalog leaks no questions; live-question delete → 409; purge cascade |
 | Features | `features/qotd`, `email-reminders`, `email-providers`, `uploads-calendar` | QOTD (no answer leak, free/live only, once per day); HTML/ICS escaping, RFC 5545 UID/SEQUENCE/CANCEL; reminder isolation and backoff; Resend → Brevo → SMTP fallback with a controlled 503; uploads (4 MB, magic bytes, no base64 fallback); calendar token encryption and revoke |
-| AI | `ai/performance-intelligence` | Deterministic analytics; payload has no PII; schema and typed-number validation; timeout/retry/breaker behaviour; one job per attempt; cache hits make no calls; Attempt never modified; API key never logged; dependency scan for the AI rule |
-| Account / admin | `account/account-data`, `admin/question-bank` | Data export contents (no secrets); deletion (confirmation, password re-check, CSRF, sessions revoked, admins refused); paginated question bank and slim snapshot |
+| AI | `ai/performance-intelligence` | Deterministic analytics; payload has no PII; schema and typed-number validation; timeout/retry/breaker behaviour; one job per attempt; cache hits make no calls; Attempt never modified; API key never logged; dependency scan for the AI rule (only the AI coach and the mentor's `mentorService` may import the AI layer, and only `mentorController` may import `mentorService`) |
+| ACEIIIT Mentor | `mentor/mentor` | Sign-in required; free allowance and IST month reset; a reply charged exactly once (idempotent retry, failures free, last permitted reply then blocked); concurrent sends never exceed the allowance; abandoned reservations expire; enrolled tier only from a verified payment or ACTIVE site entitlement for a configured programme code (pending, revoked, unconfigured or a site outage → free); the browser can't set tier, usage or owner; owner-only conversations and attempts; prompts carry measured results but no name, email or ids, and general doubts carry no personal data; prompt injection changes nothing; malformed input refused; purge deletes mentor data; missing key, refused project, timeout, provider daily quota and the global daily cap fail safely without charging and never leak the key; admin settings validation and stats (Gemini stubbed) |
+| Account / admin | `account/account-data`, `account/account-purge`, `admin/question-bank`, `admin/question-images`, `admin/users-list`, `admin/site-orders` | Data export contents (no secrets); deletion (confirmation, password re-check, CSRF, sessions revoked, admins refused) and the 30-day purge; paginated question bank and slim snapshot; question images saved exactly as sent (remove, replace, reorder) with a 0/20–100% display width per image that reaches the exam paper; every user listed (past 500) with true totals, and no internal user fields sent; a student's AceIIIT-site orders fetched for admins only (shared secret), payment screenshots streamed with a safe content type, site outages reported without crashing (site stubbed) |
+| Practice | `practice/practice-sessions` | Builder options (counts per section and topic, by difficulty); exact topic subjects; time split by question count, untimed cap; a student's practice papers listed with the catalog; REAP-only papers start in REAP; SUPR-only papers get no REAP time |
+| Study materials | `materials/study-materials` | Sign-in required, free for every student, admin-only changes; signed direct upload (type, size, folder checks); registration only once Cloudinary confirms the asset; "(1)" names; short-lived signed download links; rename keeps the extension; deletes clean up storage (Cloudinary stubbed) |
 | Ops | `ops/observability`, `ops/indexes`, `ops/renumber-attempts` | Request ids, `/health`, `/ready`, error responses without stacks; missing-index detection and recreation; duplicate attempt-number renumbering migration |
 
 ## Browser E2E (`backend/tests/e2e`)
@@ -53,18 +56,46 @@ Uses `puppeteer-core` with a locally installed Chrome (`CHROME_PATH`, default
   hidden until submit and persisted; paid test locked without an entitlement; server
   timer; A–D options and number keys; watermark; copy attempt recorded; autosave and
   reload recovery; second tab → 409 → takeover (old token revoked); REAP advance; server
-  score and rank; the results page's plan for the next mock (1–3 steps; the AI disclosure line
-  appears only alongside AI-written notes).
-- **`admin.e2e.js`** (19 checks): all nine Studio tabs render without errors; question bank
+  score and rank; the results page's plan for the next mock (1–3 steps; the AI coach card
+  appears only when an AI interpretation is ready, so never on this AI-off server).
+- **`practice.e2e.js`** (19 checks): the dashboard eyebrow names the next UGEE once the set exam date
+  has passed, and the greeting capitalises the name; the practice builder lists real subjects
+  with counts and disables Start when nothing matches; a REAP-only paper opens in REAP (it used
+  to submit the moment it opened) with only REAP in the section bar; a SUPR-only untimed paper
+  shows no countdown and offers "Submit test"; practice results are unranked (four tiles) with no
+  AI coach card; dashboard mock stats leave practice out; the AI coach card renders (from an
+  intercepted ready interpretation) after the score tiles and before the plan.
+- **`mentor.e2e.js`** (40 checks): one floating button, now a `<button>` named "ACEIIIT Mentor /
+  Ask about your performance", hidden on exam screens; with no Gemini key the real server's
+  "isn't set up yet" state (no composer, WhatsApp link still inside). Then `/api/mentor` is
+  answered by an intercepted fake backend: six suggested prompts, the usage line, "Thinking…"
+  with Send disabled, a Markdown reply where HTML from the model is shown as text and never
+  runs, a failed reply that isn't counted and is retried with the same message id, minimise
+  keeps the conversation, the last free reply then the upgrade panel (exact copy, https CTA in
+  a new tab, reset date, Maybe Later), history open/delete, a conversation linked to the attempt
+  when opened from results, dark mode, reduced motion, the phone sheet (modal, inert page, Back
+  closes it) and sign-out removing the panel.
+- **`admin.e2e.js`** (36 checks): all ten Studio tabs render without errors; the ACEIIIT Mentor tab reports a missing key without showing one, saves allowances and programme codes, and refuses a non-https programme link; question bank
   pagination, server search with focus kept, drawer excludes attached questions and
-  attaches; integrity settings; Add Payment grants an entitlement.
-- **`responsive.e2e.js`**: login, forgot-password, dashboard, exams, progress, resources,
-  updates, account, instructions, exam, results and Admin Studio at 320, 360, 375, 390, 412,
+  attaches; the question image manager adds, sizes, replaces (a failed replace keeps the old
+  image), reorders and removes images and Save stores exactly that (uploads answered by an
+  interceptor), and the Studio preview shows sized images; integrity settings; Add Payment grants
+  an entitlement; User Payments lists every user from the server and Details opens a window.
+- **`responsive.e2e.js`**: login, forgot-password, every student page and sub-tab (dashboard;
+  exams, `exams-practice`, `exams-live`; progress, `progress-reports`; resources,
+  `resources-materials`; updates, `updates-events`; account, `account-package`,
+  `account-security`), instructions, exam, results and Admin Studio at 320, 360, 375, 390, 412,
   430, 480, 768 (phones and tablet with mobile + touch emulation), 1024, 1280 and 1440 px, plus
-  landscape phones 667×375, 812×375 and 844×390 (login, instructions, exam). It fails on
-  horizontal page overflow (it reports the elements causing it) or on nested scrollers that
-  double-scroll. `node tests/e2e/responsive.e2e.js progress,account` limits the routes;
-  `FULL=1` takes full-page screenshots for manual review. The current result is 0 issues.
+  landscape phones 667×375, 812×375 and 844×390 (login, instructions, exam). The student pages
+  run again in the dark theme at 320, 390, 430 and 768 (`<route>-<width>-dark.png`). It fails on
+  horizontal page overflow (it reports the elements causing it), on nested scrollers that
+  double-scroll, when the dashboard's right rail overlaps the main column instead of stacking
+  under it (≤992px), or when a card's content is wider than the card (test rows, Next Up,
+  progress, account, bookmark, practice and Micro-Quiz cards). A seeded notice renders the
+  Notice Board. `node tests/e2e/responsive.e2e.js progress,account` limits the routes;
+  `FULL=1` takes full-page screenshots for manual review; `UI_PUBLIC=<dir>` serves the frontend
+  from another directory (e.g. a `git archive HEAD backend/public` export) for a before/after
+  comparison. The current result is 0 issues.
 - **`mobile-flows.e2e.js`** (~170 checks, 390×844 touch emulation unless stated; run one flow
   with `node tests/e2e/mobile-flows.e2e.js <flow>[,<flow>]`, `SHOTS=1` for screenshots):
   - `drawer`: ☰ opens a modal drawer (aria-expanded, inert background, scroll lock, focus

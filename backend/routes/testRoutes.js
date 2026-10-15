@@ -1,6 +1,6 @@
 const express = require("express");
 
-const { listTests, getTestById, getTestQuestions, createTest, updateTest, deleteTest, submitQotdAttempt, createPracticeTest } = require("../controllers/testController");
+const { listTests, getTestById, getTestQuestions, createTest, updateTest, deleteTest, submitQotdAttempt, createPracticeTest, getPracticeOptions } = require("../controllers/testController");
 const { requireAuth, requireAdmin } = require("../middleware/auth");
 const { readLimiter, submissionLimiter } = require("../middleware/rateLimit");
 
@@ -12,6 +12,7 @@ router.param("id", objectIdParam);
 
 router.get("/", requireAuth, readLimiter(), listTests);
 router.post("/qotd-attempt", requireAuth, submitQotdAttempt);
+router.get("/practice/options", requireAuth, readLimiter(), getPracticeOptions);
 router.post("/practice", requireAuth, submissionLimiter(), createPracticeTest);
 router.get("/:id", requireAuth, readLimiter(), getTestById);
 router.get("/:id/questions", requireAuth, readLimiter(), getTestQuestions);

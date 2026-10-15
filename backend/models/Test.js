@@ -11,6 +11,9 @@ const testSchema = new mongoose.Schema(
     // "practice" tests are private, student-generated papers; never listed in the catalog.
     status: { type: String, enum: ["draft", "live", "practice"], default: "draft", index: true },
     isPractice: { type: Boolean, default: false },
+    // Untimed practice: the student sees no countdown; the server still closes the paper at
+    // its (generous) time cap, so an abandoned session ends.
+    untimed: { type: Boolean, default: false },
     ownerUserId: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null, index: true },
     displayOrder: { type: Number, default: 100, index: true },
     durationMinutes: { type: Number, default: 180 },

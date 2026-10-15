@@ -224,7 +224,7 @@ async function findActiveSession(userId, testId) {
  * An active session already past its deadline is finalized first, then a new one starts.
  */
 async function startSession({ auth, testId, examToken, req }) {
-  const { test } = await loadTestForSession(testId, auth);
+  const { test, snapshot } = await loadTestForSession(testId, auth);
 
   let existing = await findActiveSession(auth.userId, test._id);
   if (existing && computeTimeline(existing).expired) {
@@ -241,7 +241,14 @@ async function startSession({ auth, testId, examToken, req }) {
   }
 
   const token = newExamToken();
-  const { suprDurationMs, reapDurationMs } = durationsFor(test);
+  let { suprDurationMs, reapDurationMs } = durationsFor(test);
+  // A section with no questions (single-section practice papers) is skipped: no SUPR means
+  // the session opens straight in REAP; no REAP means the paper ends at the SUPR deadline.
+  const startedAt = new Date();
+  const hasSection = (key) => snapshot.questions.some((q) => (q.section === "REAP" ? "REAP" : "SUPR") === key);
+  const skipSupr = !hasSection("SUPR");
+  if (skipSupr) suprDurationMs = 0;
+  if (!hasSection("REAP")) reapDurationMs = 0;
   try {
     const session = await AttemptSession.create({
       userId: auth.userId,
@@ -250,7 +257,8 @@ async function startSession({ auth, testId, examToken, req }) {
       isPractice: test.status === "practice",
       userRole: String(auth.role || "student"),
       userEmail: String(auth.email || "").toLowerCase(),
-      startedAt: new Date(),
+      startedAt,
+      ...(skipSupr ? { suprLockedAt: startedAt, reapStartedAt: startedAt } : {}),
       suprDurationMs,
       reapDurationMs,
       examTokenHash: hashToken(token),

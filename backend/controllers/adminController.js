@@ -20,6 +20,7 @@ const { getRanksForAttempts, invalidateRankCache } = require("../services/rankSe
 const { escapeRegex } = require("../utils/escapeRegex");
 const IntegrityEvent = require("../models/IntegrityEvent");
 const { getActiveSeason } = require("../services/seasonService");
+const { getSiteCustomer, fetchSiteReceipt } = require("../services/siteCustomerService");
 const { purgeUserCascade } = require("../services/accountPurgeService");
 const { logger, errorSummary } = require("../utils/logger");
 
@@ -36,6 +37,7 @@ const questionInputSchema = z.object({
   prompt: z.string().min(1),
   passage: z.string().optional(),
   imageUrls: z.array(z.string()).optional(),
+  imageWidths: z.array(z.number().int().min(0).max(100)).optional(),
   options: z.array(z.string()).min(2).max(8),
   correctOption: z.number().int().min(0).max(7),
   explanation: z.string().optional(),
@@ -93,6 +95,23 @@ function normalizeImageUrls(body) {
   return [];
 }
 
+/** Image display widths: 0 (Auto) or 20–100 (% of the question column); bad values become Auto. */
+function normalizeImageWidths(body) {
+  const parsed = parseMaybeJson(body.imageWidths, null);
+  const list = Array.isArray(parsed) ? parsed : String(body.imageWidths || "").split(",");
+  return list.map((value) => {
+    const n = Math.round(Number(value));
+    if (!Number.isFinite(n) || n <= 0) return 0;
+    return Math.max(20, Math.min(100, n));
+  });
+}
+
+/** One width per image, by index: missing entries are Auto, extras are dropped. */
+function alignImageWidths(widths, count) {
+  const list = Array.isArray(widths) ? widths : [];
+  return Array.from({ length: count }, (_value, index) => Number(list[index]) || 0);
+}
+
 function normalizeQuestionPayload(body) {
   const source = body || {};
   const mapped = {};
@@ -113,6 +132,9 @@ function normalizeQuestionPayload(body) {
   }
   if (Object.prototype.hasOwnProperty.call(source, "imageUrls")) {
     mapped.imageUrls = normalizeImageUrls(source);
+  }
+  if (Object.prototype.hasOwnProperty.call(source, "imageWidths")) {
+    mapped.imageWidths = normalizeImageWidths(source);
   }
   const hasOptions =
     Object.prototype.hasOwnProperty.call(source, "options") ||
@@ -189,7 +211,7 @@ async function recalculateTestsMetadata(testIds) {
   );
 }
 
-const ADMIN_QUESTION_FIELDS = "section topic difficulty prompt passage imageUrls options marks negativeMarks correctOption explanation createdAt updatedAt";
+const ADMIN_QUESTION_FIELDS = "section topic difficulty prompt passage imageUrls imageWidths options marks negativeMarks correctOption explanation createdAt updatedAt";
 
 function serializeAdminQuestion(q) {
   return {
@@ -200,6 +222,7 @@ function serializeAdminQuestion(q) {
     prompt: q.prompt,
     passage: q.passage || "",
     imageUrls: Array.isArray(q.imageUrls) ? q.imageUrls : [],
+    imageWidths: Array.isArray(q.imageWidths) ? q.imageWidths : [],
     imageUrl: (Array.isArray(q.imageUrls) && q.imageUrls[0]) || "",
     options: Array.isArray(q.options) ? q.options : [],
     marks: q.marks,
@@ -274,6 +297,7 @@ async function snapshot(req, res, next) {
       AppConfig.findOne({ key: "global" }).lean(),
     ]);
     const questionBankTotal = await Question.countDocuments({ deletedAt: null });
+    const paidUserCount = await User.countDocuments({ deletedAt: null, ...(await enrolledUserClause()) });
 
     const snapshotRanks = await getRanksForAttempts(attempts);
     res.json({
@@ -330,6 +354,7 @@ async function snapshot(req, res, next) {
         isOnline: Boolean(u.lastSeenAt && (Date.now() - new Date(u.lastSeenAt).getTime() < 5 * 60 * 1000)),
       })),
       userCount,
+      paidUserCount,
       appConfig: {
         ugeeExamDate: appConfig && appConfig.ugeeExamDate ? appConfig.ugeeExamDate : null,
         featuredTestId: appConfig && appConfig.featuredTestId ? String(appConfig.featuredTestId) : "",
@@ -440,6 +465,7 @@ async function createQuestion(req, res, next) {
       prompt: input.prompt,
       passage: input.passage || "",
       imageUrls,
+      imageWidths: alignImageWidths(input.imageWidths, imageUrls.length),
       options: input.options,
       correctOption: input.correctOption,
       explanation: input.explanation || "",
@@ -472,6 +498,10 @@ async function updateQuestion(req, res, next) {
       question.imageUrls = Array.isArray(question.imageUrls) ? question.imageUrls : [];
       question.imageUrls = question.imageUrls.concat(uploadedImageUrls);
     }
+    question.imageWidths = alignImageWidths(
+      input.imageWidths !== undefined ? input.imageWidths : question.imageWidths,
+      (question.imageUrls || []).length
+    );
     await question.save();
     await recalculateTestsMetadata(attachedTests.map((test) => test._id));
     invalidateAllTestCaches();
@@ -922,6 +952,33 @@ async function revokeUserPayment(req, res, next) {
   }
 }
 
+/** What the Studio shows about a user: no tokens, provider subject ids or login counters. */
+function adminUserView(u) {
+  return {
+    id: String(u._id),
+    name: u.name || "",
+    email: u.email || "",
+    role: u.role || "student",
+    isPaid: Boolean(u.isPaid),
+    status: u.status || "",
+    emailVerified: Boolean(u.emailVerified),
+    signInMethods: [u.googleSubject ? "google" : null, u.appleSubject ? "apple" : null].filter(Boolean),
+    createdAt: u.createdAt,
+    lastSeenAt: u.lastSeenAt || null,
+    lockedUntil: u.lockedUntil && new Date(u.lockedUntil) > new Date() ? u.lockedUntil : null,
+  };
+}
+
+/** Enrolled = the paid flag, a verified payment, or an active entitlement (by email). */
+async function enrolledUserClause() {
+  const [verifiedPayments, activeEntitlements] = await Promise.all([
+    PaymentRecord.find({ status: "verified" }).distinct("normalizedEmail"),
+    Entitlement.find({ status: "active" }).distinct("normalizedEmail"),
+  ]);
+  const emails = Array.from(new Set([...verifiedPayments, ...activeEntitlements]));
+  return { $or: [{ isPaid: true }, { normalizedEmail: { $in: emails } }] };
+}
+
 async function listUsersExtended(req, res, next) {
   try {
     const page = Math.max(1, Number(req.query.page || 1));
@@ -942,17 +999,9 @@ async function listUsersExtended(req, res, next) {
       ];
     }
 
+    const enrolledClause = await enrolledUserClause();
     if (isEnrolledOnly === "true" || isEnrolledOnly === "1") {
-      const verifiedPayments = await PaymentRecord.find({ status: "verified" }).distinct("normalizedEmail");
-      const activeEntitlements = await Entitlement.find({ status: "active" }).distinct("normalizedEmail");
-
-      const enrolledEmailSet = new Set([
-        ...verifiedPayments,
-        ...activeEntitlements,
-      ]);
-
-      // Enrolled = paid flag or a verified payment/active entitlement; the search (if any) still applies.
-      const enrolledClause = { $or: [{ isPaid: true }, { normalizedEmail: { $in: Array.from(enrolledEmailSet) } }] };
+      // The search (if any) still applies.
       if (filter.$or) {
         filter.$and = [{ $or: filter.$or }, enrolledClause];
         delete filter.$or;
@@ -961,7 +1010,11 @@ async function listUsersExtended(req, res, next) {
       }
     }
 
-    const total = await User.countDocuments(filter);
+    const [total, allCount, paidCount] = await Promise.all([
+      User.countDocuments(filter),
+      User.countDocuments({ deletedAt: null }),
+      User.countDocuments({ deletedAt: null, ...enrolledClause }),
+    ]);
     const users = await User.find(filter)
       .sort({ createdAt: -1 })
       .skip((page - 1) * limit)
@@ -985,8 +1038,9 @@ async function listUsersExtended(req, res, next) {
       const nEmail = u.normalizedEmail || String(u.email || "").toLowerCase().trim();
       const userEnts = entMap.get(nEmail) || [];
       return {
-        ...u,
-        id: String(u._id),
+        ...adminUserView(u),
+        // Enrolled the same way the Paid filter counts it.
+        isPaid: Boolean(u.isPaid) || userEnts.length > 0,
         entitlements: userEnts.map((e) => ({
           id: String(e._id),
           seasonName: e.seasonId ? e.seasonId.name : "Active Season",
@@ -999,6 +1053,7 @@ async function listUsersExtended(req, res, next) {
 
     res.json({
       users: mappedUsers,
+      counts: { all: allCount, paid: paidCount },
       pagination: {
         page,
         limit,
@@ -1037,10 +1092,7 @@ async function getUserDetailExtended(req, res, next) {
     ]);
 
     res.json({
-      user: {
-        ...user,
-        id: String(user._id),
-      },
+      user: adminUserView(user),
       attempts: await (async () => {
         const ranks = await getRanksForAttempts(attempts);
         return attempts.map((a) => ({ ...a, id: String(a._id), ...(ranks.get(String(a._id)) || { rank: 0, percentile: 0 }) }));
@@ -1050,6 +1102,35 @@ async function getUserDetailExtended(req, res, next) {
     });
   } catch (err) {
     next(err);
+  }
+}
+
+/** The student's orders, payments and verified entitlements on the AceIIIT site (read-only). */
+async function getUserSiteOrders(req, res, next) {
+  try {
+    const user = await User.findById(req.params.id).select("email deletedAt").lean();
+    if (!user || user.deletedAt) return res.status(404).json({ error: "User not found" });
+    const data = await getSiteCustomer(user.email, { fresh: req.query.fresh === "1" });
+    res.set("Cache-Control", "no-store");
+    return res.json(data);
+  } catch (err) {
+    return next(err);
+  }
+}
+
+/** A payment screenshot from the AceIIIT site, streamed so the browser never sees a site link. */
+async function getUserSiteReceipt(req, res, next) {
+  try {
+    const user = await User.findById(req.params.id).select("email deletedAt").lean();
+    if (!user || user.deletedAt) return res.status(404).json({ error: "User not found" });
+    const receipt = await fetchSiteReceipt(user.email, req.params.paymentId);
+    res.set("Cache-Control", "private, no-store");
+    res.set("Content-Type", receipt.contentType);
+    res.set("Content-Disposition", "inline");
+    res.set("X-Content-Type-Options", "nosniff");
+    return res.send(receipt.body);
+  } catch (err) {
+    return next(err);
   }
 }
 
@@ -1256,6 +1337,8 @@ async function invalidateAttempt(req, res, next) {
 }
 
 module.exports = {
+  getUserSiteOrders,
+  getUserSiteReceipt,
   getAttemptIntegrity,
   invalidateAttempt,
   snapshot,

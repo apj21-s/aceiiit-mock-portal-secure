@@ -275,8 +275,11 @@ describe("typed numeric-claim validation", () => {
 describe("AI isolation (dependency scan)", () => {
   test("integrity, entitlement, rank and payment code never imports the AI layer", () => {
     const root = path.join(__dirname, "..", "..");
-    const allowed = new Set(["app.js", "server.js", "controllers/aiController.js", "services/aiInterpretationService.js"]);
+    // services/mentorService.js is the ACEIIIT Mentor's AI consumer (like aiController); its
+    // tier and allowance logic lives in mentorAccessService, which must stay AI-free.
+    const allowed = new Set(["app.js", "server.js", "controllers/aiController.js", "services/aiInterpretationService.js", "services/mentorService.js"]);
     const offenders = [];
+    const mentorImporters = [];
     for (const dir of ["", "controllers", "services", "routes", "middleware", "models", "utils", "config"]) {
       const full = path.join(root, dir);
       for (const file of fs.readdirSync(full).filter((f) => f.endsWith(".js"))) {
@@ -285,9 +288,40 @@ describe("AI isolation (dependency scan)", () => {
         if (/aiInterpretationService|AttemptInterpretation/.test(src) && !allowed.has(rel) && rel !== "models/AttemptInterpretation.js") {
           offenders.push(rel);
         }
+        if (/mentorService["']\)/.test(src) && rel !== "controllers/mentorController.js") mentorImporters.push(rel);
       }
     }
     // routes/attemptRoutes.js and routes/adminRoutes.js only mount aiController (read-only).
     expect(offenders.filter((f) => !f.startsWith("routes/"))).toEqual([]);
+    // Nothing else (entitlements, payments, integrity, ranks, the mentor's own tier and usage
+    // code) can reach the AI layer through the mentor.
+    expect(mentorImporters).toEqual([]);
+  });
+});
+
+describe("practice papers", () => {
+  test("a submitted practice attempt never reaches Gemini and resolves to the deterministic read", async () => {
+    await createUser({ email: "student1@test.local", name: "Riya Sharma" });
+    const questions = await Question.insertMany([
+      { section: "SUPR", topic: "algebra", difficulty: "easy", prompt: "P1", options: ["a", "b", "c", "d"], correctOption: 1 },
+      { section: "SUPR", topic: "algebra", difficulty: "hard", prompt: "P2", options: ["a", "b", "c", "d"], correctOption: 2 },
+    ]);
+    await createTest({ isFree: true, questions });
+    const client = await loginClient(app, "student1@test.local");
+    const created = await client.post("/api/tests/practice", { subject: "all", count: 2, timerMinutes: 10 });
+    const start = await client.agent.post("/api/attempt/start").set("X-CSRF-Token", client.csrf).send({ testId: created.body.test.id });
+    const submit = await client.agent
+      .post("/api/attempt")
+      .set("X-CSRF-Token", client.csrf)
+      .set("X-Exam-Token", start.body.examToken)
+      .set("Idempotency-Key", `ai-practice-${start.body.session.id}`)
+      .send({ sessionId: start.body.session.id });
+    expect(submit.body.attempt.isPractice).toBe(true);
+    await new Promise((r) => setTimeout(r, 100));
+    const res = await client.get(`/api/analysis/${submit.body.attempt.id}/interpretation`);
+    expect(res.body.interpretation.source).toBe("deterministic");
+    expect(res.body.interpretation.pending).toBe(false);
+    await ai.processPendingJobs();
+    expect(generateContent).not.toHaveBeenCalled();
   });
 });

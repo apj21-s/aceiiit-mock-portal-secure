@@ -12,10 +12,10 @@ const TEST_PUBLIC_FIELDS =
   "title subtitle series type isFree status displayOrder durationMinutes sectionDurations instructions benchmarkScores totalMarks negativeMarks questionIds shuffleQuestions shuffleOptions integrity seasonId createdAt updatedAt";
 
 const QUESTION_PUBLIC_FIELDS =
-  "section topic difficulty prompt passage imageUrls options marks negativeMarks createdAt updatedAt";
+  "section topic difficulty prompt passage imageUrls imageWidths options marks negativeMarks createdAt updatedAt";
 
 const QUESTION_SCORING_FIELDS =
-  "section topic prompt passage imageUrls options marks negativeMarks correctOption explanation";
+  "section topic prompt passage imageUrls imageWidths options marks negativeMarks correctOption explanation";
 
 function integrityOf(test) {
   return {
@@ -67,6 +67,7 @@ function mapPublicQuestion(question) {
     prompt: question.prompt,
     passage: question.passage || "",
     imageUrls: Array.isArray(question.imageUrls) ? question.imageUrls : [],
+    imageWidths: Array.isArray(question.imageWidths) ? question.imageWidths : [],
     imageUrl: (Array.isArray(question.imageUrls) && question.imageUrls[0]) || "",
     options: Array.isArray(question.options) ? question.options : [],
     marks: question.marks,
@@ -180,6 +181,7 @@ async function getTestRuntimeSnapshot(testId) {
     prompt: question.prompt,
     passage: question.passage || "",
     imageUrls: Array.isArray(question.imageUrls) ? question.imageUrls : [],
+    imageWidths: Array.isArray(question.imageWidths) ? question.imageWidths : [],
     options: Array.isArray(question.options) ? question.options : [],
     marks: question.marks,
     negativeMarks: question.negativeMarks,

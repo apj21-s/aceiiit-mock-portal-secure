@@ -23,7 +23,7 @@
         noticeBody: "",
       },
       bookmarks: {},
-      studyMaterials: { folders: [], files: [] },
+      studyMaterials: { folders: [], loadedAt: 0 },
     },
     // Auth is an httpOnly cookie set by the server; the browser only caches the user profile.
     session: {
@@ -37,10 +37,6 @@
 
   function nowIso() {
     return new Date().toISOString();
-  }
-
-  function createId(prefix) {
-    return prefix + "-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8);
   }
 
   function normalizeEmail(value) {
@@ -72,7 +68,16 @@
     state.db.reminders = Array.isArray(state.db.reminders) ? state.db.reminders : [];
     state.db.appConfig = Object.assign({ ugeeExamDate: null, featuredTestId: "", noticeTitle: "", noticeBody: "" }, state.db.appConfig || {});
     state.db.bookmarks = state.db.bookmarks || {};
-    state.db.studyMaterials = state.db.studyMaterials || { folders: [], files: [] };
+    // Study materials are server-backed now. Folders/files an admin once saved only in this
+    // browser (old builds) move aside so the Studio can offer to upload them.
+    var storedMaterials = state.db.studyMaterials;
+    if (storedMaterials && Array.isArray(storedMaterials.files)) {
+      if (storedMaterials.files.length || (storedMaterials.folders || []).length) {
+        state.db.legacyStudyMaterials = { folders: storedMaterials.folders || [], files: storedMaterials.files };
+      }
+      storedMaterials = null;
+    }
+    state.db.studyMaterials = storedMaterials && Array.isArray(storedMaterials.folders) ? storedMaterials : { folders: [], loadedAt: 0 };
     // Drop client-only practice papers and attempts from older builds (practice is server-built now).
     state.db.tests = (state.db.tests || []).filter(function (t) { return !(t && String(t.id || "").indexOf("practice_") === 0); });
     state.db.attempts = (state.db.attempts || []).filter(function (a) {
@@ -173,6 +178,7 @@
       prompt: String(source.prompt || "").trim(),
       passage: String(source.passage || ""),
       imageUrls: Array.isArray(source.imageUrls) ? source.imageUrls.slice() : [],
+      imageWidths: Array.isArray(source.imageWidths) ? source.imageWidths.map(function (w) { return Number(w) || 0; }) : undefined,
       options: Array.isArray(source.options) ? source.options.map(function (o) { return String(o || ""); }) : [],
       correctOption: toNumber(source.correctOption, 0),
       explanation: String(source.explanation || ""),
@@ -451,11 +457,15 @@
       return acc;
     }, {});
 
-    var localPracticeTests = (state.db.tests || []).filter(function (t) { return t && t.isPractice; });
+    var serverPracticeTests = Array.isArray(testsPayload.practiceTests) ? testsPayload.practiceTests : [];
+    var serverPracticeIds = serverPracticeTests.reduce(function (acc, t) { acc[t.id] = true; return acc; }, {});
+    var localPracticeTests = (state.db.tests || []).filter(function (t) { return t && t.isPractice && !serverPracticeIds[t.id]; });
 
     state.db.tests = (testsPayload.tests || []).map(function (test) {
       return mergeTestData(existingTestsById[test.id], test);
-    }).concat(localPracticeTests);
+    }).concat(serverPracticeTests.map(function (test) {
+      return Object.assign({}, existingTestsById[test.id] || {}, test, { isPractice: true });
+    }), localPracticeTests);
     state.db.questions = Array.isArray(testsPayload.questions) ? clone(testsPayload.questions) : [];
     state.db.qotd = testsPayload.qotd || null;
     state.db.questionCache = state.db.questionCache || {};
@@ -1567,7 +1577,7 @@
     var form = new FormData();
     Object.keys(mapped).forEach(function (key) {
       if (mapped[key] === undefined || mapped[key] === null) return;
-      if (key === "options" || key === "imageUrls") {
+      if (key === "options" || key === "imageUrls" || key === "imageWidths") {
         form.append(key, JSON.stringify(mapped[key]));
       } else {
         form.append(key, String(mapped[key]));
@@ -1587,7 +1597,7 @@
     var files = arguments.length > 2 ? arguments[2] : null;
     var hasFields = false;
     if (input && typeof input === "object") {
-      ["section", "topic", "difficulty", "prompt", "passage", "imageUrls", "options", "correctOption", "explanation", "marks", "negativeMarks"].forEach(function (key) {
+      ["section", "topic", "difficulty", "prompt", "passage", "imageUrls", "imageWidths", "options", "correctOption", "explanation", "marks", "negativeMarks"].forEach(function (key) {
         if (Object.prototype.hasOwnProperty.call(input, key)) {
           hasFields = true;
         }
@@ -1597,7 +1607,7 @@
     var form = new FormData();
     Object.keys(mapped).forEach(function (key) {
       if (mapped[key] === undefined || mapped[key] === null) return;
-      if (key === "options" || key === "imageUrls") {
+      if (key === "options" || key === "imageUrls" || key === "imageWidths") {
         form.append(key, JSON.stringify(mapped[key]));
       } else {
         form.append(key, String(mapped[key]));
@@ -1846,20 +1856,7 @@
   }
 
   async function getAttemptAnalysis(attemptId) {
-    var attempt = (state.db.attempts || []).find(function (item) { return item.id === attemptId; });
-    var test = attempt ? getTestById(attempt.testId) : null;
-    if (test && test.isPractice && attempt && attempt.result) {
-        return {
-           analysis: "Practice Test Mode",
-           totalTime: attempt.result.timeTakenSeconds,
-           unattemptedCount: attempt.result.unattemptedCount,
-           sectionWise: {
-              SUPR: { score: attempt.result.score, correct: attempt.result.correctCount, wrong: attempt.result.wrongCount, skipped: attempt.result.skippedCount },
-              REAP: { score: 0, correct: 0, wrong: 0, skipped: 0 }
-           }
-        };
-    }
-
+    var attempt;
     var payload = await api("/api/analysis/" + encodeURIComponent(String(attemptId || "")), { method: "GET" });
     var summary = payload && payload.summary ? payload.summary : null;
     if (!summary) return null;
@@ -1893,40 +1890,6 @@
   }
 
   async function getAttemptQuestionReview(attemptId, page, limit) {
-    var attempt = getAttemptById(attemptId);
-    var test = attempt ? getTestById(attempt.testId) : null;
-    if (test && test.isPractice) {
-        var questions = getQuestionsForTest(test.id);
-        page = Number(page || 1);
-        limit = Number(limit || 20);
-        var offset = (page - 1) * limit;
-        var paginated = questions.slice(offset, offset + limit);
-        
-        var answers = attempt.answers || {};
-        var timeSpent = attempt.timeSpent || {};
-        
-        var reviewQuestions = paginated.map(function(q) {
-            var ans = answers[q.id];
-            var isCorrect = ans !== undefined && ans !== null && ans !== "" && Number(ans) === Number(q.correctOption);
-            var status = (ans === undefined || ans === null || ans === "") ? "skipped" : (isCorrect ? "correct" : "wrong");
-            var marks = isCorrect ? (q.marks || 1) : 0;
-            var negativeMarks = (!isCorrect && status !== "skipped") ? (q.negativeMarks || 0) : 0;
-            
-            return Object.assign({}, q, {
-                status: status,
-                selectedOption: ans !== undefined && ans !== null && ans !== "" ? Number(ans) : null,
-                timeSpent: timeSpent[q.id] || 0,
-                marks: marks,
-                negativeMarks: negativeMarks
-            });
-        });
-        
-        return {
-            questions: reviewQuestions,
-            pagination: { page: page, limit: limit, total: questions.length, pages: Math.ceil(questions.length / limit), hasMore: offset + limit < questions.length }
-        };
-    }
-
     var query = "?page=" + encodeURIComponent(String(page || 1)) + "&limit=" + encodeURIComponent(String(limit || 20));
     try {
       var resultPayload = await api("/api/result/" + encodeURIComponent(String(attemptId || "")) + query + "&includeReview=1", { method: "GET" });
@@ -2042,6 +2005,49 @@
     return api("/api/admin/users/" + encodeURIComponent(String(userId)) + "/details", { method: "GET" });
   }
 
+  // ACEIIIT Mentor (signed-in student). Tier and remaining replies always come from the server.
+  async function getMentorUsage() {
+    var data = await api("/api/mentor/usage", { method: "GET" });
+    return data && data.usage ? data.usage : null;
+  }
+
+  async function listMentorConversations() {
+    var data = await api("/api/mentor/conversations", { method: "GET" });
+    return data && Array.isArray(data.conversations) ? data.conversations : [];
+  }
+
+  async function createMentorConversation(attemptId) {
+    var data = await api("/api/mentor/conversations", { method: "POST", body: JSON.stringify(attemptId ? { attemptId: String(attemptId) } : {}) });
+    return data && data.conversation ? data.conversation : null;
+  }
+
+  async function getMentorConversation(conversationId) {
+    return api("/api/mentor/conversations/" + encodeURIComponent(String(conversationId)), { method: "GET" });
+  }
+
+  async function deleteMentorConversation(conversationId) {
+    return api("/api/mentor/conversations/" + encodeURIComponent(String(conversationId)), { method: "DELETE" });
+  }
+
+  async function sendMentorMessage(conversationId, content, clientMessageId) {
+    return api("/api/mentor/conversations/" + encodeURIComponent(String(conversationId)) + "/messages", {
+      method: "POST",
+      body: JSON.stringify({ content: String(content || ""), clientMessageId: String(clientMessageId || "") }),
+    });
+  }
+
+  async function getAdminMentor() {
+    return api("/api/admin/mentor", { method: "GET" });
+  }
+
+  async function updateAdminMentor(patch) {
+    return api("/api/admin/mentor", { method: "PUT", body: JSON.stringify(patch || {}) });
+  }
+
+  async function getUserSiteOrders(userId) {
+    return api("/api/admin/users/" + encodeURIComponent(String(userId)) + "/site-orders", { method: "GET" });
+  }
+
   async function listSeasons() {
     return api("/api/admin/seasons", { method: "GET" });
   }
@@ -2110,45 +2116,61 @@
     return state.db.bookmarks[userId].some(function(b) { return b.id === questionId; });
   }
 
+  // Study materials live on the server (free for every signed-in student). The list is cached
+  // here so pages render at once; refreshStudyMaterials() reloads it.
   function getStudyMaterials() {
+    return clone(state.db.studyMaterials || { folders: [], loadedAt: 0 });
+  }
+
+  async function refreshStudyMaterials() {
+    var data = await api("/api/materials", { method: "GET" });
+    state.db.studyMaterials = {
+      folders: Array.isArray(data && data.folders) ? data.folders : [],
+      maxBytes: Number((data && data.maxBytes) || 0),
+      loadedAt: Date.now(),
+    };
+    saveState();
     return clone(state.db.studyMaterials);
   }
 
-  function createFolder(name, color, icon) {
-    var folder = {
-      id: createId("fldr"),
-      name: String(name || "New Folder").trim(),
-      color: String(color || "var(--brand-accent)"),
-      icon: String(icon || "📁"),
-      createdAt: nowIso()
-    };
-    state.db.studyMaterials.folders.push(folder);
-    saveState();
-    return clone(folder);
+  async function createMaterialFolder(input) {
+    var data = await api("/api/materials/folders", { method: "POST", body: JSON.stringify(input || {}) });
+    return data.folder;
   }
 
-  function deleteFolder(folderId) {
-    state.db.studyMaterials.folders = state.db.studyMaterials.folders.filter(function(f) { return f.id !== folderId; });
-    state.db.studyMaterials.files = state.db.studyMaterials.files.filter(function(f) { return f.folderId !== folderId; });
-    saveState();
+  async function updateMaterialFolder(folderId, input) {
+    var data = await api("/api/materials/folders/" + encodeURIComponent(folderId), { method: "PATCH", body: JSON.stringify(input || {}) });
+    return data.folder;
   }
 
-  function uploadMaterial(folderId, fileData) {
-    var file = {
-      id: createId("file"),
-      folderId: String(folderId),
-      name: String(fileData.name || "Untitled"),
-      size: String(fileData.size || "Unknown"),
-      url: String(fileData.url || ""),
-      createdAt: nowIso()
-    };
-    state.db.studyMaterials.files.push(file);
-    saveState();
-    return clone(file);
+  async function deleteMaterialFolder(folderId) {
+    return api("/api/materials/folders/" + encodeURIComponent(folderId), { method: "DELETE" });
   }
 
-  function deleteMaterial(fileId) {
-    state.db.studyMaterials.files = state.db.studyMaterials.files.filter(function(f) { return f.id !== fileId; });
+  async function signMaterialUpload(input) {
+    return api("/api/materials/uploads/sign", { method: "POST", body: JSON.stringify(input || {}) });
+  }
+
+  async function registerMaterialFile(input) {
+    var data = await api("/api/materials/files", { method: "POST", body: JSON.stringify(input || {}) });
+    return data.file;
+  }
+
+  async function renameMaterialFile(fileId, name) {
+    var data = await api("/api/materials/files/" + encodeURIComponent(fileId), { method: "PATCH", body: JSON.stringify({ name: name }) });
+    return data.file;
+  }
+
+  async function deleteMaterialFile(fileId) {
+    return api("/api/materials/files/" + encodeURIComponent(fileId), { method: "DELETE" });
+  }
+
+  function getLegacyStudyMaterials() {
+    return state.db.legacyStudyMaterials ? clone(state.db.legacyStudyMaterials) : null;
+  }
+
+  function clearLegacyStudyMaterials() {
+    delete state.db.legacyStudyMaterials;
     saveState();
   }
 
@@ -2158,6 +2180,11 @@
       var test = getTestById(a.testId);
       return test && test.isPractice;
     }).length;
+  }
+
+  async function getPracticeOptions(difficulty) {
+    var query = difficulty && difficulty !== "all" ? "?difficulty=" + encodeURIComponent(difficulty) : "";
+    return api("/api/tests/practice/options" + query, { method: "GET" });
   }
 
   /** Server-built practice paper drawn from questions this student can access. */
@@ -2279,6 +2306,15 @@
     revokePaymentNew: revokePaymentNew,
     resendPaymentEmail: resendPaymentEmail,
     listUsersExtended: listUsersExtended,
+    getUserSiteOrders: getUserSiteOrders,
+    getMentorUsage: getMentorUsage,
+    listMentorConversations: listMentorConversations,
+    createMentorConversation: createMentorConversation,
+    getMentorConversation: getMentorConversation,
+    deleteMentorConversation: deleteMentorConversation,
+    sendMentorMessage: sendMentorMessage,
+    getAdminMentor: getAdminMentor,
+    updateAdminMentor: updateAdminMentor,
     getUserDetailsExtended: getUserDetailsExtended,
     listSeasons: listSeasons,
     createSeason: createSeason,
@@ -2312,11 +2348,18 @@
     removeBookmark: removeBookmark,
     hasBookmark: hasBookmark,
     getStudyMaterials: getStudyMaterials,
-    createFolder: createFolder,
-    deleteFolder: deleteFolder,
-    uploadMaterial: uploadMaterial,
-    deleteMaterial: deleteMaterial,
+    refreshStudyMaterials: refreshStudyMaterials,
+    createMaterialFolder: createMaterialFolder,
+    updateMaterialFolder: updateMaterialFolder,
+    deleteMaterialFolder: deleteMaterialFolder,
+    signMaterialUpload: signMaterialUpload,
+    registerMaterialFile: registerMaterialFile,
+    renameMaterialFile: renameMaterialFile,
+    deleteMaterialFile: deleteMaterialFile,
+    getLegacyStudyMaterials: getLegacyStudyMaterials,
+    clearLegacyStudyMaterials: clearLegacyStudyMaterials,
     generatePracticeTest: generatePracticeTest,
+    getPracticeOptions: getPracticeOptions,
     getPracticeAttemptsCount: getPracticeAttemptsCount
   };
 

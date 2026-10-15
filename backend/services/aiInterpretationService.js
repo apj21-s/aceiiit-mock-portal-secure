@@ -397,6 +397,53 @@ async function callGemini(payload) {
 }
 
 // ---------------------------------------------------------------------------
+// Mentor replies: one plain-text generation on the same client, timeout and breaker. No
+// automatic retries (a failed reply costs the student nothing and they can retry); a quota
+// error opens the breaker, and so does a refused key/project (401/403) for 10 minutes.
+// ---------------------------------------------------------------------------
+const DENIED_BREAKER_MS = 10 * 60 * 1000;
+
+function mentorProviderError(kind, message, status) {
+  return Object.assign(new Error(message), { kind, status: status || 0 });
+}
+
+async function generateMentorReply({ systemInstruction, contents, maxOutputTokens = 900, temperature = 0.4 }) {
+  const cfg = config();
+  if (!cfg.apiKey) throw mentorProviderError("not_configured", "GEMINI_API_KEY is not set");
+  const state = breakerState();
+  if (state.open) throw mentorProviderError("breaker_open", `provider paused: ${state.reason}`);
+  const client = clientFactory(cfg.apiKey);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), cfg.timeoutMs);
+  try {
+    const response = await client.models.generateContent({
+      model: cfg.model,
+      contents,
+      config: { systemInstruction, temperature, maxOutputTokens, abortSignal: controller.signal },
+    });
+    const replyText = response && typeof response.text === "string" ? response.text.trim() : String((response && response.text) || "").trim();
+    if (!replyText) throw mentorProviderError("empty", "the provider returned no text");
+    return { text: replyText, model: cfg.model };
+  } catch (error) {
+    if (error && error.kind) throw error;
+    const kind = classifyError(error);
+    const status = Number(error && (error.status || error.code)) || 0;
+    if (kind === "quota") {
+      openBreaker("quota_exhausted", parseRetryDelayMs(error));
+      throw mentorProviderError("quota", "provider quota exhausted", status);
+    }
+    if (status === 401 || status === 403) {
+      openBreaker("provider_denied", DENIED_BREAKER_MS);
+      throw mentorProviderError("denied", "the provider refused this key or project", status);
+    }
+    if (status === 404) throw mentorProviderError("model_unavailable", "the configured model is not available", status);
+    throw mentorProviderError(kind === "retry" ? "unavailable" : "fatal", "the provider failed", status);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Job lifecycle
 // ---------------------------------------------------------------------------
 async function buildEvidenceForAttempt(attempt) {
@@ -460,6 +507,8 @@ async function processJob(job) {
     return `fallback:${reason}`;
   };
 
+  // Custom practice papers are short; AI is kept for full mocks (and their quota).
+  if (attempt.isPractice) return fallback("practice");
   if (!cfg.enabled) return fallback("disabled");
   if (!cfg.apiKey) return fallback("not_configured");
   if (breakerState().open) return fallback("breaker_open", new Date(breaker.openUntil));
@@ -507,8 +556,9 @@ async function getInterpretationForAttempt(attempt) {
     doc = await AttemptInterpretation.findOne({ attemptId: attempt._id }).lean();
   }
   const cfg = config();
-  if (doc.status === "pending" && (!cfg.enabled || !cfg.apiKey)) {
-    // No AI will run: resolve to the deterministic interpretation right away.
+  if (doc.status === "pending" && (!cfg.enabled || !cfg.apiKey || attempt.isPractice)) {
+    // No AI will run (off, unconfigured, or a practice paper): resolve to the deterministic
+    // interpretation right away.
     const claimed = await AttemptInterpretation.findOneAndUpdate(
       { _id: doc._id, status: "pending" },
       { $set: { status: "processing", claimedAt: new Date() }, $inc: { attemptCount: 1 } },
@@ -570,6 +620,7 @@ class InterpretationWorker {
 const interpretationWorker = new InterpretationWorker();
 
 module.exports = {
+  generateMentorReply,
   InterpretationSchema,
   RESPONSE_JSON_SCHEMA,
   PROMPT_VERSION,

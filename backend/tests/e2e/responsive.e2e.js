@@ -1,6 +1,10 @@
-// Responsive audit: every key route at 8 widths. Reports horizontal page overflow, the
-// elements causing it, and nested vertical scrollers; writes screenshots to the E2E shots dir.
+// Responsive audit: every student route and sub-tab at phone, tablet and desktop widths, plus
+// a dark-theme pass at phone widths and 768. Reports horizontal page overflow (and the elements
+// causing it), nested vertical scrollers, dashboard columns that overlap instead of stacking,
+// and cards whose content is wider than the card; writes screenshots to the E2E shots dir.
 // Usage: node tests/e2e/responsive.e2e.js [route,route...]   (exits 1 on any issue)
+// UI_PUBLIC=<dir> serves the frontend from <dir> instead of public/ (e.g. a
+// `git archive HEAD backend/public` export) for a before/after comparison.
 const path = require("path");
 const fs = require("fs");
 const { spawn } = require("child_process");
@@ -8,6 +12,8 @@ const puppeteer = require("puppeteer-core");
 const { BACKEND, CHROME_PATH, SHOTS_DIR, serverEnv, newHermeticPage } = require("./helpers");
 
 const ONLY = process.argv[2] ? process.argv[2].split(",") : null;
+const UI_PUBLIC = process.env.UI_PUBLIC ? path.resolve(process.env.UI_PUBLIC) : null;
+const MIME = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".woff2": "font/woff2", ".json": "application/json", ".ico": "image/x-icon" };
 // FULL=1 captures full-page screenshots of the student routes (for manual review).
 const FULL = !!process.env.FULL;
 const PORT = 4979;
@@ -24,11 +30,29 @@ const VIEWPORTS = [
   { name: "landscape-844x390", width: 844, height: 390, isMobile: true, hasTouch: true },
 ];
 const LANDSCAPE = (vp) => vp.name.startsWith("landscape");
+// The dark theme is re-checked where layouts stack: dark-only rules once kept the desktop grid there.
+const DARK_WIDTHS = ["320", "390", "430", "768"];
 let crashed = false;
 const req = (m) => require(path.join(BACKEND, m));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const SHOTS = path.join(SHOTS_DIR, "responsive");
 fs.mkdirSync(SHOTS, { recursive: true });
+
+// UI_PUBLIC: answer the frontend's own GET requests from that directory (API calls still hit
+// the server), as ui-shots.e2e.js does.
+function serveFrontendFrom(page) {
+  if (!UI_PUBLIC) return;
+  page.interceptHook = async (request) => {
+    const url = new URL(request.url());
+    if (url.origin !== BASE || request.method() !== "GET" || /^\/(api|health|ready)(\/|$)/.test(url.pathname)) return false;
+    let rel = decodeURIComponent(url.pathname).replace(/^\/+/, "") || "index.html";
+    if (!path.extname(rel)) rel = "index.html";
+    const file = path.join(UI_PUBLIC, rel);
+    if (!file.startsWith(UI_PUBLIC + path.sep) || !fs.existsSync(file)) return false;
+    await request.respond({ status: 200, contentType: MIME[path.extname(file)] || "application/octet-stream", headers: { "Cache-Control": "no-store" }, body: fs.readFileSync(file) });
+    return true;
+  };
+}
 
 async function login(page, email) {
   await page.goto(`${BASE}/#/login`, { waitUntil: "networkidle2" });
@@ -39,8 +63,11 @@ async function login(page, email) {
   await page.waitForFunction(() => location.hash.length > 2 && !/login/.test(location.hash), { timeout: 15000 });
 }
 
+// Cards that must contain their own content at every width.
+const CARD_SELECTOR = ".dashboard-test-row, .exam-catalog-row, .dashboard-next-up-hero, .hero-progress, .progress-card, .account-panel, .bookmark-card, .generator-card, .qotd-card";
+
 async function measure(page) {
-  return page.evaluate(() => {
+  return page.evaluate((CARDS) => {
     const vw = document.documentElement.clientWidth;
     const scrollW = document.scrollingElement.scrollWidth;
     const offenders = [];
@@ -75,8 +102,22 @@ async function measure(page) {
         nested.push(`${el.tagName.toLowerCase()}${el.id ? "#" + el.id : ""}.${String(el.className).trim().split(/\s+/).slice(0, 3).join(".")} h=${el.clientHeight}/${window.innerHeight}`);
       }
     });
-    return { vw, scrollW, offenders: offenders.sort((a, b) => b.right - a.right).slice(0, 5).map((o) => o.text), doubleScroll: pageScrolls && nested.length ? nested.slice(0, 4) : [] };
-  });
+    // Layout: below 992px the dashboard rail must stack under the main column, not sit over
+    // it; and no card may hold content wider than itself (squeezed text, wrapped buttons).
+    const layout = [];
+    const mainCol = document.querySelector(".dashboard-main-col");
+    const rail = document.querySelector(".dashboard-sidebar-rail");
+    if (vw <= 992 && mainCol && rail) {
+      const m = mainCol.getBoundingClientRect();
+      const r = rail.getBoundingClientRect();
+      if (m.height && r.height && r.top < m.bottom - 1) layout.push(`aside.dashboard-sidebar-rail top=${Math.round(r.top)} overlaps .dashboard-main-col (bottom=${Math.round(m.bottom)}, w=${Math.round(m.width)})`);
+    }
+    document.querySelectorAll(CARDS).forEach((el) => {
+      if (!el.clientWidth || getComputedStyle(el).display === "none") return;
+      if (el.scrollWidth > el.clientWidth + 1) layout.push(`${el.tagName.toLowerCase()}.${String(el.className).trim().split(/\s+/)[0]} content ${el.scrollWidth}px > card ${el.clientWidth}px`);
+    });
+    return { vw, scrollW, offenders: offenders.sort((a, b) => b.right - a.right).slice(0, 5).map((o) => o.text), doubleScroll: pageScrolls && nested.length ? nested.slice(0, 4) : [], layout: layout.slice(0, 5) };
+  }, CARD_SELECTOR);
 }
 
 (async () => {
@@ -105,6 +146,8 @@ async function measure(page) {
     { section: "REAP", topic: "reading", prompt: "REAP question one", passage: "Passage text. ".repeat(80), options: ["a", "b", "c", "d"], correctOption: 0, marks: 4, negativeMarks: -1 },
   ]);
   const test = await Test.create({ title: "Responsive Free Mock", isFree: true, status: "live", seasonId: season._id, sectionDurations: { SUPR: 30, REAP: 30 }, durationMinutes: 60, questionIds: qs.map((q) => q._id) });
+  // A notice, so the dashboard's Notice Board (moved up on stacked layouts) is rendered.
+  await req("models/AppConfig").updateOne({ key: "global" }, { $set: { noticeTitle: "Results week", noticeBody: "Mock 2 goes live on Friday.\nThe planner is now live: plan smarter and save time." } }, { upsert: true });
   await mongoose.disconnect();
 
   const server = spawn(process.execPath, ["server.js"], {
@@ -122,6 +165,7 @@ async function measure(page) {
     // Student: create one finished attempt for the results page.
     const ctx = await browser.createBrowserContext();
     const page = await newHermeticPage(ctx);
+    serveFrontendFrom(page);
     page.on("dialog", (d) => d.accept());
     await page.setViewport({ width: 1280, height: 900 });
     await login(page, "student@test.local");
@@ -136,10 +180,17 @@ async function measure(page) {
     const studentRoutes = [
       ["dashboard", "#/dashboard"],
       ["exams", "#/exams"],
+      ["exams-practice", "#/exams/practice"],
+      ["exams-live", "#/exams/live-tests"],
       ["progress", "#/progress"],
+      ["progress-reports", "#/progress/reports"],
       ["account", "#/account"],
+      ["account-package", "#/account/package"],
+      ["account-security", "#/account/security"],
       ["resources", "#/resources"],
+      ["resources-materials", "#/resources/materials"],
       ["updates", "#/updates"],
+      ["updates-events", "#/updates/events"],
       ["instructions", `#/instructions/${test._id}`],
       ["results", `#/results/${attemptId}`],
     ];
@@ -154,7 +205,7 @@ async function measure(page) {
         await sleep(900);
         const m = await measure(page);
         await page.screenshot({ path: path.join(SHOTS, `${name}-${width}.png`), fullPage: FULL });
-        if (m.offenders.length || m.doubleScroll.length) problems.push({ name, width, ...m });
+        if (m.offenders.length || m.doubleScroll.length || m.layout.length) problems.push({ name, width, ...m });
       }
       // Exam screen
       if (!ONLY || ONLY.includes("exam")) {
@@ -167,7 +218,7 @@ async function measure(page) {
         await sleep(1500);
         const m = await measure(page);
         await page.screenshot({ path: path.join(SHOTS, `exam-${width}.png`) });
-        if (m.offenders.length || m.doubleScroll.length) problems.push({ name: "exam", width, ...m });
+        if (m.offenders.length || m.doubleScroll.length || m.layout.length) problems.push({ name: "exam", width, ...m });
         // Abandon so the next width can start fresh.
         await page.evaluate(async () => {
           const csrf = decodeURIComponent(document.cookie.match(/aceiiit_csrf=([^;]+)/)[1]);
@@ -180,11 +231,33 @@ async function measure(page) {
         await page.evaluate(() => window.onbeforeunload = null);
       }
     }
+
+    // Dark theme at the stacked widths (the toggle is saved, so it holds across page loads).
+    const darkRoutes = studentRoutes.filter(([name]) => !ONLY || ONLY.includes(name));
+    if (darkRoutes.length) {
+      await page.setViewport({ width: 1280, height: 900 });
+      await page.goto(`${BASE}/#/dashboard`, { waitUntil: "networkidle2" });
+      await page.evaluate(() => document.querySelector("[data-theme-toggle='true']").click());
+      await page.waitForFunction(() => document.body.getAttribute("data-theme") === "dark", { timeout: 10000 });
+      await sleep(900);
+      for (const vp of VIEWPORTS.filter((v) => DARK_WIDTHS.includes(v.name))) {
+        await page.setViewport(vp);
+        for (const [name, hash] of darkRoutes) {
+          if (name === "instructions") continue; // the exam flow is always light
+          await page.goto(`${BASE}/${hash}`, { waitUntil: "networkidle2" });
+          await sleep(900);
+          const m = await measure(page);
+          await page.screenshot({ path: path.join(SHOTS, `${name}-${vp.name}-dark.png`), fullPage: FULL });
+          if (m.offenders.length || m.doubleScroll.length || m.layout.length) problems.push({ name, width: `${vp.name}-dark`, ...m });
+        }
+      }
+    }
     await ctx.close();
 
     if (!ONLY || ONLY.includes("admin") || ONLY.includes("login")) {
       const actx = await browser.createBrowserContext();
       const apage = await newHermeticPage(actx);
+      serveFrontendFrom(apage);
       apage.on("dialog", (d) => d.accept());
       for (const vp of VIEWPORTS) {
         const width = vp.name;
@@ -195,7 +268,7 @@ async function measure(page) {
           await sleep(600);
           const m = await measure(apage);
           await apage.screenshot({ path: path.join(SHOTS, `${name}-${width}.png`) });
-          if (m.offenders.length || m.doubleScroll.length) problems.push({ name, width, ...m });
+          if (m.offenders.length || m.doubleScroll.length || m.layout.length) problems.push({ name, width, ...m });
         }
       }
       await apage.setViewport({ width: 1280, height: 900 });
@@ -208,7 +281,7 @@ async function measure(page) {
         await sleep(1200);
         const m = await measure(apage);
         await apage.screenshot({ path: path.join(SHOTS, `admin-${width}.png`) });
-        if (m.offenders.length || m.doubleScroll.length) problems.push({ name: "admin", width, ...m });
+        if (m.offenders.length || m.doubleScroll.length || m.layout.length) problems.push({ name: "admin", width, ...m });
       }
     }
   } catch (err) {
