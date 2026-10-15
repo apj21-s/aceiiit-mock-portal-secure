@@ -221,7 +221,7 @@ calculated by the portal; the model only explains them.
 4. Deploy the AceIIIT site API with `GET /api/internal/portal/customer` and
    `GET /api/internal/portal/payments/:id/receipt` (same `INTERNAL_API_SECRET` as the
    portal), then set `ACEIIIT_SITE_URL` on the portal.
-5. Optional: set the programme page (https only). Empty uses the existing registrations link.
+5. Optional: set the programme page (https only). Empty uses the AceIIIT course picker (`https://aceiiit.in/#packages`), the same page every buy button opens.
 
 **Allowance:** counts mentor replies, not tokens. Free: 10 per calendar month by default;
 enrolled: 100 by default (both configurable, never unlimited). The month is the calendar month

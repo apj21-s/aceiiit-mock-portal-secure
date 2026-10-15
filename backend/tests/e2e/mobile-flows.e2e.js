@@ -989,7 +989,57 @@ async function flowAdmin(browser, { uri }) {
   await page.close();
 }
 
-const FLOWS = { drawer: flowDrawer, "exam-layout": flowExamLayout, "exam-full": flowExamFull, back: flowBack, persistence: flowPersistence, network: flowNetwork, submit: flowSubmit, "no-fullscreen-api": flowNoFullscreenApi, admin: flowAdmin, "auth-forms": flowAuthForms };
+// The "Syncing…" loader must sit in the middle of what the student sees, even when the page is
+// zoomed in (pinch, input zoom, in-app browsers): it used to drift to the bottom-right.
+async function flowLoader(browser) {
+  const page = await newHermeticPage(browser);
+  await page.emulate({ viewport: PHONE, userAgent: (await browser.userAgent()).replace("Headless", "") + " Mobile" });
+  await login(page, "student@test.local");
+  await page.goto(`${BASE}/#/dashboard`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector(".dashboard-header", { timeout: 15000 });
+  await sleep(800);
+  const cdp = await page.target().createCDPSession();
+  let hold = false;
+  page.interceptHook = async (r) => {
+    if (hold && /\/api\/tests$/.test(new URL(r.url()).pathname)) await sleep(2500);
+    return false;
+  };
+  const measure = () => page.evaluate(() => {
+    const overlay = document.querySelector("[data-sync-overlay='true']");
+    const content = overlay && overlay.querySelector(".app-loading-screen__content");
+    if (!content) return null;
+    const r = content.getBoundingClientRect();
+    const vv = window.visualViewport;
+    return {
+      dx: Math.round(r.left + r.width / 2 - (vv.offsetLeft + vv.width / 2)),
+      dy: Math.round(r.top + r.height / 2 - (vv.offsetTop + vv.height / 2)),
+      inside: r.left >= vv.offsetLeft - 1 && r.top >= vv.offsetTop - 1 && r.right <= vv.offsetLeft + vv.width + 1 && r.bottom <= vv.offsetTop + vv.height + 1,
+      scale: Math.round(vv.scale * 100) / 100,
+    };
+  });
+  const showLoader = async (hash) => {
+    hold = true;
+    await page.evaluate((h) => { location.hash = h; }, hash);
+    await page.waitForSelector("[data-sync-overlay='true'] .app-loading-screen__content", { timeout: 5000 }).catch(() => null);
+    await sleep(150);
+    const m = await measure();
+    hold = false;
+    return m;
+  };
+  const plain = await showLoader("#/progress");
+  check(plain && Math.abs(plain.dx) <= 4 && Math.abs(plain.dy) <= 4 && plain.inside, "loader: centred on screen at normal zoom", plain);
+  await shot(page, "loader-390");
+  await page.waitForFunction(() => !document.querySelector("[data-sync-overlay='true']"), { timeout: 8000 }).catch(() => null);
+  await cdp.send("Emulation.setPageScaleFactor", { pageScaleFactor: 1.7 });
+  await sleep(300);
+  const zoomed = await showLoader("#/resources/bookmarks");
+  check(zoomed && zoomed.scale > 1.5 && Math.abs(zoomed.dx) <= 4 && Math.abs(zoomed.dy) <= 4 && zoomed.inside, "loader: still centred and fully visible when the page is zoomed in", zoomed);
+  await shot(page, "loader-390-zoomed");
+  await cdp.send("Emulation.setPageScaleFactor", { pageScaleFactor: 1 });
+  page.interceptHook = null;
+}
+
+const FLOWS = { drawer: flowDrawer, "exam-layout": flowExamLayout, "exam-full": flowExamFull, back: flowBack, persistence: flowPersistence, network: flowNetwork, submit: flowSubmit, "no-fullscreen-api": flowNoFullscreenApi, admin: flowAdmin, "auth-forms": flowAuthForms, loader: flowLoader };
 
 // ---------------------------------------------------------------------------------------
 (async () => {

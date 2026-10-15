@@ -24,7 +24,7 @@ const req = (m) => require(path.join(BACKEND, m));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = (...a) => console.log("[mentor-e2e]", ...a);
 const SHOTS = path.join(SHOTS_DIR, "mentor");
-const CTA = "https://ketc8up.github.io/AceIIIT/registrations.html";
+const CTA = "https://aceiiit.in/#packages";
 const UPGRADE_MESSAGE = "You've used your free AI Mentor messages for this month. Enrol in the ACEIIIT UGEE preparation programme to continue getting personalized guidance on your performance, mistakes, weak topics, and study strategy.";
 
 const hex = () => Array.from({ length: 24 }, () => "0123456789abcdef"[Math.floor(Math.random() * 16)]).join("");

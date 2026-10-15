@@ -18,7 +18,7 @@ const DEFAULTS = Object.freeze({
 });
 
 // The portal's existing purchase link (the same one the "Buy test series" buttons use).
-const DEFAULT_PROGRAM_URL = "https://ketc8up.github.io/AceIIIT/registrations.html";
+const DEFAULT_PROGRAM_URL = "https://aceiiit.in/#packages";
 const CACHE_TTL_MS = 30 * 1000;
 let cached = null;
 

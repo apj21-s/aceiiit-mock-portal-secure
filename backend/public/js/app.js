@@ -56,7 +56,7 @@
   var AUTH_SIGNUP_DRAFT_KEY = "aceiiit.secure.auth.signupDraft.v1";
   var AUTH_UI_STATE_KEY = "aceiiit.secure.auth.uiState.v1";
   // Replace with your sales/checkout page URL (Render, Instamojo, Gumroad, etc.).
-  var BUY_SERIES_URL = "https://ketc8up.github.io/AceIIIT/registrations.html";
+  var BUY_SERIES_URL = "https://aceiiit.in/#packages";
   var remoteChangeUnsubscribe = null;
   var overlayLoaderVisible = false;
   var overlayLoaderTimer = 0;
@@ -1698,6 +1698,46 @@
     };
   }
 
+  // Mobile browsers size fixed elements to the layout viewport. When the page is zoomed in or an
+  // in-app browser shows only part of it, "centred" lands off to one side, so the loader is
+  // pinned to the centre of what the user actually sees (the visual viewport), at normal size.
+  var overlayViewportSync = null;
+
+  function fitOverlayToViewport(overlay) {
+    var vv = window.visualViewport;
+    var content = overlay && overlay.querySelector(".app-loading-screen__content");
+    if (!vv || !content) return;
+    var scale = vv.scale || 1;
+    content.style.position = "fixed";
+    content.style.left = (vv.offsetLeft + vv.width / 2).toFixed(1) + "px";
+    content.style.top = (vv.offsetTop + vv.height / 2).toFixed(1) + "px";
+    content.style.transform = "translate(-50%, -50%) scale(" + (1 / scale).toFixed(4) + ")";
+  }
+
+  function watchOverlayViewport(overlay) {
+    var vv = window.visualViewport;
+    fitOverlayToViewport(overlay);
+    if (!vv || overlayViewportSync) return;
+    var queued = false;
+    overlayViewportSync = function () {
+      if (queued) return;
+      queued = true;
+      window.requestAnimationFrame(function () {
+        queued = false;
+        fitOverlayToViewport(document.querySelector("[data-sync-overlay='true']"));
+      });
+    };
+    vv.addEventListener("resize", overlayViewportSync);
+    vv.addEventListener("scroll", overlayViewportSync);
+  }
+
+  function unwatchOverlayViewport() {
+    if (!overlayViewportSync || !window.visualViewport) return;
+    window.visualViewport.removeEventListener("resize", overlayViewportSync);
+    window.visualViewport.removeEventListener("scroll", overlayViewportSync);
+    overlayViewportSync = null;
+  }
+
   function showOverlayLoader(label, options) {
     if (!document.body) {
       return;
@@ -1716,6 +1756,7 @@
       }
       existing.style.pointerEvents = "";
       existing.style.opacity = "1";
+      watchOverlayViewport(existing);
       document.body.classList.add("is-syncing");
       overlayLoaderVisible = true;
       if (existing) {
@@ -1753,6 +1794,7 @@
         '</div>';
 
       document.body.appendChild(overlay);
+      watchOverlayViewport(overlay);
       overlayLoaderVisible = true;
     }
 
@@ -1772,6 +1814,7 @@
       overlayLoaderTimer = 0;
     }
     overlayLoaderVisible = false;
+    unwatchOverlayViewport();
     document.body.classList.remove("is-syncing");
     var existing = document.querySelector("[data-sync-overlay='true']");
     if (existing) {
