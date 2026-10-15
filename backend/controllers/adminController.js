@@ -20,6 +20,7 @@ const { getRanksForAttempts, invalidateRankCache } = require("../services/rankSe
 const { escapeRegex } = require("../utils/escapeRegex");
 const IntegrityEvent = require("../models/IntegrityEvent");
 const { getActiveSeason } = require("../services/seasonService");
+const { grantEntitlement } = require("../services/entitlementService");
 const { getSiteCustomer, fetchSiteReceipt } = require("../services/siteCustomerService");
 const { purgeUserCascade } = require("../services/accountPurgeService");
 const { logger, errorSummary } = require("../utils/logger");
@@ -927,6 +928,10 @@ async function verifyUserPayment(req, res, next) {
   try {
     const user = await User.findById(req.params.id);
     if (!user || user.deletedAt) return res.status(404).json({ error: "User not found" });
+    // Real access for the active season (the isPaid flag alone grants nothing).
+    const season = await getActiveSeason();
+    if (!season) return res.status(409).json({ error: "No active season to grant access for.", code: "NO_ACTIVE_SEASON" });
+    await grantEntitlement({ email: user.email, userId: user._id, seasonId: season._id, tier: "paid", source: "admin" });
     user.isPaid = true;
     await user.save();
     try {

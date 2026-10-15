@@ -6,7 +6,7 @@ const AttemptSession = require("../models/AttemptSession");
 const IntegrityEvent = require("../models/IntegrityEvent");
 const { logAuditEvent } = require("./auditLogService");
 const Test = require("../models/Test");
-const { canAccessTest } = require("./entitlementService");
+const { canAccessTest, canAccessPaperContent } = require("./entitlementService");
 const { getTestRuntimeSnapshot, getPublicQuestionsForTest } = require("./testDataService");
 const { evaluateAttempt } = require("./evaluationService");
 const { buildAttemptAnalysis } = require("./attemptAnalysisService");
@@ -188,6 +188,9 @@ async function loadTestForSession(testId, auth) {
     if (String(test.ownerUserId) !== String(auth.userId)) {
       throw new ExamError(404, "TEST_NOT_FOUND", "Test not found.");
     }
+    if (!(await canAccessPaperContent(auth, test))) {
+      throw new ExamError(402, "PAYMENT_REQUIRED", "This practice paper uses Pro Test Series questions. Buy Test Series to open it.");
+    }
   } else {
     if (test.status !== "live" && auth.role !== "admin") {
       throw new ExamError(404, "TEST_NOT_FOUND", "Test not found.");
@@ -310,6 +313,7 @@ async function takeoverSession({ auth, sessionId, req }) {
       attemptId: session.attemptId ? String(session.attemptId) : null,
     });
   }
+  await assertPaperAccess(session, auth);
   if (computeTimeline(session).expired) {
     const attempt = await finalizeSession(session._id, "deadline_expired");
     throw new ExamError(409, "EXAM_EXPIRED", "Time is over for this exam.", { attemptId: attempt ? String(attempt._id) : null });
@@ -353,6 +357,14 @@ async function sessionOptionCounts(session) {
   return snapshot ? optionCountsFor(snapshot.questions) : null;
 }
 
+/** Access is re-checked whenever questions are handed out, not only when the exam starts. */
+async function assertPaperAccess(session, auth) {
+  const test = await Test.findById(session.testId).select("isFree isPractice seasonId status questionIds").lean();
+  if (!(await canAccessPaperContent(auth, test))) {
+    throw new ExamError(402, "PAYMENT_REQUIRED", "Your Pro Test Series access has ended, so this paper can't be opened.");
+  }
+}
+
 async function getPaper({ auth, sessionId, examToken }) {
   const session = await loadOwnedSession(sessionId, auth);
   assertBinding(session, examToken);
@@ -361,6 +373,7 @@ async function getPaper({ auth, sessionId, examToken }) {
       attemptId: session.attemptId ? String(session.attemptId) : null,
     });
   }
+  await assertPaperAccess(session, auth);
   const questions = await getPublicQuestionsForTest(session.testId);
   const ordered = orderQuestions(session, questions || []).map((question) => {
     if (!session.shuffleOptions) return question;

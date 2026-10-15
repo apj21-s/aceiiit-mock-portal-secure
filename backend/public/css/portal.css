@@ -14651,13 +14651,13 @@ body[data-theme="dark"] .upload-row-action {
 
 
 /* ---- ACEIIIT Mentor ------------------------------------------------------------------------
-   Desktop: a non-modal panel above the floating button, scaling out of it (origin bottom right).
-   Phones (≤780px): a near-full-screen sheet that slides up, with a backdrop. Only transform and
-   opacity animate; reduced motion keeps a short fade. */
+   The floating button morphs into the panel (app.js morphMentorPanel: a clip-path from the
+   button's shape plus a crossfade), so the panel shares the button's corner: bottom right on
+   desktop, a near-full-screen sheet on phones (≤780px). Reduced motion gets a short fade. */
 .mentor-panel {
   position: fixed;
   right: calc(22px + var(--safe-right));
-  bottom: calc(96px + var(--safe-bottom));
+  bottom: calc(24px + var(--safe-bottom));
   z-index: 150;
   display: flex;
   flex-direction: column;
@@ -14669,10 +14669,6 @@ body[data-theme="dark"] .upload-row-action {
   color: var(--ink);
   box-shadow: 0 24px 60px rgba(20, 17, 15, 0.18);
   overflow: hidden;
-  transform-origin: bottom right;
-  opacity: 0;
-  transform: translateY(8px) scale(0.97);
-  transition: opacity 200ms var(--ease-out), transform 200ms var(--ease-out);
 }
 
 /* The site sets paragraphs in Geist Mono; chat text reads better in one proportional face. */
@@ -14686,11 +14682,6 @@ body[data-theme="dark"] .upload-row-action {
   display: none;
 }
 
-.mentor-panel[data-state="open"] {
-  opacity: 1;
-  transform: none;
-}
-
 .mentor-panel.is-sheet {
   top: calc(var(--safe-top) + 12px);
   right: 0;
@@ -14701,13 +14692,186 @@ body[data-theme="dark"] .upload-row-action {
   border-width: 1px 0 0;
   border-radius: 20px 20px 0 0;
   padding-bottom: var(--safe-bottom);
-  opacity: 1;
-  transform: translateY(100%);
-  transition: transform 320ms var(--ease-drawer);
 }
 
-.mentor-panel.is-sheet[data-state="open"] {
+/* The button has become the panel: hide it until the panel shrinks back into it. */
+.support-chat-button.is-morphed {
+  opacity: 0;
+  transition: none;
+}
+
+/* The button's pill, drawn inside the panel at the button's spot while it morphs. */
+.support-chat-button.mentor-skin {
+  position: absolute;
+  right: auto;
+  bottom: auto;
+  z-index: 5;
+  margin: 0;
+  opacity: 0;
+  box-shadow: none;
   transform: none;
+  transition: none;
+  pointer-events: none;
+}
+
+/* ---- Mentor orb (MorphOrb port; drawn by MentorOrb in app.js) ---- */
+.mentor-orb {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 64px;
+}
+
+.mentor-orb-stage {
+  position: relative;
+  flex: 0 0 auto;
+  width: 64px;
+  height: 64px;
+}
+
+.mentor-orb-stage::before {
+  content: "";
+  position: absolute;
+  inset: 6px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(197, 160, 40, 0.16), transparent 70%);
+}
+
+.mentor-orb-canvas {
+  position: relative;
+  display: block;
+  width: 64px;
+  height: 64px;
+}
+
+.mentor-orb-done {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 12px;
+  height: 12px;
+  margin: -6px 0 0 -6px;
+  border-radius: 50%;
+  background: var(--gold);
+  opacity: 0;
+  transform: scale(0.55);
+  transition: opacity 300ms var(--ease-out) 260ms, transform 440ms cubic-bezier(0.34, 1.4, 0.64, 1) 260ms;
+}
+
+.mentor-orb.is-condensed .mentor-orb-done {
+  opacity: 1;
+  transform: none;
+}
+
+.mentor-orb-pulse {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 12px;
+  height: 12px;
+  margin: -6px 0 0 -6px;
+  border-radius: 50%;
+  border: 2px solid var(--gold);
+  opacity: 0;
+}
+
+.mentor-orb.is-condensed .mentor-orb-pulse {
+  animation: mentor-orb-pulse 440ms var(--ease-out) 320ms 1;
+}
+
+@keyframes mentor-orb-pulse {
+  from { opacity: 0.5; transform: scale(1); }
+  to { opacity: 0; transform: scale(2.4); }
+}
+
+.mentor-orb-label {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 1.4em;
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: var(--ink-soft);
+}
+
+.mentor-orb.is-idle .mentor-orb-label {
+  display: none;
+}
+
+.mentor-orb-word {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  animation: mentor-word-in 240ms var(--ease-out) both;
+}
+
+.mentor-orb-word.is-out {
+  animation: mentor-word-out 180ms ease-in both;
+}
+
+.mentor-orb-word.is-done {
+  color: var(--gold-strong);
+}
+
+@keyframes mentor-word-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes mentor-word-out {
+  from { opacity: 1; transform: none; }
+  to { opacity: 0; transform: translateY(-6px); }
+}
+
+.mentor-orb-ellipsis {
+  display: inline-flex;
+  gap: 3px;
+}
+
+.mentor-orb-ellipsis i {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.25;
+  animation: mentor-dot 1.2s ease-in-out infinite;
+}
+
+.mentor-orb-ellipsis i:nth-child(2) {
+  animation-delay: 150ms;
+}
+
+.mentor-orb-ellipsis i:nth-child(3) {
+  animation-delay: 300ms;
+}
+
+.mentor-msg.is-thinking {
+  max-width: 100%;
+}
+
+.mentor-intro-orb {
+  margin: -4px 0 4px -6px;
+}
+
+.mentor-spark {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 160;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--gold);
+  box-shadow: 0 0 12px rgba(197, 160, 40, 0.7);
+  pointer-events: none;
+}
+
+.mentor-msg.is-assistant .mentor-bubble {
+  transform-origin: top left;
 }
 
 .mentor-backdrop {
@@ -15430,20 +15594,18 @@ body[data-theme="dark"] .mentor-skeleton span {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .mentor-panel,
-  .mentor-panel.is-sheet {
-    transform: none;
+  .mentor-orb-word,
+  .mentor-orb-word.is-out,
+  .mentor-orb.is-condensed .mentor-orb-pulse {
+    animation: none;
+  }
+
+  .mentor-orb-done {
     transition: opacity 150ms ease;
+    transform: none;
   }
 
-  .mentor-panel.is-sheet {
-    opacity: 0;
-  }
-
-  .mentor-panel.is-sheet[data-state="open"] {
-    opacity: 1;
-  }
-
+  .mentor-orb-ellipsis i,
   .mentor-dots i {
     animation: none;
     opacity: 0.6;

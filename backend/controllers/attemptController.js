@@ -2,6 +2,8 @@ const { isValidObjectId } = require("mongoose");
 const { z } = require("zod");
 
 const Attempt = require("../models/Attempt");
+const Test = require("../models/Test");
+const { canAccessPaperContent } = require("../services/entitlementService");
 const { getRankFor, getRanksForAttempts } = require("../services/rankService");
 const { getTestRuntimeSnapshot } = require("../services/testDataService");
 const {
@@ -220,6 +222,15 @@ async function listAttempts(req, res, next) {
   }
 }
 
+const REVIEW_LOCKED = { error: "Question review for this paid paper needs an active Pro Test Series. Your score and analysis stay available.", code: "PAYMENT_REQUIRED" };
+
+/** Question-by-question review shows paid questions and answers: it needs current access. */
+async function reviewAllowed(req, attempt) {
+  if (req.auth.role === "admin") return true;
+  const test = await Test.findById(attempt.testId).select("isFree isPractice seasonId status questionIds").lean();
+  return !test || canAccessPaperContent(req.auth, test);
+}
+
 function ownedQuery(req) {
   return req.auth.role === "admin"
     ? { _id: req.params.id }
@@ -286,6 +297,7 @@ async function getResult(req, res, next) {
     const payload = { attempt: toAttemptResponse(attempt, await getRankFor(attempt)) };
     payload.attempt.maxScore = await maxScoreFor(attempt);
     if (includeReview) {
+      if (!(await reviewAllowed(req, attempt))) return res.status(402).json(REVIEW_LOCKED);
       const { items, pagination } = paginate(Array.isArray(attempt.questionReview) ? attempt.questionReview : [], page, limit);
       payload.questions = items;
       payload.pagination = pagination;
@@ -340,10 +352,11 @@ async function getAnalysisQuestions(req, res, next) {
       return res.status(400).json({ error: "Invalid analysis id" });
     }
     const { page, limit } = analysisQuestionsQuerySchema.parse(req.query || {});
-    const attempt = await Attempt.findOne(ownedQuery(req)).select("questionReview").lean();
+    const attempt = await Attempt.findOne(ownedQuery(req)).select("questionReview testId").lean();
     if (!attempt) {
       return res.status(404).json({ error: "Analysis not found" });
     }
+    if (!(await reviewAllowed(req, attempt))) return res.status(402).json(REVIEW_LOCKED);
     const { items, pagination } = paginate(Array.isArray(attempt.questionReview) ? attempt.questionReview : [], page, limit);
     return res.json({ questions: items, pagination });
   } catch (err) {

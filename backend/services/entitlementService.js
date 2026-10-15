@@ -1,5 +1,6 @@
 const Entitlement = require("../models/Entitlement");
 const PaymentRecord = require("../models/PaymentRecord");
+const Test = require("../models/Test");
 const User = require("../models/User");
 const { getActiveSeason } = require("./seasonService");
 const { normalizeEmail } = require("../utils/normalize");
@@ -61,6 +62,42 @@ function isTestAccessible(test, { isAdmin, entitledSeasonIds, activeSeasonId }) 
   if (isAdmin) return true;
   const seasonId = test.seasonId ? String(test.seasonId) : activeSeasonId ? String(activeSeasonId) : null;
   return Boolean(seasonId && entitledSeasonIds.has(seasonId));
+}
+
+/**
+ * Questions this user may not see: those in a paid test they can't open, unless the same
+ * question is also in a live test they can. Practice papers copy questions out of tests, so
+ * this is what keeps a practice paper (or its review) from outliving revoked access.
+ */
+async function lockedQuestionIds(reqUser) {
+  if (!reqUser || reqUser.role === "admin") return new Set();
+  const [entitledSeasonIds, activeSeason] = await Promise.all([getEntitledSeasonIds(reqUser), getActiveSeason()]);
+  const ctx = { isAdmin: false, entitledSeasonIds, activeSeasonId: activeSeason && activeSeason._id };
+  const tests = await Test.find({ deletedAt: null, status: { $ne: "practice" } }).select("isFree seasonId status questionIds").lean();
+  const open = new Set();
+  const closed = new Set();
+  tests.forEach((test) => {
+    const ok = isTestAccessible(test, ctx);
+    (test.questionIds || []).forEach((id) => {
+      if (ok && test.status === "live") open.add(String(id));
+      else if (!ok) closed.add(String(id));
+    });
+  });
+  open.forEach((id) => closed.delete(id));
+  return closed;
+}
+
+/** May this user still see the questions of a paper (or of an attempt on it)? */
+async function canAccessPaperContent(reqUser, test) {
+  if (!test || !reqUser) return false;
+  if (reqUser.role === "admin") return true;
+  if (test.status === "practice" || test.isPractice) {
+    const ids = test.questionIds || [];
+    if (!ids.length) return true;
+    const locked = await lockedQuestionIds(reqUser);
+    return !ids.some((id) => locked.has(String(id)));
+  }
+  return canAccessTest(reqUser, test);
 }
 
 async function grantEntitlement({ email, userId = null, seasonId, tier = "paid", source = "payment", paymentId = null }) {
@@ -181,6 +218,8 @@ async function hasAnyActiveEntitlement(email) {
 
 module.exports = {
   canAccessTest,
+  canAccessPaperContent,
+  lockedQuestionIds,
   getEntitledSeasonIds,
   isTestAccessible,
   grantEntitlement,

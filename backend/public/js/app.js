@@ -3385,7 +3385,7 @@
     var supportChatHtml = options.hideSupportChat || !currentUser
       ? ""
       : (
-        '<button type="button" class="support-chat-button js-mentor-toggle" aria-haspopup="dialog" aria-expanded="' + (mentorOpen ? "true" : "false") + '"' +
+        '<button type="button" class="support-chat-button js-mentor-toggle' + (mentorOpen ? ' is-morphed" inert="' : '') + '" aria-haspopup="dialog" aria-expanded="' + (mentorOpen ? "true" : "false") + '"' +
         (mentorState && mentorState.el ? ' aria-controls="mentor-panel"' : '') + ' aria-label="ACEIIIT Mentor: ask about your performance">' +
         '<span class="support-chat-icon" aria-hidden="true"><img src="assets/favicon-current.jpeg" alt=""></span>' +
         '<span class="support-chat-copy" aria-hidden="true"><strong>ACEIIIT Mentor</strong><small>Ask about your performance</small></span>' +
@@ -8426,6 +8426,498 @@
     load();
   }
 
+  // ---- ACEIIIT Mentor orb ------------------------------------------------------------------
+  // A port of the MorphOrb "thinking orb": a dotted sphere drawn on a small canvas. Dots appear
+  // top-first (assemble), light up in turn while the mentor works (one light pattern per stage
+  // label), sweep to the brand gold when the reply is ready (resolve), then spiral in (condense)
+  // as the reply takes their place. It draws only while it's on screen; reduced motion gets a
+  // still frame and no movement.
+  var MentorOrb = (function () {
+    var TAU = Math.PI * 2;
+    var clamp01 = function (v) { return v < 0 ? 0 : v > 1 ? 1 : v; };
+
+    function cubicBezier(x1, y1, x2, y2) {
+      var cx = 3 * x1, bx = 3 * (x2 - x1) - cx, ax = 1 - cx - bx;
+      var cy = 3 * y1, by = 3 * (y2 - y1) - cy, ay = 1 - cy - by;
+      var sx = function (t) { return ((ax * t + bx) * t + cx) * t; };
+      var sy = function (t) { return ((ay * t + by) * t + cy) * t; };
+      var dx = function (t) { return (3 * ax * t + 2 * bx) * t + cx; };
+      return function (x) {
+        if (x <= 0) return 0;
+        if (x >= 1) return 1;
+        var t = x;
+        for (var i = 0; i < 8; i += 1) {
+          var e = sx(t) - x;
+          if (Math.abs(e) < 1e-6) return sy(t);
+          var d = dx(t);
+          if (Math.abs(d) < 1e-6) break;
+          t -= e / d;
+        }
+        var lo = 0, hi = 1;
+        t = x;
+        for (var j = 0; j < 40; j += 1) {
+          var v = sx(t);
+          if (Math.abs(v - x) < 1e-6) break;
+          if (x > v) lo = t; else hi = t;
+          t = (hi - lo) / 2 + lo;
+        }
+        return sy(t);
+      };
+    }
+
+    // The MorphOrb curves (also used as CSS strings for WAAPI below).
+    var CURVES = {
+      out: [0.22, 1, 0.36, 1],
+      io: [0.65, 0, 0.35, 1],
+      fly: [0.5, 0, 0.1, 1],
+      vortex: [0.6, 0, 0.2, 1],
+      card: [0.65, 0, 0.2, 1]
+    };
+    var EASE = {};
+    var CSS = {};
+    Object.keys(CURVES).forEach(function (name) {
+      var c = CURVES[name];
+      EASE[name] = cubicBezier(c[0], c[1], c[2], c[3]);
+      CSS[name] = "cubic-bezier(" + c.join(", ") + ")";
+    });
+
+    var DOTS = (function () {
+      var a = 7;
+      var rand = function () {
+        a |= 0;
+        a = (a + 0x6d2b79f5) | 0;
+        var t = Math.imul(a ^ (a >>> 15), 1 | a);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+      };
+      var RINGS = 14;
+      var out = [];
+      for (var k = 0; k < RINGS; k += 1) {
+        var y = 1 - ((k + 0.5) / RINGS) * 2;
+        var r = Math.sqrt(1 - y * y);
+        var m = Math.max(4, Math.round(24 * r));
+        for (var j = 0; j < m; j += 1) {
+          var ang = (j / m) * TAU + k * 0.35;
+          out.push({ x: Math.cos(ang) * r, y: y, z: Math.sin(ang) * r, u: (1 - y) / 2, seed: rand() * TAU });
+        }
+      }
+      return out;
+    })();
+    var N = DOTS.length;
+
+    var G_STEPS = 16, A_STEPS = 32;
+    var palettes = {};
+    function palette(dark) {
+      var key = dark ? "dark" : "light";
+      if (palettes[key]) return palettes[key];
+      var base = dark ? [236, 230, 219] : [38, 32, 27];
+      var gold = dark ? [215, 179, 74] : [168, 132, 17];
+      var out = [];
+      for (var gi = 0; gi <= G_STEPS; gi += 1) {
+        var g = gi / G_STEPS;
+        var rgb = [0, 1, 2].map(function (i) { return Math.round(base[i] + (gold[i] - base[i]) * g); });
+        for (var ai = 0; ai <= A_STEPS; ai += 1) out.push("rgba(" + rgb.join(",") + "," + (ai / A_STEPS).toFixed(3) + ")");
+      }
+      palettes[key] = out;
+      return out;
+    }
+
+    function reduced() {
+      return Boolean(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+    }
+
+    function isDark() {
+      return document.body.getAttribute("data-theme") === "dark";
+    }
+
+    function create(options) {
+      options = options || {};
+      var SIZE = 64;
+      var R = 22;
+      var el = document.createElement("div");
+      el.className = "mentor-orb";
+      el.innerHTML =
+        '<span class="mentor-orb-stage" aria-hidden="true">' +
+        '<canvas class="mentor-orb-canvas"></canvas>' +
+        '<span class="mentor-orb-done"></span>' +
+        '<span class="mentor-orb-pulse"></span>' +
+        '</span>' +
+        '<span class="mentor-orb-label"></span>';
+      var canvas = el.querySelector("canvas");
+      var labelEl = el.querySelector(".mentor-orb-label");
+      var ctx = canvas.getContext ? canvas.getContext("2d") : null;
+      var dpr = Math.min(2, window.devicePixelRatio || 1);
+      canvas.width = Math.round(SIZE * dpr);
+      canvas.height = Math.round(SIZE * dpr);
+      if (ctx) ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+      var P = { k: 0, alpha: 0, spin: 0, rot: 0, sweep: 0, pop: 1, vortex: 0, gain: 1, floor: 0, rad: 0, prog: 0 };
+      var lit = new Float32Array(N);
+      var SX = new Float32Array(N), SY = new Float32Array(N), SR = new Float32Array(N), SD = new Float32Array(N);
+      var SC = new Int16Array(N);
+      var pw = [1, 0, 0];
+      var time = 0, raf = 0, last = 0, dead = false, looping = false;
+      var labelTimer = 0;
+      var CP = Math.cos(0.35), SP = Math.sin(0.35), C0 = SIZE / 2, S = 0.6;
+
+      function draw(dt) {
+        if (!ctx) return;
+        ctx.clearRect(0, 0, SIZE, SIZE);
+        time += dt;
+        P.rot += P.spin * dt;
+        var yaw = P.rot + P.vortex, cyw = Math.cos(yaw), syw = Math.sin(yaw);
+        var stepW = dt / 0.35;
+        for (var q = 0; q < 3; q += 1) {
+          var dw = (q === P.prog ? 1 : 0) - pw[q];
+          pw[q] += Math.abs(dw) <= stepW ? dw : dw > 0 ? stepW : -stepW;
+        }
+        var decay = Math.exp(-dt / 0.5);
+        var h0 = (time * 220) % N;
+        var a1 = time * 0.8, b1 = Math.sin(time * 0.5) * 0.9;
+        var f1x = Math.cos(b1) * Math.cos(a1), f1y = Math.sin(b1), f1z = Math.cos(b1) * Math.sin(a1);
+        var a2 = time * 0.55 + 2.1, b2 = Math.cos(time * 0.42) * 0.9;
+        var f2x = Math.cos(b2) * Math.cos(a2), f2y = Math.sin(b2), f2z = Math.cos(b2) * Math.sin(a2);
+        var lat = Math.sin(time * 2.2);
+        var swirlK = P.vortex * 1.5;
+        var colors = palette(isDark());
+
+        for (var n = 0; n < N; n += 1) {
+          var d = DOTS[n];
+          var pulse = 0;
+          if (pw[0] > 0.001) {
+            var dd = Math.abs(n - h0);
+            if (dd > N - dd) dd = N - dd;
+            var v0 = Math.max(0, 1 - dd / 14);
+            pulse = Math.max(pulse, v0 * v0 * pw[0]);
+          }
+          if (pw[1] > 0.001) {
+            var v1 = Math.max(0, (d.x * f1x + d.y * f1y + d.z * f1z - 0.72) / 0.28);
+            var v2 = Math.max(0, (d.x * f2x + d.y * f2y + d.z * f2z - 0.72) / 0.28);
+            var vv = Math.max(v1, v2);
+            pulse = Math.max(pulse, vv * vv * pw[1]);
+          }
+          if (pw[2] > 0.001) {
+            var e = d.y - lat;
+            var v3 = Math.max(0, 1 - (e * e) / 0.02);
+            pulse = Math.max(pulse, v3 * v3 * pw[2]);
+          }
+          var l = Math.max(lit[n] * decay, pulse * P.gain);
+          lit[n] = l;
+
+          var ki = clamp01(P.k * (1 + S) - S * d.u);
+          if (ki <= 0.001) { SC[n] = -1; continue; }
+          var eo = EASE.out(ki), kk = eo * P.pop;
+          var x1 = d.x * cyw + d.z * syw, z1 = -d.x * syw + d.z * cyw;
+          var y2 = d.y * CP - z1 * SP, z2 = d.y * SP + z1 * CP;
+          var f = 2.8 / (2.8 - z2), depth = (z2 + 1) / 2;
+          var ox = x1 * R * kk * f, oy = -y2 * R * kk * f;
+          if (swirlK > 0.001) {
+            var sw = (1 - ki) * swirlK, cc = Math.cos(sw), ss = Math.sin(sw);
+            var tx = ox * cc - oy * ss;
+            oy = ox * ss + oy * cc;
+            ox = tx;
+          }
+          var g = clamp01((P.sweep * 1.4 - d.u) / 0.4);
+          var a = 0.12 + 0.04 * Math.sin(d.seed + time * 1.6) * (1 - g) + 0.34 * depth * depth + 0.7 * l * (1 - g) + g * (0.55 + 0.4 * depth) + 2 * g * (1 - g);
+          a = Math.max(a, P.floor * (0.7 + 0.3 * depth));
+          if (a > 1) a = 1;
+          a *= eo * P.alpha;
+          SX[n] = C0 + ox;
+          SY[n] = C0 + oy;
+          SD[n] = depth;
+          SR[n] = (0.62 * (0.45 + 0.75 * depth) * f + 0.55 * l + g * 0.18) * (1 + P.rad) * (0.4 + 0.6 * eo);
+          var ai = Math.round(a * A_STEPS), gi = Math.round(g * G_STEPS);
+          SC[n] = ai <= 0 ? -1 : gi * (A_STEPS + 1) + ai;
+        }
+        // Back half first, then the front half over it.
+        for (var pass = 0; pass < 2; pass += 1) {
+          for (var m = 0; m < N; m += 1) {
+            var c = SC[m];
+            if (c < 0 || (SD[m] >= 0.5) !== (pass === 1)) continue;
+            ctx.fillStyle = colors[c];
+            ctx.beginPath();
+            ctx.arc(SX[m], SY[m], SR[m], 0, TAU);
+            ctx.fill();
+          }
+        }
+      }
+
+      function frame(now) {
+        raf = 0;
+        if (dead) return;
+        var dt = reduced() ? 0 : Math.max(0, Math.min(0.05, (now - last) / 1000));
+        last = now;
+        // Off screen (panel closed, element detached, tab hidden): stop drawing.
+        if (!el.isConnected || el.offsetParent === null) return;
+        draw(dt);
+        if ((looping || tweening > 0) && P.alpha > 0.002 && !reduced()) raf = window.requestAnimationFrame(frame);
+      }
+
+      function ensure() {
+        if (raf || dead) return;
+        last = performance.now();
+        raf = window.requestAnimationFrame(frame);
+      }
+
+      var tweening = 0;
+      /** tracks: [key, from, to, t0, t1, ease]; resolves when the last track ends. */
+      function play(tracks) {
+        if (dead) return Promise.resolve();
+        if (reduced()) {
+          tracks.forEach(function (t) { P[t[0]] = t[2]; });
+          ensure();
+          return Promise.resolve();
+        }
+        tweening += 1;
+        var end = tracks.reduce(function (mx, t) { return Math.max(mx, t[4]); }, 0);
+        var start = performance.now();
+        ensure();
+        return new Promise(function (resolve) {
+          function step(now) {
+            if (dead) { tweening -= 1; resolve(); return; }
+            var t = now - start;
+            tracks.forEach(function (tr) {
+              if (t < tr[3]) return;
+              var p = Math.min(1, (t - tr[3]) / Math.max(1, tr[4] - tr[3]));
+              P[tr[0]] = tr[1] + (tr[2] - tr[1]) * (tr[5] || EASE.io)(p);
+            });
+            ensure();
+            if (t >= end || document.hidden) {
+              tracks.forEach(function (tr) { P[tr[0]] = tr[2]; });
+              tweening -= 1;
+              resolve();
+            } else {
+              window.requestAnimationFrame(step);
+            }
+          }
+          window.requestAnimationFrame(step);
+        });
+      }
+
+      function setLabel(text) {
+        if (!labelEl) return;
+        var previous = labelEl.querySelector(".mentor-orb-word:not(.is-out)");
+        if (previous && previous.getAttribute("data-text") === text) return;
+        var next = document.createElement("span");
+        next.className = "mentor-orb-word" + (text === "Done" ? " is-done" : "");
+        next.setAttribute("data-text", text);
+        next.innerHTML = escapeHtml(text) + (text === "Done" ? "" : '<span class="mentor-orb-ellipsis" aria-hidden="true"><i></i><i></i><i></i></span>');
+        if (previous) {
+          previous.classList.add("is-out");
+          window.setTimeout(function () { if (previous.parentNode) previous.parentNode.removeChild(previous); }, 220);
+        }
+        labelEl.appendChild(next);
+      }
+
+      function stopLabels() {
+        window.clearInterval(labelTimer);
+        labelTimer = 0;
+      }
+
+      var api = {
+        el: el,
+        /** The empty-chat greeting: assembled, slowly turning, one soft light pattern. */
+        idle: function () {
+          el.classList.add("is-idle");
+          looping = true;
+          P.prog = 0;
+          P.gain = 0.6;
+          if (P.alpha < 1) {
+            return play([["k", P.k, 1, 0, 800, EASE.out], ["alpha", P.alpha, 1, 0, 600, EASE.out], ["spin", P.spin, 0.35, 0, 800, EASE.out]]);
+          }
+          P.spin = 0.35;
+          ensure();
+          return Promise.resolve();
+        },
+        pause: function () {
+          looping = false;
+        },
+        assemble: function () {
+          el.classList.remove("is-idle");
+          return play([
+            ["k", P.k, 1, 0, 700, EASE.out],
+            ["alpha", P.alpha, 1, 0, 500, EASE.out],
+            ["spin", P.spin, 0.9, 0, 700, EASE.out],
+            ["gain", P.gain, 1, 0, 300, EASE.out],
+            ["pop", 1, 1.05, 0, 360, EASE.out],
+            ["pop", 1.05, 1, 360, 700, EASE.io]
+          ]);
+        },
+        /** Works through the stage labels (relevant to the question) until stopped. */
+        think: function (stages) {
+          el.classList.remove("is-idle");
+          looping = true;
+          P.spin = Math.max(P.spin, 0.9);
+          P.gain = 1;
+          var i = 0;
+          setLabel(stages[0]);
+          stopLabels();
+          labelTimer = window.setInterval(function () {
+            // 0, 1, 2, then 1, 2, 1, 2… so a long wait never claims to be "finishing".
+            i = i < 2 ? i + 1 : 1;
+            if (i >= stages.length) i = stages.length - 1;
+            P.prog = i % 3;
+            setLabel(stages[i]);
+          }, 1150);
+          ensure();
+        },
+        /** The reply is ready: dots sweep to gold, then spiral in to a single point. */
+        finish: function () {
+          stopLabels();
+          setLabel("Done");
+          if (reduced()) {
+            el.classList.add("is-condensed");
+            return Promise.resolve();
+          }
+          return play([
+            ["sweep", 0, 1, 0, 520, EASE.io],
+            ["spin", P.spin, 0.3, 0, 520, EASE.out],
+            ["gain", 1, 0, 0, 520, EASE.out],
+            ["floor", 0, 0.95, 260, 620, EASE.out],
+            ["rad", 0, 0.15, 260, 620, EASE.out]
+          ]).then(function () {
+            el.classList.add("is-condensed");
+            return play([
+              ["pop", 1, 1.06, 0, 110, EASE.out],
+              ["k", 1, 0, 110, 520, EASE.vortex],
+              ["vortex", 0, 1.6, 110, 520, EASE.vortex],
+              ["alpha", 1, 0, 380, 560, EASE.out]
+            ]);
+          });
+        },
+        fade: function () {
+          stopLabels();
+          looping = false;
+          return play([["alpha", P.alpha, 0, 0, 200, EASE.out]]);
+        },
+        destroy: function () {
+          stopLabels();
+          dead = true;
+          if (raf) window.cancelAnimationFrame(raf);
+          raf = 0;
+          if (el.parentNode) el.parentNode.removeChild(el);
+        },
+        resume: ensure
+      };
+      return api;
+    }
+
+    return { create: create, reduced: reduced, CSS: CSS };
+  })();
+
+  /** Stage labels that match what the student asked (shown while the mentor works). */
+  function mentorStages(text, aboutAttempt) {
+    var t = String(text || "").toLowerCase();
+    if (/mistake|wrong|incorrect|losing marks|lose marks|negative/.test(t)) return ["Opening your attempt", "Finding where marks went", "Checking the right method"];
+    if (/compare|trend|improv|progress|better|worse/.test(t)) return ["Reading your recent mocks", "Lining them up", "Spotting the trend"];
+    if (/plan|revision|revise|schedule|timetable|routine/.test(t)) return ["Reading your results", "Finding weak topics", "Building your plan"];
+    if (/weak|strong|topic|section|supr|reap/.test(t)) return ["Reading your results", "Ranking your topics", "Looking for patterns"];
+    if (aboutAttempt || /\b(my|me|i|i'm|mock|test|attempt|score|marks|rank|percentile|accuracy|time|timing|pace|result)\b/.test(t)) {
+      return ["Reading your results", "Checking accuracy and time", "Looking for patterns"];
+    }
+    return ["Thinking", "Working it out", "Checking each step"];
+  }
+
+  /** The reply unfolds block by block (MorphOrb's word reveal, per paragraph/list item). */
+  function revealMentorReply(bubble) {
+    if (!bubble || typeof bubble.animate !== "function" || MentorOrb.reduced()) return;
+    var blocks = [];
+    Array.prototype.forEach.call(bubble.children, function (child) {
+      if (child.tagName === "UL" || child.tagName === "OL") Array.prototype.forEach.call(child.children, function (li) { blocks.push(li); });
+      else blocks.push(child);
+    });
+    blocks = blocks.slice(0, 16);
+    var n = blocks.length;
+    var stagger = n > 1 ? Math.min(45, 360 / (n - 1)) : 0;
+    bubble.animate([{ opacity: 0, transform: "scale(0.97)" }, { opacity: 1, transform: "none" }], { duration: 260, easing: MentorOrb.CSS.out });
+    blocks.forEach(function (block, i) {
+      block.animate(
+        [{ opacity: 0, transform: "translateY(4px)", filter: "blur(4px)" }, { opacity: 1, transform: "none", filter: "blur(0px)" }],
+        { duration: 320, delay: 60 + i * stagger, easing: MentorOrb.CSS.out, fill: "backwards" }
+      );
+    });
+  }
+
+  /** MorphOrb's launch: a small spark flies from the send button into the waiting orb. */
+  function flyMentorSpark(fromEl, toEl) {
+    if (!fromEl || !toEl || MentorOrb.reduced() || typeof document.body.animate !== "function") return;
+    var a = fromEl.getBoundingClientRect();
+    var b = toEl.getBoundingClientRect();
+    if (!a.width || !b.width) return;
+    var x0 = a.left + a.width / 2, y0 = a.top + a.height / 2;
+    var x1 = b.left + b.width / 2, y1 = b.top + b.height / 2;
+    var cx = x0 + (x1 - x0) * 0.2 - 40, cy = Math.min(y0, y1) - 30;
+    var spark = document.createElement("span");
+    spark.className = "mentor-spark";
+    spark.setAttribute("aria-hidden", "true");
+    document.body.appendChild(spark);
+    var frames = [];
+    for (var i = 0; i <= 12; i += 1) {
+      var t = i / 12, u = 1 - t;
+      var x = u * u * x0 + 2 * u * t * cx + t * t * x1;
+      var y = u * u * y0 + 2 * u * t * cy + t * t * y1;
+      var scale = 1 + Math.sin(t * Math.PI) * 0.6;
+      frames.push({ transform: "translate3d(" + x.toFixed(1) + "px," + y.toFixed(1) + "px,0) translate(-50%,-50%) scale(" + scale.toFixed(2) + ")", opacity: t > 0.85 ? (1 - t) / 0.15 : 1 });
+    }
+    var anim = spark.animate(frames, { duration: 520, easing: MentorOrb.CSS.fly });
+    anim.onfinish = anim.oncancel = function () { if (spark.parentNode) spark.parentNode.removeChild(spark); };
+  }
+
+  /**
+   * The morphing popover: the floating button grows into the panel (a clip-path from the
+   * button's exact shape), its pill crossfading into the panel; closing shrinks it back.
+   */
+  function morphMentorPanel(opening, done) {
+    var s = mentorState;
+    var panel = s.el && s.el.querySelector(".mentor-panel");
+    var toggle = document.querySelector(".js-mentor-toggle");
+    (s.morphAnims || []).forEach(function (anim) { try { anim.cancel(); } catch (_e) { } });
+    s.morphAnims = [];
+    var finish = function () { if (typeof done === "function") done(); };
+    if (!panel || typeof panel.animate !== "function") { finish(); return; }
+    var parts = Array.prototype.slice.call(panel.querySelectorAll(":scope > .mentor-head, :scope > .mentor-body, :scope > .mentor-foot"));
+    var tr = toggle ? toggle.getBoundingClientRect() : null;
+    if (MentorOrb.reduced() || !tr || !tr.width) {
+      var fade = panel.animate(opening ? [{ opacity: 0 }, { opacity: 1 }] : [{ opacity: 1 }, { opacity: 0 }], { duration: 150, easing: "ease", fill: opening ? "none" : "forwards" });
+      s.morphAnims.push(fade);
+      fade.onfinish = finish;
+      return;
+    }
+    var pr = panel.getBoundingClientRect();
+    var from = "inset(" + [tr.top - pr.top, pr.right - tr.right, pr.bottom - tr.bottom, tr.left - pr.left].map(function (v) { return Math.round(v) + "px"; }).join(" ") + " round " + Math.round(tr.height / 2) + "px)";
+    var to = "inset(-48px -48px -48px -48px round 66px)";
+    var skin = panel.querySelector(".mentor-skin");
+    if (!skin) {
+      skin = document.createElement("div");
+      skin.className = "support-chat-button mentor-skin";
+      skin.setAttribute("aria-hidden", "true");
+      panel.appendChild(skin);
+    }
+    skin.innerHTML = toggle.innerHTML;
+    skin.style.left = Math.round(tr.left - pr.left) + "px";
+    skin.style.top = Math.round(tr.top - pr.top) + "px";
+    skin.style.width = Math.round(tr.width) + "px";
+    skin.style.height = Math.round(tr.height) + "px";
+    var duration = opening ? 440 : 300;
+    var easing = opening ? "cubic-bezier(0.32, 0.72, 0, 1)" : MentorOrb.CSS.card;
+    var clip = panel.animate(
+      opening ? [{ clipPath: from }, { clipPath: to }] : [{ clipPath: to }, { clipPath: from }],
+      { duration: duration, easing: easing, fill: opening ? "none" : "forwards" }
+    );
+    var skinAnim = skin.animate(
+      opening ? [{ opacity: 1 }, { opacity: 0, offset: 0.45 }, { opacity: 0 }] : [{ opacity: 0 }, { opacity: 0, offset: 0.4 }, { opacity: 1 }],
+      { duration: duration, easing: "linear", fill: "forwards" }
+    );
+    s.morphAnims.push(clip, skinAnim);
+    parts.forEach(function (part) {
+      s.morphAnims.push(part.animate(
+        opening ? [{ opacity: 0 }, { opacity: 0, offset: 0.28 }, { opacity: 1 }] : [{ opacity: 1 }, { opacity: 0, offset: 0.45 }, { opacity: 0 }],
+        { duration: duration, easing: "linear", fill: opening ? "none" : "forwards" }
+      ));
+    });
+    clip.onfinish = finish;
+  }
+
   // ---- ACEIIIT Mentor --------------------------------------------------------------------
   // The floating help button opens the mentor: a chat panel on document.body, so route
   // re-renders leave it (and a reply being written) alone. Desktop: a non-modal panel above the
@@ -8475,6 +8967,10 @@
       draft: "",
       upgradeDismissed: "",
       focusComposerOnLoad: false,
+      orb: null,
+      introOrb: null,
+      revealId: null,
+      morphAnims: [],
       releaseFocus: null,
       isolated: [],
       returnFocus: null,
@@ -8691,6 +9187,19 @@
     window.setTimeout(function () { region.textContent = text; }, 60);
   }
 
+  /** While the panel is open the floating button has become the panel, so it's hidden. */
+  function setMentorToggleMorphed(on) {
+    document.querySelectorAll(".js-mentor-toggle").forEach(function (button) {
+      button.classList.toggle("is-morphed", on);
+      if (on) button.setAttribute("inert", "");
+    });
+  }
+
+  /** Closing: the button takes focus and clicks again straight away (it reappears after the morph). */
+  function releaseMentorToggle() {
+    document.querySelectorAll(".js-mentor-toggle").forEach(function (button) { button.removeAttribute("inert"); });
+  }
+
   function setMentorToggles(expanded) {
     document.querySelectorAll(".js-mentor-toggle").forEach(function (button) {
       button.setAttribute("aria-expanded", expanded ? "true" : "false");
@@ -8747,10 +9256,13 @@
       });
       if (window.overlayHistory) window.overlayHistory.push("mentor", function () { closeMentor({ fromHistory: true }); });
     }
-    void panel.offsetWidth; // start the transition from the closed state
+    panel.style.pointerEvents = "";
+    backdrop.style.pointerEvents = "";
     panel.setAttribute("data-state", "open");
     backdrop.setAttribute("data-state", "open");
+    morphMentorPanel(true);
     setMentorToggles(true);
+    setMentorToggleMorphed(true);
     if (!s.conversationId && !s.linkAttemptId) s.conversationId = mentorRecall() || null;
     var linking = mentorAutoLink(false);
     renderMentorPanel({ scroll: true });
@@ -8775,6 +9287,21 @@
     panel.setAttribute("data-state", "closed");
     backdrop.setAttribute("data-state", "closed");
     setMentorToggles(false);
+    if (s.introOrb) s.introOrb.pause();
+    releaseMentorToggle();
+    // While it shrinks back, clicks fall through to the button underneath.
+    panel.style.pointerEvents = "none";
+    backdrop.style.pointerEvents = "none";
+    var hidePanel = function () {
+      window.clearTimeout(s.hideTimer);
+      if (mentorState !== s || s.open) return;
+      panel.hidden = true;
+      backdrop.hidden = true;
+      setMentorToggleMorphed(false);
+      releaseMentorToggle();
+    };
+    if (options.fromRoute) hidePanel();
+    else morphMentorPanel(false, hidePanel);
     if (wasSheet) {
       restoreBackground(s.isolated);
       s.isolated = [];
@@ -8792,11 +9319,7 @@
     }
     s.returnFocus = null;
     s.sheet = false;
-    s.hideTimer = window.setTimeout(function () {
-      if (mentorState !== s || s.open) return;
-      panel.hidden = true;
-      backdrop.hidden = true;
-    }, 360);
+    s.hideTimer = window.setTimeout(hidePanel, 700); // in case the animation never reports back
   }
 
   function toggleMentor(trigger) {
@@ -8809,7 +9332,11 @@
     var old = mentorState;
     if (old.open) closeMentor({ restoreFocus: false, restoreScroll: false, fromRoute: true });
     window.clearTimeout(old.hideTimer);
+    if (old.orb) old.orb.destroy();
+    if (old.introOrb) old.introOrb.destroy();
     if (old.el && old.el.parentNode) old.el.parentNode.removeChild(old.el);
+    setMentorToggleMorphed(false);
+    releaseMentorToggle();
     mentorState = createMentorState(userId || null);
     mentorState.routeAttemptId = old.routeAttemptId;
     mentorState.routeKey = old.routeKey;
@@ -9001,7 +9528,33 @@
         sizeMentorInput(input);
       }
     }
+    // The orb: the greeting orb flies down into the conversation; otherwise a new one
+    // assembles where the reply will appear and a spark flies to it from Send.
+    var introOrb = s.introOrb;
+    var introRect = introOrb && introOrb.el.isConnected ? introOrb.el.querySelector(".mentor-orb-stage").getBoundingClientRect() : null;
+    if (s.orb) s.orb.destroy();
+    s.orb = introRect ? introOrb : MentorOrb.create();
+    if (introRect) s.introOrb = null;
+    var sendButton = mentorPart("[data-mentor-send]");
     renderMentorPanel({ scroll: true });
+    var orb = s.orb;
+    var stages = mentorStages(text, Boolean((s.conversation && s.conversation.attempt) || s.linkAttemptId));
+    if (introRect && !MentorOrb.reduced() && typeof orb.el.animate === "function") {
+      // Only the orb travels; its stage label fades in once it has landed.
+      var stage = orb.el.querySelector(".mentor-orb-stage");
+      var toRect = stage.getBoundingClientRect();
+      stage.animate(
+        [{ transform: "translate(" + (introRect.left - toRect.left).toFixed(1) + "px," + (introRect.top - toRect.top).toFixed(1) + "px)" }, { transform: "none" }],
+        { duration: 480, easing: MentorOrb.CSS.fly }
+      );
+      orb.el.querySelector(".mentor-orb-label").animate([{ opacity: 0 }, { opacity: 1 }], { duration: 200, delay: 380, easing: "ease-out", fill: "backwards" });
+      orb.think(stages);
+    } else {
+      flyMentorSpark(sendButton, orb.el.querySelector(".mentor-orb-stage"));
+      window.setTimeout(function () { orb.assemble(); }, MentorOrb.reduced() ? 0 : 260);
+      orb.think(stages);
+    }
+    var assembled = new Promise(function (resolve) { window.setTimeout(resolve, MentorOrb.reduced() ? 0 : 900); });
     mentorAnnounce("ACEIIIT Mentor is thinking.");
     var conversationId = s.conversationId;
     try {
@@ -9016,6 +9569,13 @@
       }
       var result = await store.sendMentorMessage(conversationId, text, clientMessageId);
       if (mentorState !== s) return;
+      // Let the orb finish assembling, then resolve and condense into the reply.
+      if (s.open && !document.hidden && orb === s.orb) {
+        await assembled;
+        await orb.finish();
+      }
+      if (mentorState !== s) return;
+      if (result && result.assistantMessage) s.revealId = result.assistantMessage.id;
       if (result && result.usage) s.usage = result.usage;
       if (s.conversationId === conversationId) {
         mentorReplaceMessage(localId, result.userMessage);
@@ -9066,8 +9626,13 @@
         }
         mentorAnnounce("No reply. " + s.sendError.message);
       }
+      if (orb === s.orb && s.open) await orb.fade();
     } finally {
       if (mentorState === s) {
+        if (orb === s.orb) {
+          orb.destroy();
+          s.orb = null;
+        }
         s.sending = null;
         renderMentorPanel({ scroll: true });
         if (s.open && !s.sheet) focusMentorComposer();
@@ -9078,7 +9643,7 @@
   function buildMentorMessageHtml(message) {
     var s = mentorState;
     if (message.role === "assistant") {
-      return '<li class="mentor-msg is-assistant"><div class="mentor-bubble rich-mentor">' + renderMentorMarkdown(message.content) + '</div></li>';
+      return '<li class="mentor-msg is-assistant"><div class="mentor-bubble rich-mentor" data-mentor-msg-id="' + escapeAttribute(String(message.id || "")) + '">' + renderMentorMarkdown(message.content) + '</div></li>';
     }
     var failed = message.status === "failed";
     var fresh = failed && s.sendError && s.sendError.clientMessageId === message.clientMessageId ? s.sendError : null;
@@ -9123,6 +9688,7 @@
     if (!s.messages.length && !s.sending) {
       return html +
         '<div class="mentor-intro">' +
+        '<div class="mentor-intro-orb" data-mentor-orb-slot="intro"></div>' +
         '<h3>Hi ' + escapeHtml(firstName(user && user.name)) + ', what should we look at?</h3>' +
         '<p>I read your AceIIIT mock results to explain where marks go and what to practise next. I can help with doubts too.</p>' +
         '<ul class="mentor-suggestions" aria-label="Suggested questions">' +
@@ -9136,9 +9702,7 @@
     return html +
       '<ol class="mentor-log" aria-label="Conversation">' +
       s.messages.map(buildMentorMessageHtml).join("") +
-      (s.sending
-        ? '<li class="mentor-msg is-assistant is-thinking"><div class="mentor-bubble"><span class="mentor-thinking"><span class="mentor-dots" aria-hidden="true"><i></i><i></i><i></i></span>Thinking…</span></div></li>'
-        : '') +
+      (s.sending ? '<li class="mentor-msg is-assistant is-thinking" data-mentor-orb-slot="thinking"></li>' : '') +
       '</ol>';
   }
 
@@ -9256,8 +9820,16 @@
       var nearBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 48;
       body.innerHTML = s.view === "history" ? buildMentorHistoryHtml() : buildMentorChatHtml();
       if (s.view === "chat") {
+        mountMentorOrbs(body);
         renderLatexInElement(body);
-        if (options.scroll || nearBottom) {
+        if (s.revealId) {
+          var fresh = body.querySelector('[data-mentor-msg-id="' + String(s.revealId).replace(/[^A-Za-z0-9_-]/g, "") + '"]');
+          s.revealId = null;
+          if (s.open) revealMentorReply(fresh);
+        }
+        if (!s.messages.length && !s.sending) {
+          body.scrollTop = 0; // the greeting reads from the top
+        } else if (options.scroll || nearBottom) {
           body.scrollTop = body.scrollHeight;
           window.requestAnimationFrame(function () { body.scrollTop = body.scrollHeight; });
         }
@@ -9266,6 +9838,24 @@
       }
     }
     renderMentorFoot();
+  }
+
+  /** The orbs live outside the re-rendered HTML; put them back into their slots. */
+  function mountMentorOrbs(body) {
+    var s = mentorState;
+    var intro = body.querySelector('[data-mentor-orb-slot="intro"]');
+    if (intro) {
+      if (!s.introOrb) s.introOrb = MentorOrb.create();
+      intro.appendChild(s.introOrb.el);
+      if (s.open) s.introOrb.idle();
+    } else if (s.introOrb) {
+      s.introOrb.pause();
+    }
+    var slot = body.querySelector('[data-mentor-orb-slot="thinking"]');
+    if (slot && s.orb) {
+      slot.appendChild(s.orb.el);
+      s.orb.resume();
+    }
   }
 
   function showMentorHistory() {
@@ -9324,6 +9914,17 @@
     });
     composer.addEventListener("submit", function (event) {
       event.preventDefault();
+      if (!input.value.trim()) {
+        // MorphOrb's nudge: an empty send shakes the box instead of doing nothing.
+        if (typeof composer.animate === "function" && !MentorOrb.reduced()) {
+          composer.animate(
+            [{ transform: "none" }, { transform: "translateX(-6px)" }, { transform: "translateX(5px)" }, { transform: "translateX(-3px)" }, { transform: "none" }],
+            { duration: 260, easing: "ease-out" }
+          );
+        }
+        input.focus();
+        return;
+      }
       sendMentorMessage(input.value);
     });
     input.addEventListener("input", function () {
@@ -9341,7 +9942,9 @@
       var coarse = window.matchMedia && window.matchMedia("(pointer: coarse)").matches;
       if (event.key === "Enter" && !event.shiftKey && !event.isComposing && !coarse) {
         event.preventDefault();
-        if (!mentorState.sending) sendMentorMessage(input.value);
+        if (mentorState.sending) return;
+        if (typeof composer.requestSubmit === "function") composer.requestSubmit();
+        else sendMentorMessage(input.value);
       }
     });
     panel.addEventListener("click", function (event) {

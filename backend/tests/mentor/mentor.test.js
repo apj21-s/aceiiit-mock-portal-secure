@@ -297,6 +297,29 @@ describe("privacy and ownership", () => {
     expect(sent).not.toMatch(new RegExp(attemptId));
   });
 
+  test("after paid access ends, mistakes are discussed without quoting the paid questions", async () => {
+    const c = await student("pro@test.local", "Pro Student");
+    const season = await getActiveSeason();
+    const ent = await Entitlement.create({ email: "pro@test.local", normalizedEmail: "pro@test.local", seasonId: season._id, tier: "paid", status: "active", source: "admin" });
+    const qs = await Question.insertMany([
+      { section: "SUPR", topic: "algebra", difficulty: "hard", prompt: "PAID-ONLY question text", options: ["1", "2", "3", "4"], correctOption: 2 },
+    ]);
+    const test = await createTest({ isFree: false, questions: qs });
+    const start = await c.agent.post("/api/attempt/start").set("X-CSRF-Token", c.csrf).send({ testId: String(test._id) });
+    await c.agent.put(`/api/attempt/session/${start.body.session.id}/answers`).set("X-CSRF-Token", c.csrf).set("X-Exam-Token", start.body.examToken)
+      .send({ seq: 1, answers: { [String(qs[0]._id)]: 0 } });
+    const submit = await c.agent.post("/api/attempt").set("X-CSRF-Token", c.csrf).set("X-Exam-Token", start.body.examToken)
+      .set("Idempotency-Key", `paid-${start.body.session.id}`).send({ sessionId: start.body.session.id });
+    const id = await conversationFor(c, { attemptId: submit.body.attempt.id });
+    await send(c, id, "Explain the mistakes I made");
+    expect(JSON.stringify(generateContent.mock.calls[0][0].contents)).toMatch(/PAID-ONLY question text/);
+    await Entitlement.updateOne({ _id: ent._id }, { $set: { status: "revoked" } });
+    await send(c, id, "Explain the mistakes I made again");
+    const second = JSON.stringify(generateContent.mock.calls[1][0].contents);
+    expect(second).not.toMatch(/PAID-ONLY question text/);
+    expect(second).toMatch(/questionsLocked/);
+  });
+
   test("a general doubt sends no personal data", async () => {
     const c = await student();
     const id = await conversationFor(c);

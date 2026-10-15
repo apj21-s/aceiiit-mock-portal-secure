@@ -2,7 +2,9 @@
 // - there is one floating button; it opens the mentor panel (no second button), and is hidden
 //   on exam screens;
 // - with no Gemini key the real server says the mentor isn't set up and offers no composer;
-// - with /api/mentor answered by a fake backend (intercepted): suggestions, "Thinking…", a safe
+// - the button morphs into the panel and back; a dotted orb greets, flies into the chat and
+//   works through stage labels that match the question, then resolves into the reply;
+// - with /api/mentor answered by a fake backend (intercepted): suggestions, a safe
 //   Markdown reply (no HTML from the model runs), usage line, a failed reply that is retried
 //   with the same message id, the upgrade panel after the last free reply, "Maybe Later",
 //   history (open, delete), minimise keeps the conversation, and opening from a results page
@@ -170,6 +172,13 @@ function fakeMentor() {
 
     // ---- Real server, no Gemini key: not set up, nothing to send ----
     await page.click(".js-mentor-toggle");
+    const morph = await page.evaluate(() => {
+      const panel = document.getElementById("mentor-panel");
+      const anims = panel.getAnimations().map((a) => a.effect && a.effect.getKeyframes()).filter(Boolean);
+      const clip = anims.find((k) => k[0] && k[0].clipPath);
+      return { clipFrom: clip ? clip[0].clipPath : "", skin: !!panel.querySelector(".mentor-skin"), hidden: document.querySelector(".js-mentor-toggle").classList.contains("is-morphed") };
+    });
+    check(/^inset\(/.test(morph.clipFrom) && /round/.test(morph.clipFrom) && morph.skin && morph.hidden, `the button morphs into the panel (clip from the button's shape: ${morph.clipFrom})`);
     await waitText(page, /isn't set up yet/);
     let st = await panelState(page);
     check(st.open && st.modal === "false" && !st.sheet && st.toggleExpanded === "true", "desktop: the panel opens as a non-modal panel and the button reports expanded");
@@ -181,6 +190,7 @@ function fakeMentor() {
     st = await panelState(page);
     const toggleFocused = await page.evaluate(() => document.activeElement && document.activeElement.classList.contains("js-mentor-toggle"));
     check(!st.open && st.hidden && st.toggleExpanded === "false" && toggleFocused, "Escape closes it and focus returns to the button");
+    check(!(await page.$eval(".js-mentor-toggle", (b) => b.classList.contains("is-morphed"))), "the panel shrinks back into the button, which is shown again");
 
     // ---- Fake mentor backend from here on ----
     const fake = fakeMentor();
@@ -192,10 +202,34 @@ function fakeMentor() {
     check(suggestions.length === 6 && suggestions[0] === "Analyse my latest mock test." && suggestions.indexOf("Create a personalised revision plan.") !== -1, `six suggested prompts (${suggestions.length})`);
     check(/Hi Asha/.test(st.text) && st.usage === "10 of 10 free replies remaining this month." && /not words|however long/.test(st.text), `greeting, usage line and "replies, not tokens" note (${st.usage})`);
     check(st.focusInPanel && (await page.evaluate(() => document.activeElement.id)) === "mentor-input", "desktop: focus moves to the message box");
+    await page.keyboard.press("Enter");
+    const shook = await page.$eval("[data-mentor-composer]", (f) => f.getAnimations().length > 0);
+    check(shook && fake.sends.length === 0, "an empty send shakes the message box and sends nothing");
+
+    await sleep(900);
+    const introOrb = await page.evaluate(() => {
+      const c = document.querySelector(".mentor-intro-orb .mentor-orb canvas");
+      if (!c) return null;
+      const d = c.getContext("2d").getImageData(0, 0, c.width, c.height).data;
+      let ink = 0;
+      for (let i = 3; i < d.length; i += 4) ink += d[i];
+      return { ink };
+    });
+    check(introOrb && introOrb.ink > 0, "an empty chat greets with the dotted orb (drawn on its canvas)");
+    await page.screenshot({ path: path.join(SHOTS, "intro-1366.png") });
 
     await page.click(".mentor-suggestion");
-    const thinking = await waitText(page, /Thinking…/, 3000);
-    check(thinking, "a Thinking… indicator shows while the reply is written");
+    await sleep(150);
+    const thinkingOrb = await page.evaluate(() => {
+      const li = document.querySelector(".mentor-msg.is-thinking");
+      return li ? { orb: !!li.querySelector(".mentor-orb canvas"), label: li.innerText.trim(), intro: !!document.querySelector(".mentor-intro") } : null;
+    });
+    check(thinkingOrb && thinkingOrb.orb && !thinkingOrb.intro, "sending moves the orb into the conversation, where the reply will appear");
+    const staged = await waitText(page, /Reading your results/, 3000);
+    check(staged, `the orb's stage label fits the question ("Reading your results" for a mock analysis; saw "${thinkingOrb && thinkingOrb.label}")`);
+    await page.screenshot({ path: path.join(SHOTS, "thinking-1366.png") });
+    const stagesSeen = await page.waitForFunction(() => /Checking accuracy and time|Looking for patterns|Done/.test((document.querySelector(".mentor-msg.is-thinking") || {}).innerText || ""), { timeout: 3000 }).then(() => true).catch(() => false);
+    check(stagesSeen, "it works through further stages, then says Done");
     check(await page.$eval("[data-mentor-send]", (b) => b.disabled), "Send is disabled while a reply is being written");
     await waitText(page, /main lever/);
     const reply = await page.evaluate(() => {
@@ -204,6 +238,8 @@ function fakeMentor() {
     });
     check(reply.strong && reply.ul === 2 && reply.ol === 2, `the reply renders bold text and lists (${JSON.stringify(reply)})`);
     check(reply.scripts === 0 && reply.xss === 0 && reply.raw, "HTML in a reply is shown as text, never run");
+    await sleep(800);
+    check(!(await page.$(".mentor-msg.is-thinking")) && !(await page.$(".mentor-orb")) && (await page.$$eval(".mentor-msg.is-assistant .mentor-bubble > *", (els) => els.every((e) => getComputedStyle(e).opacity === "1"))), "the orb hands over to the reply, which ends fully shown");
     st = await panelState(page);
     check(st.usage === "9 of 10 free replies remaining this month." && fake.creates.length === 1 && fake.creates[0].attemptId === undefined, `usage updates after the reply; the first send created the conversation (${st.usage})`);
 
@@ -211,11 +247,11 @@ function fakeMentor() {
     fake.failNext = "ACEIIIT Mentor couldn't answer this time. It wasn't counted; please try again.";
     await page.type("#mentor-input", "Why am I losing marks?");
     await page.keyboard.press("Enter");
-    const failedShown = await waitText(page, /It wasn't counted/);
+    const failedShown = await page.waitForSelector("[data-mentor-retry]", { timeout: 8000 }).then(() => true).catch(() => false);
     st = await panelState(page);
     check(failedShown && /Try again/.test(st.text) && st.usage === "9 of 10 free replies remaining this month.", "a failed reply says it wasn't counted and offers Try again");
     await page.click("[data-mentor-retry]");
-    await page.waitForFunction(() => document.querySelectorAll(".mentor-msg.is-assistant").length === 2, { timeout: 8000 }).catch(() => null);
+    await page.waitForFunction(() => document.querySelectorAll(".mentor-msg.is-assistant:not(.is-thinking)").length === 2, { timeout: 8000 }).catch(() => null);
     const lastTwo = fake.sends.slice(-2);
     check(lastTwo.length === 2 && lastTwo[0].clientMessageId === lastTwo[1].clientMessageId && lastTwo[0].content === "Why am I losing marks?", "Try again resends the same message id (no double charge)");
     check((await page.$$(".mentor-msg.is-user")).length === 2 && !(await page.$(".mentor-msg.is-failed")), "the retried message appears once, with its reply");
@@ -225,7 +261,7 @@ function fakeMentor() {
     await sleep(400);
     await page.click(".js-mentor-toggle");
     await sleep(300);
-    check((await page.$$(".mentor-msg.is-assistant")).length === 2, "minimise and reopen: the conversation is still there");
+    check((await page.$$(".mentor-msg.is-assistant:not(.is-thinking)")).length === 2, "minimise and reopen: the conversation is still there");
 
     // The last free reply, then the upgrade panel.
     fake.remaining = 1;
@@ -238,7 +274,7 @@ function fakeMentor() {
       const cta = card && card.querySelector(".mentor-upgrade-cta");
       return card ? { text: card.innerText, href: cta && cta.href, target: cta && cta.target, later: !!card.querySelector(".mentor-upgrade-later") } : null;
     });
-    check((await page.$$(".mentor-msg.is-assistant")).length === 3, "the last permitted reply is delivered");
+    check((await page.$$(".mentor-msg.is-assistant:not(.is-thinking)")).length === 3, "the last permitted reply is delivered");
     check(upgrade && upgrade.text.indexOf(UPGRADE_MESSAGE) !== -1 && /Explore the Preparation Programme/.test(upgrade.text) && upgrade.later, "the upgrade panel shows the exact message, the CTA and Maybe Later");
     check(upgrade && upgrade.href === CTA && upgrade.target === "_blank", "the CTA opens the programme page in a new tab");
     check(upgrade && /reset on 1 November 2026/.test(upgrade.text) && st.composerHidden, "it shows the reset date and hides the composer");

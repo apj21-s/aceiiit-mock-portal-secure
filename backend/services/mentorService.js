@@ -9,6 +9,7 @@ const { getMentorAccess, reserveReply, settleReply, releaseReply, usagePeriod } 
 const { getMentorSettings } = require("./mentorSettingsService");
 const { getRanksForAttempts } = require("./rankService");
 const { logger, errorSummary } = require("../utils/logger");
+const { canAccessPaperContent } = require("./entitlementService");
 
 // ACEIIIT Mentor: a UGEE preparation coach on Gemini.
 //
@@ -118,7 +119,8 @@ function wrongQuestions(attempt) {
 }
 
 /** The measured facts behind a personal answer, or null when the question isn't personal. */
-async function buildStudentData(userId, conversation, message) {
+async function buildStudentData(user, conversation, message) {
+  const userId = user._id;
   if (!conversation.attemptId && !PERSONAL_RE.test(message)) return null;
   const mocks = await recentMocks(userId);
   let focus = null;
@@ -133,7 +135,12 @@ async function buildStudentData(userId, conversation, message) {
         practice: Boolean(attempt.isPractice),
         evidence: evidence.payload,
       };
-      if (MISTAKES_RE.test(message)) focus.wrongQuestions = wrongQuestions(attempt);
+      // Question text goes to the model only while the student may still see that paper.
+      if (MISTAKES_RE.test(message)) {
+        const test = await Test.findById(attempt.testId).select("isFree isPractice seasonId status questionIds").lean();
+        if (!test || (await canAccessPaperContent(user, test))) focus.wrongQuestions = wrongQuestions(attempt);
+        else focus.questionsLocked = "Question details are locked: the student's Pro Test Series access has ended.";
+      }
     }
   }
   const config = await AppConfig.findOne({ key: "global" }).select("ugeeExamDate").lean();
@@ -268,7 +275,7 @@ async function sendMessage({ user, conversationId, content, clientMessageId }) {
         .limit(HISTORY_MESSAGES)
         .select("role content")
         .lean();
-      const studentData = await buildStudentData(user._id, conversation, message);
+      const studentData = await buildStudentData(user, conversation, message);
       let generated;
       try {
         generated = await generateMentorReply({
