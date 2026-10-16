@@ -239,6 +239,37 @@ const log = (...a) => console.log("[admin-e2e]", ...a);
     check((await countTests()) === before + 1, "Create test adds exactly one new test");
     check(/Editing\s+Brand New Mock 7/.test(await page.$eval(".setup-mode", (el) => el.innerText)), "the new test is then selected for editing");
 
+
+    // Existing Tests: admins set the order students see (arrows and drag-and-drop, saved in one request).
+    const orderNow = () => page.evaluate(() => Array.from(document.querySelectorAll("[data-tests-order] [data-test-row]")).map((r) => ({ title: r.querySelector("strong").textContent, pos: r.querySelector(".tests-order-pos").textContent })));
+    await page.evaluate(() => document.querySelector('.js-studio-tab[data-tab="tests"]').click());
+    await page.waitForSelector("[data-tests-order]", { timeout: 10000 });
+    const first = await orderNow();
+    check(first.length >= 2 && first.map((r) => r.pos).join(",") === first.map((_, i) => String(i + 1)).join(","), `Existing Tests shows each test's position (${first.map((r) => r.pos + ". " + r.title).join(" | ")})`);
+    const upDisabled = await page.$eval("[data-tests-order] [data-test-row] .js-move-test-up", (b) => b.disabled);
+    check(upDisabled, "the first test can't move further up");
+    await page.click("[data-tests-order] [data-test-row] .js-move-test-down");
+    await page.waitForFunction(() => /Moved .+ to position 2 of/.test((document.querySelector("[data-tests-order-status]") || {}).textContent || ""), { timeout: 10000 }).catch(() => null);
+    const afterDown = await orderNow();
+    check(afterDown[0].title === first[1].title && afterDown[1].title === first[0].title, `↓ swaps the first two tests (${afterDown.map((r) => r.title).join(" | ")})`);
+    check(/Moved .+ to position 2 of/.test(await page.$eval("[data-tests-order-status]", (el) => el.textContent)), "the move is announced");
+    await page.reload({ waitUntil: "networkidle2" });
+    await page.waitForSelector('.js-studio-tab[data-tab="tests"]', { timeout: 20000 });
+    await page.evaluate(() => document.querySelector('.js-studio-tab[data-tab="tests"]').click());
+    await page.waitForSelector("[data-tests-order]", { timeout: 10000 });
+    check((await orderNow())[0].title === first[1].title, "the new order is saved (still there after a reload)");
+    await page.evaluate(() => {
+      const rows = document.querySelectorAll("[data-tests-order] [data-test-row]");
+      const handle = rows[1].querySelector("[data-drag-test]");
+      const target = rows[0];
+      const dt = new DataTransfer();
+      const r = target.getBoundingClientRect();
+      handle.dispatchEvent(new DragEvent("dragstart", { bubbles: true, dataTransfer: dt }));
+      target.dispatchEvent(new DragEvent("dragover", { bubbles: true, cancelable: true, dataTransfer: dt, clientY: r.top + 2 }));
+      target.dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: dt, clientY: r.top + 2 }));
+    });
+    await page.waitForFunction((title) => (document.querySelector("[data-tests-order] [data-test-row] strong") || {}).textContent === title, { timeout: 10000 }, first[0].title).catch(() => null);
+    check((await orderNow())[0].title === first[0].title, "dragging a row onto the first place moves it there");
   } catch (err) {
     failures.push(`exception: ${err.message}`);
     log("EXCEPTION", err.stack);

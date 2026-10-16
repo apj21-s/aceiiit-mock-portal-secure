@@ -1544,17 +1544,11 @@
     var orderedIds = (testIdsInOrder || [])
       .map(function (id) { return String(id || "").trim(); })
       .filter(Boolean);
-
-    for (var index = 0; index < orderedIds.length; index += 1) {
-      await api("/api/tests/" + encodeURIComponent(orderedIds[index]), {
-        method: "PUT",
-        body: JSON.stringify({ displayOrder: (index + 1) * 10 }),
-      });
-    }
-
+    // One request for the whole order (it used to be one PUT per test).
+    await api("/api/admin/tests/reorder", { method: "POST", body: JSON.stringify({ ids: orderedIds }) });
     await refreshFromRemote();
-    return getTests();
   }
+
 
   async function deleteTest(testId) {
     await api("/api/tests/" + encodeURIComponent(testId), { method: "DELETE" });

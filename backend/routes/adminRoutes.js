@@ -135,6 +135,7 @@ router.post("/detach", requireAuth, requireAdmin, audit("TEST_QUESTION_DETACHED"
 router.post("/attach-bulk", requireAuth, requireAdmin, audit("TEST_QUESTIONS_ATTACHED", "Test"), admin.attachQuestionsBulk);
 router.post("/detach-bulk", requireAuth, requireAdmin, audit("TEST_QUESTIONS_DETACHED", "Test"), admin.detachQuestionsBulk);
 router.post("/reorder-questions", requireAuth, requireAdmin, audit("TEST_QUESTIONS_REORDERED", "Test"), admin.reorderTestQuestions);
+router.post("/tests/reorder", requireAuth, requireAdmin, audit("TESTS_REORDERED", "Test"), admin.reorderTests);
 router.post("/test/:id/duplicate", requireAuth, requireAdmin, audit("TEST_DUPLICATED", "Test"), admin.duplicateTest);
 router.post("/test/:id/publish", requireAuth, requireAdmin, admin.publishTest);
 router.post("/generate-questions", requireAuth, requireAdmin, audit("TEST_QUESTIONS_GENERATED", "Test"), admin.generateQuestionsRandom);

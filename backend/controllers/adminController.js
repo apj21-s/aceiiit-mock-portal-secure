@@ -816,6 +816,37 @@ async function detachQuestionsBulk(req, res, next) {
   }
 }
 
+const reorderTestsSchema = z.object({
+  ids: z.array(z.string().regex(/^[a-f0-9]{24}$/i, "Invalid test id")).min(1).max(500),
+}).strict();
+
+/**
+ * Sets the order tests are listed in for students (Studio → Existing Tests). One write for the
+ * whole list, so a failure never leaves a half-saved order. Tests not in the list keep their
+ * relative order after the listed ones.
+ */
+async function reorderTests(req, res, next) {
+  try {
+    const { ids } = reorderTestsSchema.parse(req.body || {});
+    if (new Set(ids).size !== ids.length) return res.status(400).json({ error: "Each test can appear only once.", code: "VALIDATION_ERROR" });
+    const found = await Test.find({ _id: { $in: ids }, deletedAt: null, status: { $ne: "practice" } }).select("_id").lean();
+    if (found.length !== ids.length) return res.status(400).json({ error: "Some of these tests no longer exist. Reload and try again.", code: "TEST_NOT_FOUND" });
+    const rest = await Test.find({ _id: { $nin: ids }, deletedAt: null, status: { $ne: "practice" } })
+      .sort({ displayOrder: 1, createdAt: 1 })
+      .select("_id")
+      .lean();
+    const ordered = ids.concat(rest.map((t) => String(t._id)));
+    await Test.bulkWrite(ordered.map((id, index) => ({
+      updateOne: { filter: { _id: id }, update: { $set: { displayOrder: Math.min(9999, (index + 1) * 10) } } },
+    })));
+    invalidateCatalogCache();
+    return res.json({ ok: true, order: ordered });
+  } catch (err) {
+    if (err instanceof z.ZodError) return res.status(400).json({ error: err.issues[0] ? err.issues[0].message : "Invalid order", code: "VALIDATION_ERROR" });
+    return next(err);
+  }
+}
+
 async function reorderTestQuestions(req, res, next) {
   try {
     const schema = z.object({
@@ -1367,6 +1398,7 @@ module.exports = {
   attachQuestionsBulk,
   detachQuestionsBulk,
   reorderTestQuestions,
+  reorderTests,
   duplicateTest,
   generateQuestionsRandom,
   results,

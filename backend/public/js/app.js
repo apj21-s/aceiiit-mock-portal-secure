@@ -11858,10 +11858,18 @@
           '<button class="button button-secondary button-compact js-studio-tab" data-tab="setup">+ Create New Test</button>' +
           '</div>' +
           (tests.length ? (
-            '<div class="table-like tests-table table-scroll-card">' +
-            '<div class="table-row header"><span>Test Title</span><span>Status</span><span>Questions</span><span>Durations</span><span>Actions</span></div>' +
+            '<p class="helper-text tests-order-help">Students see live tests in this order. Drag a row by its handle, or use the arrows. Drafts keep their place but students don\'t see them.</p>' +
+            '<p class="tests-order-status" role="status" data-tests-order-status></p>' +
+            '<div class="table-like tests-table table-scroll-card" data-tests-order>' +
+            '<div class="table-row header"><span>Order</span><span>Test Title</span><span>Status</span><span>Questions</span><span>Durations</span><span>Actions</span></div>' +
             tests.map(function (test, index) {
-              return '<div class="table-row">' +
+              return '<div class="table-row" data-test-row="' + escapeAttribute(test.id) + '">' +
+                '<span class="tests-order-cell">' +
+                '<span class="tests-order-handle" draggable="true" data-drag-test="' + escapeAttribute(test.id) + '" title="Drag to reorder" aria-hidden="true">⠿</span>' +
+                '<span class="tests-order-pos">' + (index + 1) + '</span>' +
+                '<button type="button" class="tests-order-btn js-move-test-up" data-id="' + escapeAttribute(test.id) + '" aria-label="' + escapeAttribute("Move " + test.title + " up") + '"' + (index === 0 ? ' disabled' : '') + '>↑</button>' +
+                '<button type="button" class="tests-order-btn js-move-test-down" data-id="' + escapeAttribute(test.id) + '" aria-label="' + escapeAttribute("Move " + test.title + " down") + '"' + (index === tests.length - 1 ? ' disabled' : '') + '>↓</button>' +
+                '</span>' +
                 '<span class="' + (test.status === "live" ? 'test-title-live' : '') + '"><strong>' + escapeHtml(test.title) + '</strong><br><small>' + escapeHtml(test.series || "UGEE") + '</small></span>' +
                 '<span><span class="meta-chip ' + (test.status === "live" ? 'is-live' : 'is-draft') + '">' + escapeHtml(test.status || "draft") + '</span></span>' +
                 '<span>' + (Array.isArray(test.questionIds) ? test.questionIds.length : 0) + ' / 90</span>' +
@@ -13024,33 +13032,100 @@
         });
       });
 
+      // Studio → Existing Tests: the order students see. Up/down buttons (keyboard) and drag by
+      // the handle; the whole order is saved in one request.
+      async function saveTestOrder(orderedIds, movedId, focusSelector) {
+        var status = app.querySelector("[data-tests-order-status]");
+        if (status) status.textContent = "";
+        showOverlayLoader("Updating dashboard order.", { delayMs: 320 });
+        try {
+          await store.reorderTests(orderedIds);
+          var moved = tests.filter(function (test) { return test.id === movedId; })[0];
+          rerenderAdminPreserveScroll(user, runtime.adminSelectedTestId || selectedTestId);
+          var position = orderedIds.indexOf(movedId) + 1;
+          var liveStatus = document.querySelector("[data-tests-order-status]");
+          if (liveStatus && moved) liveStatus.textContent = "Moved " + moved.title + " to position " + position + " of " + orderedIds.length + ".";
+          var again = focusSelector ? document.querySelector(focusSelector) : null;
+          if (again && !again.disabled) again.focus();
+          else if (again) {
+            var row = again.closest("[data-test-row]");
+            var other = row && row.querySelector(".tests-order-btn:not([disabled])");
+            if (other) other.focus();
+          }
+        } catch (error) {
+          rerenderAdminPreserveScroll(user, runtime.adminSelectedTestId || selectedTestId);
+          var errStatus = document.querySelector("[data-tests-order-status]");
+          if (errStatus) {
+            errStatus.textContent = "Couldn't save the new order: " + ((error && error.message) || "try again") + ".";
+            errStatus.classList.add("is-error");
+          }
+        } finally {
+          hideOverlayLoader();
+        }
+      }
+
       async function moveTestOrder(testId, direction) {
         var orderedIds = tests.map(function (test) { return test.id; });
         var currentIndex = orderedIds.indexOf(String(testId || ""));
         if (currentIndex === -1) return;
         var targetIndex = direction === "up" ? currentIndex - 1 : currentIndex + 1;
         if (targetIndex < 0 || targetIndex >= orderedIds.length) return;
-
         var swapped = orderedIds.slice();
-        var currentId = swapped[currentIndex];
         swapped[currentIndex] = swapped[targetIndex];
-        swapped[targetIndex] = currentId;
+        swapped[targetIndex] = String(testId);
+        await saveTestOrder(swapped, String(testId), '.js-move-test-' + direction + '[data-id="' + String(testId).replace(/"/g, "") + '"]');
+      }
 
-        showOverlayLoader("Updating dashboard order.", { delayMs: 320 });
-        try {
-          if (store.reorderTests) {
-            await store.reorderTests(swapped);
-          } else {
-            for (var index = 0; index < swapped.length; index += 1) {
-              await store.updateTest(swapped[index], { displayOrder: (index + 1) * 10 });
-            }
-          }
-          rerenderAdminPreserveScroll(user, runtime.adminSelectedTestId || selectedTestId);
-        } catch (error) {
-          window.alert(error && error.message ? error.message : "Could not update dashboard order.");
-        } finally {
-          hideOverlayLoader();
-        }
+      // Drag a row by its handle and drop it on another row: it takes that row's place.
+      var orderTable = app.querySelector("[data-tests-order]");
+      if (orderTable) {
+        var draggingId = "";
+        var clearDropMarks = function () {
+          orderTable.querySelectorAll(".is-drop-before, .is-drop-after, .is-dragging").forEach(function (el) {
+            el.classList.remove("is-drop-before", "is-drop-after", "is-dragging");
+          });
+        };
+        orderTable.addEventListener("dragstart", function (event) {
+          var handle = event.target.closest && event.target.closest("[data-drag-test]");
+          if (!handle) return;
+          draggingId = handle.getAttribute("data-drag-test");
+          var row = handle.closest("[data-test-row]");
+          if (row) row.classList.add("is-dragging");
+          try {
+            event.dataTransfer.effectAllowed = "move";
+            event.dataTransfer.setData("text/plain", draggingId);
+            if (row) event.dataTransfer.setDragImage(row, 20, 20);
+          } catch (_e) { }
+        });
+        orderTable.addEventListener("dragover", function (event) {
+          if (!draggingId) return;
+          var row = event.target.closest && event.target.closest("[data-test-row]");
+          if (!row) return;
+          event.preventDefault();
+          var rect = row.getBoundingClientRect();
+          var after = event.clientY > rect.top + rect.height / 2;
+          orderTable.querySelectorAll(".is-drop-before, .is-drop-after").forEach(function (el) { el.classList.remove("is-drop-before", "is-drop-after"); });
+          if (row.getAttribute("data-test-row") !== draggingId) row.classList.add(after ? "is-drop-after" : "is-drop-before");
+        });
+        orderTable.addEventListener("dragend", function () {
+          draggingId = "";
+          clearDropMarks();
+        });
+        orderTable.addEventListener("drop", function (event) {
+          if (!draggingId) return;
+          event.preventDefault();
+          var row = event.target.closest && event.target.closest("[data-test-row]");
+          var targetId = row ? row.getAttribute("data-test-row") : "";
+          var after = row ? row.classList.contains("is-drop-after") : false;
+          var movedId = draggingId;
+          draggingId = "";
+          clearDropMarks();
+          if (!targetId || targetId === movedId) return;
+          var orderedIds = tests.map(function (test) { return test.id; }).filter(function (id) { return id !== movedId; });
+          var at = orderedIds.indexOf(targetId) + (after ? 1 : 0);
+          orderedIds.splice(at, 0, movedId);
+          saveTestOrder(orderedIds, movedId, '.js-move-test-up[data-id="' + movedId.replace(/"/g, "") + '"]');
+        });
       }
 
       app.querySelectorAll(".js-move-test-up").forEach(function (button) {
