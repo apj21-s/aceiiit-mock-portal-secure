@@ -1017,10 +1017,13 @@ async function flowLoader(browser) {
       scale: Math.round(vv.scale * 100) / 100,
     };
   });
+  // Page changes no longer show it (they keep the page with a thin progress bar), so a slow
+  // first load brings it up: the portal opening on a zoomed phone.
   const showLoader = async (hash) => {
     hold = true;
-    await page.evaluate((h) => { location.hash = h; }, hash);
-    await page.waitForSelector("[data-sync-overlay='true'] .app-loading-screen__content", { timeout: 5000 }).catch(() => null);
+    await page.evaluate((h) => { history.replaceState(null, "", h); }, hash);
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.waitForSelector("[data-sync-overlay='true'] .app-loading-screen__content", { timeout: 9000 }).catch(() => null);
     await sleep(150);
     const m = await measure();
     hold = false;

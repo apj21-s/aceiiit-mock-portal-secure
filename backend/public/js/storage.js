@@ -139,6 +139,7 @@
     if (source.series !== undefined) mapped.series = String(source.series || "UGEE 2026").trim();
     if (source.type !== undefined) mapped.type = source.type;
     if (source.status !== undefined) mapped.status = source.status;
+    if (source.publishAt !== undefined) mapped.publishAt = source.publishAt || null;
     if (source.isFree !== undefined) mapped.isFree = toBoolean(source.isFree, false);
     if (source.displayOrder !== undefined) mapped.displayOrder = toNumber(source.displayOrder, existing && existing.displayOrder !== undefined ? existing.displayOrder : 100);
 
@@ -1466,7 +1467,8 @@
 
   function getDashboardSnapshot(userId) {
     var tests = (state.db.tests || []).filter(function (t) { 
-      if (t.status !== "live") return false;
+      // Scheduled tests are listed too (with their opening time); they can't be started early.
+      if (t.status !== "live" && t.status !== "scheduled") return false;
       if (t.isPractice && t.createdBy !== userId) return false;
       return true;
     });
@@ -1630,6 +1632,22 @@
     await api("/api/admin/attach-bulk", { method: "POST", body: JSON.stringify({ testId: testId, questionIds: questionIds }) });
     await refreshFromRemote();
     return { ok: true };
+  }
+
+  // Import from Excel/CSV: the preview saves nothing; the commit saves every question or none.
+  async function previewQuestionImport(file, testId) {
+    var form = new FormData();
+    form.append("file", file);
+    if (testId) form.append("testId", String(testId));
+    return apiForm("/api/admin/questions/import/preview", "POST", form);
+  }
+
+  async function commitQuestionImport(questions, testId) {
+    var body = { questions: questions || [] };
+    if (testId) body.testId = String(testId);
+    var data = await api("/api/admin/questions/import/commit", { method: "POST", body: JSON.stringify(body) });
+    await refreshFromRemote();
+    return data;
   }
 
   async function detachQuestionsBulk(testId, questionIds) {
@@ -2272,6 +2290,8 @@
     attachQuestionToTest: attachQuestionToTest,
     detachQuestionFromTest: detachQuestionFromTest,
     attachQuestionsBulk: attachQuestionsBulk,
+    previewQuestionImport: previewQuestionImport,
+    commitQuestionImport: commitQuestionImport,
     detachQuestionsBulk: detachQuestionsBulk,
     reorderTestQuestions: reorderTestQuestions,
     duplicateTest: duplicateTest,

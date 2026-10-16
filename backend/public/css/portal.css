@@ -16558,3 +16558,249 @@ body[data-theme="dark"] .tests-order-btn {
     height: 44px;
   }
 }
+
+/* Background refresh after a page change (app.js startRouteProgress): a 3px bar at the top. */
+.route-progress {
+  position: fixed;
+  top: 0;
+  right: 0;
+  left: 0;
+  z-index: 1000;
+  height: 3px;
+  background: var(--gold);
+  opacity: 0;
+  transform: scaleX(0);
+  transform-origin: left center;
+  pointer-events: none;
+}
+
+.route-progress.is-active {
+  opacity: 1;
+  transform: scaleX(0.8);
+  transition: transform 2.4s cubic-bezier(0.08, 0.82, 0.17, 1), opacity 120ms ease;
+}
+
+.route-progress.is-active.is-done {
+  opacity: 0;
+  transform: scaleX(1);
+  transition: transform 200ms var(--ease-out), opacity 300ms ease 120ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .route-progress.is-active,
+  .route-progress.is-active.is-done {
+    transform: scaleX(1);
+    transition: opacity 150ms ease;
+  }
+}
+
+/* Scheduled tests: "Opens Sat 18 Oct, 10:00 IST · in 2 d 4 h" next to a disabled button. */
+.test-opens {
+  display: block;
+  margin-top: 6px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--gold-strong);
+  font-variant-numeric: tabular-nums;
+}
+
+.meta-chip.is-scheduled {
+  background: rgba(197, 160, 40, 0.16);
+  color: var(--gold-strong);
+}
+
+.test-publish-at[hidden] {
+  display: none;
+}
+
+/* Studio → Import from Excel/CSV */
+.import-dialog {
+  display: grid;
+  gap: 18px;
+}
+
+.import-step {
+  display: grid;
+  gap: 10px;
+}
+
+.import-step h4 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 1rem;
+}
+
+.import-step code {
+  font-size: 0.85em;
+  padding: 1px 5px;
+  border-radius: 6px;
+  background: rgba(197, 160, 40, 0.14);
+}
+
+.import-target {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 10px 14px;
+  border: 1px solid rgba(216, 199, 171, 0.8);
+  border-radius: var(--radius-sm);
+}
+
+.import-target legend {
+  padding: 0 4px;
+  font-weight: 700;
+}
+
+.import-target label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: var(--tap);
+}
+
+.import-message:empty {
+  display: none;
+}
+
+.import-message.is-error,
+.import-problems.is-error {
+  color: var(--red);
+}
+
+.import-message.is-success {
+  color: var(--green);
+  font-weight: 700;
+}
+
+.import-summary {
+  margin: 0;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.import-summary:focus-visible,
+.import-message:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 3px;
+  border-radius: 6px;
+}
+
+.import-notes {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--wine);
+}
+
+.import-table-wrap {
+  max-height: min(55vh, 560px);
+  overflow: auto;
+  border: 1px solid rgba(216, 199, 171, 0.8);
+  border-radius: var(--radius-sm);
+  overscroll-behavior: contain;
+}
+
+.import-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.import-table th,
+.import-table td {
+  padding: 10px 12px;
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid rgba(216, 199, 171, 0.5);
+}
+
+.import-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--surface-soft);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.import-table tbody th {
+  font-variant-numeric: tabular-nums;
+}
+
+.import-table tr.has-errors {
+  background: rgba(180, 35, 24, 0.06);
+}
+
+.import-table tr.has-warnings {
+  background: rgba(197, 160, 40, 0.08);
+}
+
+.import-question {
+  min-width: 260px;
+}
+
+.import-passage {
+  margin-bottom: 8px;
+  padding-left: 10px;
+  border-left: 3px solid rgba(197, 160, 40, 0.5);
+  color: var(--ink-soft);
+}
+
+.import-options {
+  margin: 8px 0 0;
+  padding-left: 22px;
+}
+
+.import-options li.is-correct {
+  font-weight: 700;
+}
+
+.import-correct,
+.import-ok {
+  color: var(--green);
+  font-weight: 700;
+}
+
+.import-correct {
+  font-size: 0.78rem;
+}
+
+.import-status {
+  min-width: 180px;
+}
+
+.import-problems {
+  margin: 4px 0 0;
+  padding-left: 16px;
+}
+
+.import-problems.is-warning {
+  color: var(--wine);
+}
+
+body[data-theme="dark"] .import-table thead th {
+  background: #232323;
+}
+
+body[data-theme="dark"] .import-table-wrap,
+body[data-theme="dark"] .import-target,
+body[data-theme="dark"] .import-table th,
+body[data-theme="dark"] .import-table td {
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+body[data-theme="dark"] .import-message.is-error,
+body[data-theme="dark"] .import-problems.is-error {
+  color: #f19a8f;
+}
+
+body[data-theme="dark"] .import-problems.is-warning,
+body[data-theme="dark"] .import-notes {
+  color: #e6c46a;
+}
+
+body[data-theme="dark"] .import-correct,
+body[data-theme="dark"] .import-ok,
+body[data-theme="dark"] .import-message.is-success {
+  color: #6fcf97;
+}

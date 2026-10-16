@@ -56,6 +56,7 @@ dashboard; never commit `backend/.env`.
 | `MONGO_*`, `DB_RETRY_DELAY_MS`, `MONGO_AUTO_INDEX` | see `.env.example` | Pool and timeouts. Keep `MONGO_AUTO_INDEX=false` and use the index migration |
 | `REQUEST_TIMEOUT_MS`, `SERVER_REQUEST_TIMEOUT_MS`, `KEEP_ALIVE_TIMEOUT_MS`, `HEADERS_TIMEOUT_MS`, `UPLOAD_REQUEST_TIMEOUT_MS`, `SHUTDOWN_TIMEOUT_MS` | see `.env.example` | HTTP timeouts and graceful shutdown |
 | `CORS_ORIGIN` | (unset) | Only if the frontend is served from another origin |
+| `TEST_SCHEDULER_INTERVAL_MS` | 30000 | How often scheduled tests are checked and opened (minimum 5000). Starting a test after its time opens it at once anyway, so this only affects when the Start button appears without a refresh |
 
 **Never set in production:** `ALLOW_INSECURE_DEV_AUTH` (boot fails),
 `ACEIIIT_SKIP_DOTENV` (test harnesses only). These are removed and no longer read:
@@ -92,6 +93,10 @@ node scripts/migrations/2026-10-renumber-duplicate-attempts.js --apply
 node scripts/migrations/2026-10-sync-indexes.js                         # review
 node scripts/migrations/2026-10-sync-indexes.js --apply                 # must report no FAILED lines
 ```
+
+After a release that adds an index (for example the scheduled-tests index on `tests`
+`{status, publishAt}`, or the Google Drive connection), run `2026-10-sync-indexes.js` again
+(dry run, then `--apply`).
 
 Other one-off scripts:
 - `scripts/seed-ugee-2026.js` (`npm run seed`): sample data for **empty development** databases. It replaces all questions and tests, so it refuses to run when any exist (or with `NODE_ENV=production`). Never run it against production.
@@ -242,6 +247,20 @@ ids (see `privacy.html`).
 
 **Smoke check:** as a student, open the mentor and send "Analyse my latest mock test.".
 The usage line drops by one, and Studio → ACEIIIT Mentor shows the reply under today.
+
+## Scheduled tests and question import
+
+- **Scheduled tests** (Studio → Setup → Publishing → Scheduled): a background job in the web
+  process (`services/testScheduler.js`, every 30 s) turns scheduled tests live when their time
+  comes. With one instance (see Scaling) there is nothing else to run. Students see the test with
+  "Opens … IST" and a countdown, and the server refuses a start before the time
+  (`403 TEST_NOT_OPEN`).
+- **Import from Excel/CSV** (Questions Studio and Question Bank): uses the `exceljs`
+  dependency, installed by `npm ci` from `package.json` like the others. `package.json`
+  overrides `uuid` to `^11.1.1` so `npm audit --omit=dev` stays clean; keep that override until
+  `exceljs` ships a fixed release. Files are read in memory (≤ 5 MB, ≤ 500 rows) and never
+  stored; every formula is checked with KaTeX on the server before anything is saved. The sheet format, with instructions for having an AI agent convert a PDF paper, is in
+  [`QUESTION_IMPORT_FORMAT.md`](QUESTION_IMPORT_FORMAT.md).
 
 ## Scaling
 

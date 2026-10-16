@@ -12,6 +12,7 @@ const { evaluateAttempt } = require("./evaluationService");
 const { buildAttemptAnalysis } = require("./attemptAnalysisService");
 const { invalidateRankCache } = require("./rankService");
 const { domainEvents, EVENTS } = require("./domainEvents");
+const { openDueTests } = require("./testScheduler");
 
 // Requests within this window after a deadline are still accepted (network latency).
 const GRACE_MS = 60 * 1000;
@@ -192,7 +193,15 @@ async function loadTestForSession(testId, auth) {
       throw new ExamError(402, "PAYMENT_REQUIRED", "This practice paper uses Pro Test Series questions. Buy Test Series to open it.");
     }
   } else {
-    if (test.status !== "live" && auth.role !== "admin") {
+    if (test.status === "scheduled" && auth.role !== "admin") {
+      const opensAt = test.publishAt ? new Date(test.publishAt) : null;
+      if (!opensAt || opensAt.getTime() > Date.now()) {
+        throw new ExamError(403, "TEST_NOT_OPEN", "This test isn't open yet.", { opensAt: opensAt ? opensAt.toISOString() : null });
+      }
+      // Its time has come and the scheduler hasn't flipped it yet: open it now.
+      await openDueTests();
+      test.status = "live";
+    } else if (test.status !== "live" && auth.role !== "admin") {
       throw new ExamError(404, "TEST_NOT_FOUND", "Test not found.");
     }
     if (!(await canAccessTest(auth, test))) {

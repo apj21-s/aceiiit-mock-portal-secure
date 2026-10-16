@@ -277,7 +277,7 @@ async function snapshot(req, res, next) {
   try {
     const [tests, questions, attempts, users, userCount, appConfig] = await Promise.all([
       Test.find({ deletedAt: null, status: { $ne: "practice" } })
-        .select("title subtitle series type isFree status displayOrder durationMinutes sectionDurations instructions benchmarkScores questionIds shuffleQuestions shuffleOptions integrity seasonId createdAt updatedAt")
+        .select("title subtitle series type isFree status publishAt displayOrder durationMinutes sectionDurations instructions benchmarkScores questionIds shuffleQuestions shuffleOptions integrity seasonId createdAt updatedAt")
         .sort({ displayOrder: 1, createdAt: 1 })
         .lean(),
       // Only questions attached to a test; the full bank is paginated via GET /admin/questions.
@@ -310,6 +310,7 @@ async function snapshot(req, res, next) {
         type: t.type || "practice",
         isFree: Boolean(t.isFree),
         status: t.status,
+        publishAt: t.publishAt ? new Date(t.publishAt).toISOString() : null,
         displayOrder: Number.isFinite(Number(t.displayOrder)) ? Number(t.displayOrder) : 100,
         durationMinutes: t.durationMinutes,
         sectionDurations: t.sectionDurations || { SUPR: 60, REAP: 120 },
@@ -1379,6 +1380,8 @@ async function invalidateAttempt(req, res, next) {
 }
 
 module.exports = {
+  recalculateTestsMetadata,
+  getSectionDefaultMarking,
   getUserSiteOrders,
   getUserSiteReceipt,
   getAttemptIntegrity,

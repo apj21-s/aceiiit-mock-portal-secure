@@ -47,7 +47,10 @@ function createApp() {
   );
   app.use(compression());
   app.use(cookieParser());
-  app.use(express.json({ limit: "256kb" }));
+  // A bulk question import can carry up to 500 questions with LaTeX; everything else stays small.
+  const jsonSmall = express.json({ limit: "256kb" });
+  const jsonImport = express.json({ limit: "4mb" });
+  app.use((req, res, next) => (req.path === "/api/admin/questions/import/commit" ? jsonImport : jsonSmall)(req, res, next));
   app.use(express.urlencoded({ extended: false }));
   // Request IDs: honour a well-formed incoming X-Request-Id (from a proxy), else generate one.
   app.use(pinoHttp({

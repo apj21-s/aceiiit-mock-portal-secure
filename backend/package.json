@@ -29,6 +29,7 @@
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "dotenv": "^16.6.1",
+    "exceljs": "^4.4.0",
     "express": "^4.22.3",
     "express-rate-limit": "^7.5.0",
     "googleapis": "^180.0.0",
@@ -62,5 +63,8 @@
     "setupFiles": [
       "<rootDir>/tests/helpers/env.js"
     ]
+  },
+  "overrides": {
+    "uuid": "^11.1.1"
   }
 }

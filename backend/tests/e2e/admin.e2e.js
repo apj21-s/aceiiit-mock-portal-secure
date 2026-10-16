@@ -270,6 +270,130 @@ const log = (...a) => console.log("[admin-e2e]", ...a);
     });
     await page.waitForFunction((title) => (document.querySelector("[data-tests-order] [data-test-row] strong") || {}).textContent === title, { timeout: 10000 }, first[0].title).catch(() => null);
     check((await orderNow())[0].title === first[0].title, "dragging a row onto the first place moves it there");
+
+    // Import from Excel/CSV: the preview renders the maths and flags the broken row; importing
+    // saves the ready rows and attaches them to the test being edited, in sheet order.
+    const ExcelJS = req("node_modules/exceljs");
+    const sheetDir = fs.mkdtempSync(path.join(dataRoot, "import-"));
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet("Questions");
+    ws.addRow(["section", "topic", "difficulty", "question", "option_a", "option_b", "option_c", "option_d", "answer"]);
+    ws.addRow(["SUPR", "Kinematics", "medium", "Kinetic energy of mass $m$ at speed $v$", "$mv$", "$\\frac{1}{2}mv^2$", "$mv^2$", "$2mv^2$", "B"]);
+    ws.addRow(["SUPR", "Calculus", "medium", "Broken $\\frac{1}{$", "1", "2", "", "", "A"]);
+    ws.addRow(["REAP", "Logic", "easy", "Next: 2, 6, 12, 20, ?", "28", "30", "32", "36", "B"]);
+    const xlsxPath = path.join(sheetDir, "paper.xlsx");
+    await wb.xlsx.writeFile(xlsxPath);
+    await page.evaluate(() => document.querySelector('.js-studio-tab[data-tab="questions"]').click());
+    await page.waitForSelector(".js-open-question-import", { timeout: 10000 });
+    await page.click(".js-open-question-import");
+    await page.waitForSelector("[data-import-dialog] #import-file", { timeout: 5000 });
+    check(/Brand New Mock 7/.test(await page.$eval(".import-target", (el) => el.innerText)), "import offers to add the questions to the test being edited");
+    await (await page.$("#import-file")).uploadFile(xlsxPath);
+    await page.click("[data-import-check]");
+    await page.waitForSelector("[data-import-summary]", { timeout: 15000 }).catch(() => null);
+    await page.waitForFunction(() => document.querySelectorAll(".import-table .katex").length >= 4, { timeout: 10000 }).catch(() => null);
+    const pv = await page.evaluate(() => ({
+      summary: (document.querySelector("[data-import-summary]") || {}).textContent || "",
+      focused: Boolean(document.activeElement && document.activeElement.hasAttribute("data-import-summary")),
+      katex: document.querySelectorAll(".import-table .katex").length,
+      errorRow: (document.querySelector('[data-import-row="3"]') || {}).innerText || "",
+      button: (document.querySelector("[data-import-commit]") || {}).textContent || "",
+    }));
+    check(/^2 ready · 1 with errors/.test(pv.summary) && pv.focused, `preview summary is focused (${pv.summary})`);
+    check(pv.katex >= 4, `preview renders the maths with KaTeX (${pv.katex} formulas)`);
+    check(/question: formula/.test(pv.errorRow), "the broken formula is flagged on its row (row 3)");
+    check(pv.button === "Import 2 questions", `the import button counts only the ready rows (${pv.button})`);
+    await page.click("[data-import-commit]");
+    await page.waitForFunction(() => /2 questions added to Brand New Mock 7 \(SUPR 1, REAP 1\)/.test((document.querySelector("[data-import-status]") || {}).textContent || ""), { timeout: 15000 }).catch(() => null);
+    check(/2 questions added to Brand New Mock 7 \(SUPR 1, REAP 1\)/.test(await page.$eval("[data-import-status]", (el) => el.textContent)), "import says how many were added and where");
+    await mongoose.connect(uri);
+    const mock7 = await Test.findOne({ title: "Brand New Mock 7" }).lean();
+    const attached = await Question.find({ _id: { $in: mock7.questionIds } }).lean();
+    const byId = Object.fromEntries(attached.map((q) => [String(q._id), q.prompt]));
+    await mongoose.disconnect();
+    check(JSON.stringify(mock7.questionIds.map((id) => byId[String(id)])) === JSON.stringify(["Kinetic energy of mass $m$ at speed $v$", "Next: 2, 6, 12, 20, ?"]), "the questions are attached in sheet order, LaTeX unchanged");
+    await page.keyboard.press("Escape");
+    await page.waitForFunction(() => /2 \/ 90 Questions Attached/.test((document.querySelector(".studio-question-progress") || {}).innerText || ""), { timeout: 10000 }).catch(() => null);
+    check(/2 \/ 90 Questions Attached/.test(await page.$eval(".studio-question-progress", (el) => el.innerText)), "Questions Studio shows the imported questions");
+
+    // CSV into the question bank only (from the Bank tab).
+    const csvPath = path.join(sheetDir, "bank.csv");
+    fs.writeFileSync(csvPath, "﻿section,topic,question,option_a,option_b,answer\r\nREAP,Series,\"Sum $\\sum_{k=1}^{n} k$, for n = 3\",6,9,A\r\n");
+    await page.evaluate(() => document.querySelector('.js-studio-tab[data-tab="bank"]').click());
+    await page.waitForSelector("#bank-search", { timeout: 10000 });
+    await page.evaluate(() => document.querySelector(".js-open-question-import").click());
+    await page.waitForSelector("[data-import-dialog] #import-file", { timeout: 5000 });
+    check(!(await page.$(".import-target")), "from the Bank tab the questions go to the bank only");
+    await (await page.$("#import-file")).uploadFile(csvPath);
+    await page.click("[data-import-check]");
+    await page.waitForSelector("[data-import-commit]", { timeout: 15000 }).catch(() => null);
+    await page.waitForFunction(() => document.querySelector(".import-table .katex"), { timeout: 10000 }).catch(() => null);
+    check(Boolean(await page.$(".import-table .katex")) && /^1 ready/.test(await page.$eval("[data-import-summary]", (el) => el.textContent)), "a CSV previews the same way (1 ready, maths rendered)");
+    await page.click("[data-import-commit]");
+    await page.waitForFunction(() => /1 question added to the question bank \(REAP 1\)/.test((document.querySelector("[data-import-status]") || {}).textContent || ""), { timeout: 15000 }).catch(() => null);
+    check(/1 question added to the question bank/.test(await page.$eval("[data-import-status]", (el) => el.textContent)), "the CSV row is added to the bank");
+    await page.keyboard.press("Escape");
+    fs.rmSync(sheetDir, { recursive: true, force: true });
+
+    // Scheduled publishing from Setup; students see a countdown and no Start button.
+    await page.evaluate(() => document.querySelector('.js-studio-tab[data-tab="setup"]').click());
+    await page.waitForSelector("#test-publishing", { timeout: 10000 });
+    await page.select("#test-publishing", "scheduled");
+    check(await page.$eval(".test-publish-at", (el) => !el.hidden), "choosing Scheduled shows the date-time field");
+    await page.$eval("#test-publish-at", (el) => {
+      const d = new Date(Date.now() + 2 * 60 * 60 * 1000);
+      const pad = (n) => String(n).padStart(2, "0");
+      el.value = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    });
+    await page.click('#test-form button[type="submit"]');
+    await sleep(1500);
+    await mongoose.connect(uri);
+    const scheduled = await Test.findOne({ title: "Brand New Mock 7" }).lean();
+    await mongoose.disconnect();
+    const inMs = scheduled.publishAt ? new Date(scheduled.publishAt).getTime() - Date.now() : 0;
+    check(scheduled.status === "scheduled" && inMs > 100 * 60 * 1000 && inMs < 121 * 60 * 1000, `the test is saved as scheduled about 2 h ahead (${scheduled.status}, ${Math.round(inMs / 60000)} min)`);
+    await page.evaluate(() => document.querySelector('.js-studio-tab[data-tab="tests"]').click());
+    await page.waitForSelector("[data-tests-order]", { timeout: 10000 });
+    check(await page.evaluate(() => Array.from(document.querySelectorAll(".meta-chip.is-scheduled")).some((c) => /scheduled ·/.test(c.textContent))), "Existing Tests shows the scheduled time");
+
+    const studentCtx = await browser.createBrowserContext();
+    const student = await newHermeticPage(studentCtx);
+    student.on("pageerror", (e) => pageErrors.push(e.stack || e.message));
+    await student.setViewport({ width: 1280, height: 900 });
+    await student.goto(`${BASE}/#/login`, { waitUntil: "networkidle2" });
+    await student.waitForSelector("#login-email");
+    await student.type("#login-email", "buyer@test.local");
+    await student.type("#login-password", "Passw0rd!long");
+    await student.click("#login-submit-btn");
+    await student.waitForFunction(() => location.hash.length > 2 && !/login/.test(location.hash), { timeout: 15000 });
+    // Page changes no longer cover the screen with the blurred loader.
+    await student.evaluate(() => {
+      window.__overlaySeen = false;
+      new MutationObserver(() => { if (document.querySelector("[data-sync-overlay='true']")) window.__overlaySeen = true; }).observe(document.body, { childList: true, subtree: true });
+    });
+    await student.evaluate(() => { location.hash = "#/exams"; });
+    await student.waitForFunction(() => /Brand New Mock 7/.test(document.body.innerText), { timeout: 15000 }).catch(() => null);
+    const card = await student.evaluate(() => {
+      // The smallest element around a countdown that also names the test = that test's card.
+      let scope = null;
+      document.querySelectorAll(".test-opens").forEach((el) => {
+        let node = el;
+        while (node && node !== document.body && !/Brand New Mock 7/.test(node.innerText)) node = node.parentElement;
+        if (node && node !== document.body && !scope) scope = node;
+      });
+      const opens = scope ? scope.querySelector(".test-opens") : null;
+      const button = scope ? scope.querySelector("button") : null;
+      return { text: opens ? opens.textContent : "", button: button ? button.textContent.trim() : "", disabled: Boolean(button && button.disabled), start: scope ? /\bStart\b/.test(scope.innerText) : true, page: scope ? "" : document.body.innerText.slice(0, 600), hash: location.hash };
+    });
+    if (!card.text) log("student page:", card.hash, card.page.replace(/\s+/g, " "));
+    check(/^Opens .+ IST · in (1 h 5\d m|2 h)/.test(card.text), `students see when it opens with a countdown (${card.text})`);
+    check(card.button === "Opens soon" && card.disabled && !card.start, `no Start button before it opens (${card.button})`);
+    await student.evaluate(() => { location.hash = "#/dashboard"; });
+    await sleep(1200);
+    await student.evaluate(() => { location.hash = "#/exams"; });
+    await sleep(1200);
+    check(!(await student.evaluate(() => window.__overlaySeen)), "changing pages shows no full-screen loader");
+    await studentCtx.close();
   } catch (err) {
     failures.push(`exception: ${err.message}`);
     log("EXCEPTION", err.stack);

@@ -100,7 +100,7 @@ async function createReminder(req, res, next) {
       return res.status(400).json({ error: "Please choose a future reminder window so the notification can still be sent on time." });
     }
 
-    const test = await Test.findOne({ _id: input.testId, deletedAt: null, status: "live" }).select("_id title");
+    const test = await Test.findOne({ _id: input.testId, deletedAt: null, status: { $in: ["live", "scheduled"] } }).select("_id title");
     if (!test) {
       return res.status(404).json({ error: "Please choose one of the live mocks." });
     }
@@ -156,7 +156,7 @@ async function updateReminder(req, res, next) {
     if (remindAt.getTime() <= Date.now()) {
       return res.status(400).json({ error: "Please choose a future reminder window so the notification can still be sent on time." });
     }
-    const test = await Test.findOne({ _id: input.testId, deletedAt: null, status: "live" }).select("_id title");
+    const test = await Test.findOne({ _id: input.testId, deletedAt: null, status: { $in: ["live", "scheduled"] } }).select("_id title");
     if (!test) {
       return res.status(404).json({ error: "Please choose one of the live mocks." });
     }

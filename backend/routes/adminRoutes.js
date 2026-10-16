@@ -11,6 +11,8 @@ const { z } = require("zod");
 const { validate, objectIdParam, objectId } = require("../middleware/validate");
 const { audit } = require("../middleware/audit");
 const { readLimiter } = require("../middleware/rateLimit");
+const multer = require("multer");
+const questionImport = require("../controllers/questionImportController");
 
 const router = express.Router();
 
@@ -136,6 +138,19 @@ router.post("/attach-bulk", requireAuth, requireAdmin, audit("TEST_QUESTIONS_ATT
 router.post("/detach-bulk", requireAuth, requireAdmin, audit("TEST_QUESTIONS_DETACHED", "Test"), admin.detachQuestionsBulk);
 router.post("/reorder-questions", requireAuth, requireAdmin, audit("TEST_QUESTIONS_REORDERED", "Test"), admin.reorderTestQuestions);
 router.post("/tests/reorder", requireAuth, requireAdmin, audit("TESTS_REORDERED", "Test"), admin.reorderTests);
+
+// Bulk question import (Excel/CSV): template, a preview that saves nothing, then import.
+const sheetUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024, files: 1, fields: 5 },
+  fileFilter: (_req, file, cb) => {
+    if (/\.(xlsx|csv)$/i.test(String(file.originalname || ""))) return cb(null, true);
+    return cb(Object.assign(new Error("Upload an .xlsx or .csv file (use the template)."), { status: 400, expose: true }));
+  },
+});
+router.get("/questions/import-template", requireAuth, requireAdmin, questionImport.downloadTemplate);
+router.post("/questions/import/preview", requireAuth, requireAdmin, sheetUpload.single("file"), questionImport.previewImport);
+router.post("/questions/import/commit", requireAuth, requireAdmin, audit("QUESTIONS_IMPORTED", "Test"), questionImport.commitImport);
 router.post("/test/:id/duplicate", requireAuth, requireAdmin, audit("TEST_DUPLICATED", "Test"), admin.duplicateTest);
 router.post("/test/:id/publish", requireAuth, requireAdmin, admin.publishTest);
 router.post("/generate-questions", requireAuth, requireAdmin, audit("TEST_QUESTIONS_GENERATED", "Test"), admin.generateQuestionsRandom);

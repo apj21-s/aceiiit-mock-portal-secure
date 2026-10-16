@@ -1886,6 +1886,183 @@
     return overlay;
   }
 
+  // Studio → Import from Excel/CSV. Step 1: template + file (+ which test to add to). Step 2: a
+  // preview of every row rendered as students will see it, with the problems per row; nothing is
+  // saved until "Import N questions", which saves all the ready rows at once.
+  function openQuestionImportDialog(target, onDone) {
+    var testId = target && target.id ? String(target.id) : "";
+    var hasTest = Boolean(testId) && target.status !== "practice";
+    var body =
+      '<div class="import-dialog" data-import-dialog>' +
+      '<section class="import-step" aria-labelledby="import-step-1">' +
+      '<h4 id="import-step-1">1. Fill the template</h4>' +
+      '<p class="helper-text">One question per row. Maths works as in the editor: <code>$\\frac{1}{2}mv^2$</code> inline, <code>$$…$$</code> or <code>\\[…\\]</code> on its own line. Leave marks blank to use the section defaults.</p>' +
+      '<div class="button-row">' +
+      '<a class="button button-secondary button-compact" href="/api/admin/questions/import-template?format=xlsx" download data-import-template="xlsx">Template (.xlsx)</a>' +
+      '<a class="button button-secondary button-compact" href="/api/admin/questions/import-template?format=csv" download data-import-template="csv">Template (.csv)</a>' +
+      '</div>' +
+      '</section>' +
+      '<section class="import-step" aria-labelledby="import-step-2">' +
+      '<h4 id="import-step-2">2. Check your sheet</h4>' +
+      '<div class="field"><label for="import-file">Filled sheet (.xlsx or .csv, up to 500 questions)</label>' +
+      '<input type="file" id="import-file" accept=".xlsx,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"></div>' +
+      (hasTest
+        ? '<fieldset class="import-target"><legend>Add the questions to</legend>' +
+          '<label><input type="radio" name="import-target" value="test" checked> ' + escapeHtml(target.title || "This test") + ' (and the question bank)</label>' +
+          '<label><input type="radio" name="import-target" value="bank"> The question bank only</label>' +
+          '</fieldset>'
+        : '<p class="helper-text">The questions go to the question bank. Attach them to a test from Questions Studio.</p>') +
+      '<div class="button-row"><button class="button button-primary" type="button" data-import-check>Check sheet</button></div>' +
+      '<p class="import-message is-error" role="alert" data-import-error hidden></p>' +
+      '</section>' +
+      '<div data-import-result></div>' +
+      '</div>';
+    var overlay = showAdminModal("Import questions from Excel/CSV", body, true);
+    if (!overlay) return null;
+
+    var fileInput = overlay.querySelector("#import-file");
+    var checkBtn = overlay.querySelector("[data-import-check]");
+    var errorEl = overlay.querySelector("[data-import-error]");
+    var resultEl = overlay.querySelector("[data-import-result]");
+    var preview = null;
+
+    function chosenTestId() {
+      if (!hasTest) return "";
+      var picked = overlay.querySelector("input[name='import-target']:checked");
+      return picked && picked.value === "test" ? testId : "";
+    }
+
+    function showError(message) {
+      errorEl.textContent = message || "";
+      errorEl.hidden = !message;
+    }
+
+    function optionsHtml(question) {
+      return '<ol class="import-options" type="A">' + (question.options || []).map(function (option, index) {
+        var correct = index === question.correctOption;
+        return '<li class="' + (correct ? "is-correct" : "") + '"><span class="rich-text">' + formatRichText(option) + '</span>' +
+          (correct ? ' <span class="import-correct">correct</span>' : "") + '</li>';
+      }).join("") + '</ol>';
+    }
+
+    function rowHtml(row) {
+      var q = row.question || {};
+      var status = row.errors.length
+        ? '<ul class="import-problems is-error">' + row.errors.map(function (e) { return '<li>' + escapeHtml(e) + '</li>'; }).join("") + '</ul>'
+        : '<span class="import-ok">Ready</span>' + (row.warnings.length
+          ? '<ul class="import-problems is-warning">' + row.warnings.map(function (w) { return '<li>' + escapeHtml(w) + '</li>'; }).join("") + '</ul>'
+          : "");
+      return '<tr class="' + (row.errors.length ? "has-errors" : row.warnings.length ? "has-warnings" : "") + '" data-import-row="' + row.row + '">' +
+        '<th scope="row">' + row.row + '</th>' +
+        '<td>' + escapeHtml(q.section || "—") + '</td>' +
+        '<td>' + escapeHtml(q.topic || "—") + '</td>' +
+        '<td class="import-question">' +
+        (q.passage ? '<div class="rich-text import-passage">' + formatRichText(q.passage) + '</div>' : "") +
+        '<div class="rich-text">' + formatRichText(q.prompt || "") + '</div>' + optionsHtml(q) + '</td>' +
+        '<td class="import-status">' + status + '</td>' +
+        '</tr>';
+    }
+
+    function sectionLine(counts) {
+      return ["SUPR", "REAP"].filter(function (s) { return counts && counts[s]; }).map(function (s) { return s + " " + counts[s]; }).join(", ");
+    }
+
+    function renderPreview(data) {
+      var s = data.summary;
+      var parts = [s.ready + " ready"];
+      if (s.withErrors) parts.push(s.withErrors + " with errors (skipped)");
+      if (s.withWarnings) parts.push(s.withWarnings + " with warnings");
+      var importLabel = s.ready === 1 ? "Import 1 question" : "Import " + s.ready + " questions";
+      resultEl.innerHTML =
+        '<section class="import-step" aria-labelledby="import-step-3">' +
+        '<h4 id="import-step-3">3. Review and import</h4>' +
+        '<p class="import-summary" tabindex="-1" data-import-summary>' + escapeHtml(parts.join(" · ")) + '</p>' +
+        (s.withErrors ? '<p class="helper-text">Rows with errors won\'t be imported. Fix them in the sheet and check it again, or import the ready rows now.</p>' : "") +
+        (data.notes && data.notes.length ? '<ul class="import-notes">' + data.notes.map(function (n) { return '<li>' + escapeHtml(n) + '</li>'; }).join("") + '</ul>' : "") +
+        '<div class="import-table-wrap"><table class="import-table">' +
+        '<thead><tr><th scope="col">Row</th><th scope="col">Section</th><th scope="col">Topic</th><th scope="col">Question and options</th><th scope="col">Status</th></tr></thead>' +
+        '<tbody>' + data.rows.map(rowHtml).join("") + '</tbody></table></div>' +
+        '<div class="button-row import-actions">' +
+        (s.ready ? '<button class="button button-primary" type="button" data-import-commit>' + escapeHtml(importLabel) + '</button>' : "") +
+        '</div>' +
+        '<p class="import-message" role="status" tabindex="-1" data-import-status></p>' +
+        '</section>';
+      renderLatexInElement(resultEl);
+      var summary = resultEl.querySelector("[data-import-summary]");
+      if (summary) summary.focus();
+      var commitBtn = resultEl.querySelector("[data-import-commit]");
+      if (commitBtn) commitBtn.addEventListener("click", commit);
+    }
+
+    async function check() {
+      showError("");
+      var file = fileInput.files && fileInput.files[0];
+      if (!file) {
+        showError("Choose the filled .xlsx or .csv file first.");
+        fileInput.focus();
+        return;
+      }
+      checkBtn.disabled = true;
+      checkBtn.textContent = "Checking…";
+      resultEl.innerHTML = "";
+      try {
+        preview = await store.previewQuestionImport(file, chosenTestId());
+        renderPreview(preview);
+      } catch (error) {
+        preview = null;
+        showError((error && error.message) || "Could not read that file.");
+      } finally {
+        checkBtn.disabled = false;
+        checkBtn.textContent = "Check sheet";
+      }
+    }
+
+    async function commit() {
+      if (!preview) return;
+      var commitBtn = resultEl.querySelector("[data-import-commit]");
+      var statusEl = resultEl.querySelector("[data-import-status]");
+      var ready = preview.rows.filter(function (r) { return !r.errors.length; }).map(function (r) { return r.question; });
+      var destination = chosenTestId();
+      commitBtn.disabled = true;
+      commitBtn.textContent = "Importing…";
+      statusEl.classList.remove("is-error");
+      statusEl.textContent = "";
+      try {
+        var done = await store.commitQuestionImport(ready, destination);
+        var where = destination ? " to " + (target.title || "the test") : " to the question bank";
+        statusEl.textContent = done.imported + (done.imported === 1 ? " question added" : " questions added") + where + " (" + sectionLine(done.bySection) + ").";
+        statusEl.classList.add("is-success");
+        commitBtn.remove();
+        checkBtn.disabled = true;
+        fileInput.disabled = true;
+        preview = null;
+        if (typeof onDone === "function") onDone(done);
+        statusEl.focus();
+      } catch (error) {
+        var problems = error && error.data && error.data.problems;
+        statusEl.classList.add("is-error");
+        statusEl.textContent = problems && problems.length
+          ? "Nothing was imported: row " + preview.rows.filter(function (r) { return !r.errors.length; })[problems[0].index].row + " — " + problems[0].errors[0] + "."
+          : (error && error.message) || "Import failed; nothing was saved.";
+        commitBtn.disabled = false;
+        commitBtn.textContent = ready.length === 1 ? "Import 1 question" : "Import " + ready.length + " questions";
+      }
+    }
+
+    checkBtn.addEventListener("click", check);
+    fileInput.addEventListener("change", function () {
+      showError("");
+      resultEl.innerHTML = "";
+      preview = null;
+    });
+    Array.prototype.forEach.call(overlay.querySelectorAll("input[name='import-target']"), function (radio) {
+      radio.addEventListener("change", function () {
+        if (preview) check(); // the section-limit notes depend on the destination
+      });
+    });
+    return overlay;
+  }
+
   function loadLocalDraft(key) {
     try {
       return JSON.parse(localStorage.getItem(key) || "null");
@@ -2478,7 +2655,8 @@
     var meta = getPlannerStatusMeta(event.status);
     var title = event.title || "Planned mock";
     var reminderLabel = formatReminderLabel(event.reminder);
-    var quickAction = (options.showQuickStart && event.status !== "completed")
+    var plannedTest = event.mockId && store.getTestById ? store.getTestById(event.mockId) : null;
+    var quickAction = (options.showQuickStart && event.status !== "completed" && !(plannedTest && isTestNotOpenYet(plannedTest)))
       ? '<button class="button button-secondary button-compact js-start-planned-mock" data-test="' + escapeAttribute(event.mockId) + '" data-event="' + escapeAttribute(event.id) + '">Start Test</button>'
       : "";
     var planDate = new Date(event.plannedAt || 0);
@@ -3151,6 +3329,77 @@
 
   // Access is decided by the server (entitlement per season) and shipped as `accessible`.
   // Tests without the flag (admin views, practice papers) are treated as accessible.
+  // ---- Scheduled tests: "Opens Sat 18 Oct, 10:00 IST" with a live countdown --------------
+  function testOpensAt(test) {
+    if (!test || test.status !== "scheduled") return null;
+    var when = new Date(test.opensAt || test.publishAt || 0);
+    return Number.isNaN(when.getTime()) ? null : when;
+  }
+
+  function isTestNotOpenYet(test) {
+    var when = testOpensAt(test);
+    return Boolean(when && when.getTime() > serverNowMs());
+  }
+
+  function serverNowMs() {
+    try { return store.serverNow ? Number(store.serverNow()) || Date.now() : Date.now(); } catch (_e) { return Date.now(); }
+  }
+
+  function formatOpensAt(when) {
+    try {
+      return when.toLocaleString("en-IN", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "Asia/Kolkata" }) + " IST";
+    } catch (_e) {
+      return when.toISOString();
+    }
+  }
+
+  function formatCountdown(ms) {
+    var total = Math.max(0, Math.floor(ms / 1000));
+    var d = Math.floor(total / 86400), h = Math.floor((total % 86400) / 3600), m = Math.floor((total % 3600) / 60), sec = total % 60;
+    if (d) return "in " + d + " d " + h + " h";
+    if (h) return "in " + h + " h " + m + " m";
+    return "in " + m + ":" + (sec < 10 ? "0" : "") + sec;
+  }
+
+  /** The note and button a scheduled test shows instead of "Start Test". */
+  function scheduledCtaHtml(test, locked) {
+    var when = testOpensAt(test);
+    var noteId = "opens-" + String(test.id).replace(/[^\w-]/g, "");
+    return (locked
+      ? '<button class="button button-primary is-pseudo-disabled js-buy-series" data-id="' + escapeAttribute(test.id) + '" aria-describedby="' + noteId + '">Locked 🔒</button>'
+      : '<button class="button button-primary" type="button" disabled aria-describedby="' + noteId + '">Opens soon</button>') +
+      '<span class="test-opens" id="' + noteId + '" data-opens-at="' + escapeAttribute(when.toISOString()) + '">Opens ' + escapeHtml(formatOpensAt(when)) + ' · <span data-countdown>' + escapeHtml(formatCountdown(when.getTime() - serverNowMs())) + '</span></span>';
+  }
+
+  // One shared ticker, running only while a countdown is on screen. At zero the page refreshes
+  // so the Start button appears.
+  var opensTicker = 0;
+  function armOpensCountdown() {
+    if (opensTicker) return;
+    if (!document.querySelector("[data-opens-at]")) return;
+    opensTicker = window.setInterval(function () {
+      var nodes = document.querySelectorAll("[data-opens-at]");
+      if (!nodes.length) {
+        window.clearInterval(opensTicker);
+        opensTicker = 0;
+        return;
+      }
+      if (document.hidden) return;
+      var due = false;
+      nodes.forEach(function (node) {
+        var left = new Date(node.getAttribute("data-opens-at")).getTime() - serverNowMs();
+        var label = node.querySelector("[data-countdown]");
+        if (left <= 0) due = true;
+        else if (label) label.textContent = formatCountdown(left);
+      });
+      if (due) {
+        window.clearInterval(opensTicker);
+        opensTicker = 0;
+        syncAndRenderCurrentRoute({ navigation: true });
+      }
+    }, 1000);
+  }
+
   function isTestLocked(test, user) {
     if (!test) return false;
     if (auth.isAdmin(user) || test.isFree || test.isPractice) return false;
@@ -4531,7 +4780,9 @@
     function renderCatalogRow(t, idx) {
       var numTag = (idx + 1 < 10 ? '0' + (idx + 1) : (idx + 1));
       var isLocked = isTestLocked(t, user);
-      var cta = isLocked
+      var cta = isTestNotOpenYet(t)
+        ? scheduledCtaHtml(t, isLocked)
+        : isLocked
         ? '<button class="button button-primary is-pseudo-disabled js-buy-series" data-id="' + t.id + '" aria-label="Test locked. Purchase or upgrade account to unlock ' + escapeAttribute(t.title) + '">Locked 🔒</button>'
         : '<button class="button button-primary js-open-instructions" data-id="' + t.id + '" aria-label="Start test ' + escapeAttribute(t.title) + '">Start Test →</button>';
 
@@ -5367,7 +5618,9 @@
         ? (isNextUpExpired
           ? '<button class="button button-primary js-restart-attempt" data-id="' + nextUpTest.id + '" data-attempt="' + nextUpInProgress.id + '">Restart Test</button>'
           : '<button class="button button-primary js-resume-test" data-id="' + nextUpTest.id + '" data-attempt="' + nextUpInProgress.id + '">Resume Test</button>')
-        : (isNextUpLocked
+        : (isTestNotOpenYet(nextUpTest)
+          ? scheduledCtaHtml(nextUpTest, isNextUpLocked)
+          : isNextUpLocked
           ? '<button class="button button-primary is-pseudo-disabled js-buy-series" data-id="' + nextUpTest.id + '">Locked 🔒</button>'
           : '<button class="button button-primary js-open-instructions" data-id="' + nextUpTest.id + '">Start Test</button>');
 
@@ -5406,7 +5659,7 @@
 
 
     var reminderEligibleTests = dashboardTests.filter(function (test) {
-      if (!test || test.status !== "live") return false;
+      if (!test || (test.status !== "live" && test.status !== "scheduled")) return false;
       if (isTestLocked(test, user)) return false;
       return true;
     });
@@ -5450,6 +5703,8 @@
         ? (isExpiredInProgress
           ? '<button class="button button-primary js-restart-attempt" data-id="' + test.id + '" data-attempt="' + inProgress.id + '">Restart Test &rarr;</button>'
           : '<button class="button button-primary js-resume-test" data-id="' + test.id + '" data-attempt="' + inProgress.id + '">Resume Test &rarr;</button>')
+        : isTestNotOpenYet(test)
+        ? scheduledCtaHtml(test, locked)
         : '<button class="button button-primary js-open-instructions" data-id="' + test.id + '">Start Test &rarr;</button>';
 
       var reportHtml = latestSubmitted
@@ -6291,6 +6546,39 @@
     initSubtitleGlider();
   }
 
+  // Thin top progress bar for background refreshes after a page change: appears only if the
+  // refresh takes over 200 ms, grows with transform (compositor only), then completes and fades.
+  var routeProgress = { timer: 0, el: null };
+
+  function startRouteProgress() {
+    window.clearTimeout(routeProgress.timer);
+    routeProgress.timer = window.setTimeout(function () {
+      var el = routeProgress.el;
+      if (!el || !document.body.contains(el)) {
+        el = document.createElement("div");
+        el.id = "route-progress";
+        el.className = "route-progress";
+        el.setAttribute("role", "progressbar");
+        el.setAttribute("aria-label", "Loading the latest data");
+        document.body.appendChild(el);
+        routeProgress.el = el;
+      }
+      el.classList.remove("is-done");
+      void el.offsetWidth;
+      el.classList.add("is-active");
+    }, 200);
+  }
+
+  function finishRouteProgress() {
+    window.clearTimeout(routeProgress.timer);
+    var el = routeProgress.el;
+    if (!el || !el.classList.contains("is-active")) return;
+    el.classList.add("is-done");
+    window.setTimeout(function () {
+      el.classList.remove("is-active", "is-done");
+    }, 400);
+  }
+
   function syncAndRenderCurrentRoute(options) {
     var currentView = routeParts()[0] || "";
     var settings = options || {};
@@ -6305,6 +6593,11 @@
       return;
     }
 
+    // Page changes keep the current page on screen (no full-screen "Syncing…" blur) with a thin
+    // top progress bar while the new page's data loads, then draw it once with fresh data.
+    var navigation = !!settings.navigation;
+    if (navigation) shouldShowOverlay = false;
+
     if (syncInFlight) {
       syncQueued = true;
       return;
@@ -6313,6 +6606,7 @@
     if (shouldShowOverlay) {
       showOverlayLoader("Syncing...", { delayMs: 420 });
     }
+    if (navigation) startRouteProgress();
     Promise.resolve(store.refreshFromRemote ? store.refreshFromRemote() : true).then(function () {
       try {
         renderRoute();
@@ -6330,6 +6624,7 @@
       }
     }).finally(function () {
       syncInFlight = false;
+      if (navigation) finishRouteProgress();
       if (shouldShowOverlay) {
         window.requestAnimationFrame(function () {
           window.setTimeout(hideOverlayLoader, 180);
@@ -11684,6 +11979,20 @@
           '<div class="field"><label for="test-subtitle">Subtitle</label><input id="test-subtitle" name="subtitle" value="' + escapeAttribute(field("subtitle", "")) + '" required></div>' +
           '<div class="field"><label for="test-series">Series</label><input id="test-series" name="series" value="' + escapeAttribute(field("series", "") || "UGEE 2026") + '" required></div>' +
           '<div class="field"><label for="test-access">Access Control</label><select id="test-access" name="isFree"><option value="true"' + (field("isFree", true) ? ' selected' : '') + '>Free</option><option value="false"' + (!field("isFree", true) ? ' selected' : '') + '>Paid</option></select></div>' +
+          (function () {
+            var status = runtime.adminCreatingTest || !formTest ? "draft" : (formTest.status || "draft");
+            var when = formTest && formTest.publishAt ? new Date(formTest.publishAt) : null;
+            var localValue = when && !Number.isNaN(when.getTime())
+              ? new Date(when.getTime() - when.getTimezoneOffset() * 60000).toISOString().slice(0, 16)
+              : "";
+            return '<div class="field"><label for="test-publishing">Publishing</label><select id="test-publishing" name="publishing">' +
+              [["draft", "Draft (hidden from students)"], ["live", "Live now"], ["scheduled", "Scheduled: goes live at…"]].map(function (opt) {
+                return '<option value="' + opt[0] + '"' + (status === opt[0] ? ' selected' : '') + '>' + opt[1] + '</option>';
+              }).join("") + '</select></div>' +
+              '<div class="field test-publish-at"' + (status === "scheduled" ? '' : ' hidden') + '><label for="test-publish-at">Goes live at (your local time)</label>' +
+              '<input id="test-publish-at" name="publishAt" type="datetime-local" value="' + escapeAttribute(localValue) + '" aria-describedby="test-publish-help">' +
+              '<p class="helper-text" id="test-publish-help">Students see it with a countdown and can start it from this time.</p></div>';
+          })() +
           '<div class="field"><label for="supr-duration">SUPR Duration (mins)</label><input id="supr-duration" name="suprDurationMinutes" type="number" inputmode="numeric" value="' + (formDurations.SUPR !== undefined ? formDurations.SUPR : 60) + '" required></div>' +
           '<div class="field"><label for="reap-duration">REAP Duration (mins)</label><input id="reap-duration" name="reapDurationMinutes" type="number" inputmode="numeric" value="' + (formDurations.REAP !== undefined ? formDurations.REAP : 120) + '" required></div>' +
           (function () {
@@ -11729,6 +12038,7 @@
           (runtime.lastRandomBatch && runtime.lastRandomBatch.testId === selectedTest.id ? '<button class="button button-secondary button-compact js-undo-random-batch" type="button" style="background:#fff2f2; border-color:#fca5a5; color:#991b1b; font-weight:700;">↩ Undo Random Gen (' + runtime.lastRandomBatch.attachedCount + ' qns)</button>' : '') +
           '<button class="button button-secondary button-compact" id="open-bank-drawer">📦 Select from Question Bank</button>' +
           '<button class="button button-secondary button-compact" id="open-random-modal">🎲 Random Generator</button>' +
+          '<button class="button button-secondary button-compact js-open-question-import" type="button">⇪ Import from Excel/CSV</button>' +
           '<button class="button button-secondary button-compact" id="open-question-editor">+ Create Question</button>' +
           '</div>' +
           '</div>' +
@@ -11796,7 +12106,10 @@
           '<div class="admin-card">' +
           '<div class="button-row" style="justify-content: space-between; align-items: center; margin-bottom: 12px;">' +
           '<p class="section-label" style="margin:0;">Question Bank Workspace</p>' +
+          '<div class="button-row">' +
+          '<button class="button button-secondary button-compact js-open-question-import" type="button">⇪ Import from Excel/CSV</button>' +
           '<button class="button button-secondary button-compact" type="button" id="open-bank-modal">Full Screen Modal</button>' +
+          '</div>' +
           '</div>' +
           '<div class="admin-bank-toolbar">' +
           '<div class="field"><label for="bank-search">Search Question</label><input id="bank-search" value="' + escapeAttribute(runtime.adminBankQuery || "") + '" placeholder="Search by ID, topic, prompt"></div>' +
@@ -11871,13 +12184,13 @@
                 '<button type="button" class="tests-order-btn js-move-test-down" data-id="' + escapeAttribute(test.id) + '" aria-label="' + escapeAttribute("Move " + test.title + " down") + '"' + (index === tests.length - 1 ? ' disabled' : '') + '>↓</button>' +
                 '</span>' +
                 '<span class="' + (test.status === "live" ? 'test-title-live' : '') + '"><strong>' + escapeHtml(test.title) + '</strong><br><small>' + escapeHtml(test.series || "UGEE") + '</small></span>' +
-                '<span><span class="meta-chip ' + (test.status === "live" ? 'is-live' : 'is-draft') + '">' + escapeHtml(test.status || "draft") + '</span></span>' +
+                '<span><span class="meta-chip ' + (test.status === "live" ? 'is-live' : (test.status === "scheduled" ? 'is-scheduled' : 'is-draft')) + '">' + escapeHtml(test.status === "scheduled" && testOpensAt(test) ? "scheduled · " + formatOpensAt(testOpensAt(test)) : (test.status || "draft")) + '</span></span>' +
                 '<span>' + (Array.isArray(test.questionIds) ? test.questionIds.length : 0) + ' / 90</span>' +
                 '<span>' + (test.sectionDurations ? test.sectionDurations.SUPR : 60) + 'm / ' + (test.sectionDurations ? test.sectionDurations.REAP : 120) + 'm</span>' +
                 '<span><div class="button-row">' +
                 '<button class="button button-secondary button-compact js-pick-test" data-id="' + escapeHtml(test.id) + '">' + (test.id === selectedTestId ? 'Active' : 'Select') + '</button>' +
                 '<button class="button button-secondary button-compact js-duplicate-test" data-id="' + escapeHtml(test.id) + '">Duplicate</button>' +
-                '<button class="button button-secondary button-compact js-toggle-live" data-id="' + escapeHtml(test.id) + '">' + (test.status === "live" ? 'Draft' : 'Publish') + '</button>' +
+                '<button class="button button-secondary button-compact js-toggle-live" data-id="' + escapeHtml(test.id) + '">' + (test.status === "live" ? 'Draft' : (test.status === "scheduled" ? 'Publish now' : 'Publish')) + '</button>' +
                 '<button class="button button-secondary button-compact js-export-pdf" data-id="' + escapeHtml(test.id) + '">PDF</button>' +
                 '<button class="button button-danger button-compact js-delete-test" data-id="' + escapeHtml(test.id) + '">Del</button>' +
                 '</div></span>' +
@@ -12589,7 +12902,7 @@
       if (openTestsModal) {
         openTestsModal.addEventListener("click", function () {
           var rows = tests.map(function (test) {
-            var label = test.status === "live" ? "live" : "draft";
+            var label = test.status === "live" || test.status === "scheduled" ? test.status : "draft";
             var access = test.isFree ? "Free" : "Paid";
             var qLen = Array.isArray(test.questionIds) ? test.questionIds.length : 0;
             var suprD = test.sectionDurations ? test.sectionDurations.SUPR : 60;
@@ -12720,6 +13033,17 @@
               autoSubmitThreshold: Math.max(1, Math.min(100, Number(form.get("integrityAutoSubmitThreshold") || 5))),
             }
           };
+          var publishing = String(form.get("publishing") || "draft");
+          payload.status = publishing;
+          if (publishing === "scheduled") {
+            var localWhen = String(form.get("publishAt") || "");
+            var whenDate = localWhen ? new Date(localWhen) : null;
+            if (!whenDate || Number.isNaN(whenDate.getTime())) {
+              window.alert("Pick the date and time the test should go live.");
+              return;
+            }
+            payload.publishAt = whenDate.toISOString();
+          }
           var editTargetId = runtime.adminCreatingTest ? null : (runtime.adminEditingTestId || selectedTestId || null);
           if (!editTargetId) {
             payload.displayOrder = Math.min(9999, nextDefaultDisplayOrder);
@@ -12747,6 +13071,18 @@
         var newTitle = document.getElementById("test-title");
         if (newTitle) newTitle.focus({ preventScroll: true });
       }
+      var publishingSelect = document.getElementById("test-publishing");
+      if (publishingSelect) {
+        publishingSelect.addEventListener("change", function () {
+          var box = document.querySelector(".test-publish-at");
+          if (box) box.hidden = publishingSelect.value !== "scheduled";
+          if (publishingSelect.value === "scheduled") {
+            var input = document.getElementById("test-publish-at");
+            if (input) input.focus();
+          }
+        });
+      }
+
       var newTestBtn = document.getElementById("new-test-btn");
       if (newTestBtn) {
         newTestBtn.addEventListener("click", function () {
@@ -13411,6 +13747,14 @@
           rerenderAdminPreserveScroll(user, selectedTestId);
         });
       }
+      Array.prototype.forEach.call(document.querySelectorAll(".js-open-question-import"), function (button) {
+        button.addEventListener("click", function () {
+          // The dialog stays open with the result while the Studio behind it shows the new questions.
+          openQuestionImportDialog(activeTab === "questions" ? selectedTest : null, function () {
+            rerenderAdminPreserveScroll(user, selectedTestId);
+          });
+        });
+      });
       var openRandomModalBtn = document.getElementById("open-random-modal");
       if (openRandomModalBtn) {
         openRandomModalBtn.addEventListener("click", function () {
@@ -14399,6 +14743,7 @@
   }
 
   function renderRoute() {
+    window.requestAnimationFrame(armOpensCountdown);
     runtime.lastRouteView = routeParts()[0] || "";
     runtime.lastRouteHash = window.location.hash;
     clearActiveRenderModal();
@@ -14516,7 +14861,7 @@
       }
       return;
     }
-    syncAndRenderCurrentRoute();
+    syncAndRenderCurrentRoute({ navigation: true });
   });
   window.addEventListener("focus", function () {
     updateKeepAliveState();

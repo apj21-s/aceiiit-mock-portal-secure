@@ -50,9 +50,9 @@ async function listTests(req, res, next) {
 async function getTestById(req, res, next) {
   try {
     const test = await Test.findOne({ _id: req.params.id, deletedAt: null })
-      .select("title subtitle series type isFree status displayOrder durationMinutes sectionDurations instructions benchmarkScores totalMarks negativeMarks questionIds seasonId shuffleQuestions shuffleOptions integrity updatedAt createdAt")
+      .select("title subtitle series type isFree status publishAt displayOrder durationMinutes sectionDurations instructions benchmarkScores totalMarks negativeMarks questionIds seasonId shuffleQuestions shuffleOptions integrity updatedAt createdAt")
       .lean();
-    if (!test || (test.status !== "live" && req.auth.role !== "admin")) {
+    if (!test || (!["live", "scheduled"].includes(test.status) && req.auth.role !== "admin")) {
       return res.status(404).json({ error: "Test not found" });
     }
     const hasAccess = await canAccessTest(req.auth, test);
@@ -112,7 +112,8 @@ const testInputSchema = z.object({
   series: z.string().min(1).max(40).optional(),
   type: z.enum(["practice", "scheduled"]).optional(),
   isFree: z.boolean().optional(),
-  status: z.enum(["draft", "live"]).optional(),
+  status: z.enum(["draft", "scheduled", "live"]).optional(),
+  publishAt: z.union([z.string().datetime({ offset: true }), z.null()]).optional(),
   displayOrder: z.number().int().min(0).max(9999).optional(),
   sectionDurations: z
     .object({
@@ -134,17 +135,33 @@ const testInputSchema = z.object({
     .optional(),
 });
 
+/**
+ * Scheduling rules shared by create and update: "scheduled" needs a future publishAt; any other
+ * status clears it. Returns { status, publishAt } or throws a 400.
+ */
+function resolveSchedule(input, current = {}) {
+  const status = input.status !== undefined ? input.status : current.status || "draft";
+  if (status !== "scheduled") return { status, publishAt: null };
+  const raw = input.publishAt !== undefined ? input.publishAt : current.publishAt;
+  const when = raw ? new Date(raw) : null;
+  if (!when || Number.isNaN(when.getTime())) throw Object.assign(new Error("Pick the date and time the test should go live."), { status: 400, expose: true, code: "SCHEDULE_REQUIRED" });
+  if (when.getTime() <= Date.now() + 30 * 1000) throw Object.assign(new Error("The go-live time must be in the future."), { status: 400, expose: true, code: "SCHEDULE_IN_PAST" });
+  return { status, publishAt: when };
+}
+
 async function createTest(req, res, next) {
   try {
     const input = testInputSchema.parse(req.body || {});
     const sectionDurations = input.sectionDurations || { SUPR: 60, REAP: 120 };
+    const schedule = resolveSchedule(input);
     const test = await Test.create({
       title: input.title,
       subtitle: input.subtitle || "",
       series: input.series || "UGEE 2026",
       type: input.type || "practice",
       isFree: Boolean(input.isFree),
-      status: input.status || "draft",
+      status: schedule.status,
+      publishAt: schedule.publishAt,
       displayOrder: input.displayOrder !== undefined ? input.displayOrder : 100,
       sectionDurations,
       durationMinutes: sectionDurations.SUPR + sectionDurations.REAP,
@@ -174,7 +191,11 @@ async function updateTest(req, res, next) {
     if (input.series !== undefined) test.series = input.series || "UGEE 2026";
     if (input.type !== undefined) test.type = input.type;
     if (input.isFree !== undefined) test.isFree = Boolean(input.isFree);
-    if (input.status !== undefined) test.status = input.status;
+    if (input.status !== undefined || input.publishAt !== undefined) {
+      const schedule = resolveSchedule(input, { status: test.status, publishAt: test.publishAt });
+      test.status = schedule.status;
+      test.publishAt = schedule.publishAt;
+    }
     if (input.displayOrder !== undefined) test.displayOrder = input.displayOrder;
     if (input.sectionDurations) {
       test.sectionDurations = input.sectionDurations;
