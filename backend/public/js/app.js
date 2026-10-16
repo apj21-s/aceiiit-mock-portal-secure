@@ -56,7 +56,10 @@
   var AUTH_SIGNUP_DRAFT_KEY = "aceiiit.secure.auth.signupDraft.v1";
   var AUTH_UI_STATE_KEY = "aceiiit.secure.auth.uiState.v1";
   // Replace with your sales/checkout page URL (Render, Instamojo, Gumroad, etc.).
-  var BUY_SERIES_URL = "https://aceiiit.in/#packages";
+  // Buy buttons open the AceIIIT course picker with the Paid Mock Series ticked (the site skips
+  // its intro for section links); the mentor's programme link opens it with nothing ticked.
+  var BUY_SERIES_URL = "https://aceiiit.in/?course=mock#packages";
+  var PROGRAMME_URL = "https://aceiiit.in/#packages";
   var remoteChangeUnsubscribe = null;
   var overlayLoaderVisible = false;
   var overlayLoaderTimer = 0;
@@ -4595,7 +4598,7 @@
       // Subjects are filled from the questions this student can actually practise (see below).
       '<div class="field"><label for="prac-subject">Subject Area</label><select id="prac-subject"><option value="all">All subjects</option><option value="SUPR">SUPR – all topics</option><option value="REAP">REAP – all topics</option></select></div>' +
       '<div class="field"><label for="prac-difficulty">Difficulty Level</label><select id="prac-difficulty"><option value="all">All levels</option><option value="easy">Easy</option><option value="medium" selected>Medium</option><option value="hard">Hard</option></select></div>' +
-      '<div class="field"><label for="prac-count">Questions Count</label><input type="number" inputmode="numeric" id="prac-count" value="15" min="5" max="30"></div>' +
+      '<div class="field"><label for="prac-count">Questions Count</label><select id="prac-count" aria-describedby="practice-availability">' + [5, 10, 15, 20, 25, 30].map(function (n) { return '<option value="' + n + '"' + (n === 15 ? ' selected' : '') + '>' + n + ' questions</option>'; }).join("") + '</select></div>' +
       '<div class="field"><label for="prac-timer">Timer Limit</label><select id="prac-timer"><option value="0">Untimed</option><option value="15">15 Minutes</option><option value="30" selected>30 Minutes</option><option value="45">45 Minutes</option></select></div>' +
       '<p class="helper-text practice-availability" id="practice-availability" role="status" aria-live="polite"></p>' +
       '<div class="button-row" style="grid-column:1 / -1; margin-top:12px;">' +
@@ -4646,8 +4649,9 @@
       runtime.practicePreset = null;
     }
 
-    // Practice builder: subjects and counts come from the student's accessible question pool, so
-    // every option yields a paper; the server still validates on Start.
+    // Practice builder: subjects come from the questions this student can practise. Students
+    // never see how many questions exist: each subject only says the largest paper it can fill,
+    // and sizes it can't fill are greyed out. Admins also see the counts. The server re-checks.
     (function bindPracticeOptions() {
       var subjectEl = document.getElementById("prac-subject");
       var difficultyEl = document.getElementById("prac-difficulty");
@@ -4657,51 +4661,53 @@
       if (!subjectEl || !difficultyEl || !countEl || !availabilityEl || !startEl || !store.getPracticeOptions) return;
       var options = null;
 
-      function availableFor(subject) {
-        if (!options) return null;
-        if (subject === "all") return options.total;
-        if (subject === "SUPR" || subject === "REAP") return options.sections[subject] || 0;
-        var match = /^topic:(SUPR|REAP):(.+)$/.exec(subject);
-        if (!match) return null;
-        var hit = options.topics.find(function (t) { return t.section === match[1] && t.topic.toLowerCase() === match[2].toLowerCase(); });
-        return hit ? hit.count : 0;
+      function chosenSubject() {
+        if (!options || !options.subjects) return null;
+        return options.subjects.filter(function (s) { return s.value === subjectEl.value; })[0] || null;
       }
 
       function updateAvailability() {
-        var available = availableFor(subjectEl.value);
-        if (available === null) {
-          availabilityEl.textContent = "";
-          startEl.disabled = false;
-          return;
-        }
-        if (!available) {
-          availabilityEl.textContent = "No questions match this subject and difficulty yet. Try another level or subject.";
+        if (!options) return;
+        var subject = chosenSubject();
+        var maxSize = subject ? subject.maxSize : 0;
+        if (!maxSize) {
+          availabilityEl.textContent = options.subjects && options.subjects.length
+            ? "This choice isn't available for practice yet. Try another subject."
+            : "No practice questions for this difficulty yet. Try another level.";
           startEl.disabled = true;
           return;
         }
-        var maxCount = Math.min(30, available);
-        countEl.max = String(maxCount);
-        countEl.min = String(Math.min(5, maxCount));
-        if (Number(countEl.value) > maxCount) countEl.value = String(maxCount);
-        availabilityEl.textContent = available + (available === 1 ? " question" : " questions") + " available for this choice.";
+        var anyDisabled = false;
+        Array.prototype.forEach.call(countEl.options, function (option) {
+          var tooBig = Number(option.value) > maxSize;
+          option.disabled = tooBig;
+          if (tooBig) anyDisabled = true;
+        });
+        if (Number(countEl.value) > maxSize) countEl.value = String(maxSize);
+        availabilityEl.textContent = anyDisabled ? "Larger sets aren't available for this choice yet." : "";
         startEl.disabled = false;
       }
 
       function renderSubjects() {
         var current = subjectEl.value;
-        var html = '<option value="all">All subjects (' + options.total + ')</option>' +
-          '<option value="SUPR">SUPR – all topics (' + (options.sections.SUPR || 0) + ')</option>' +
-          '<option value="REAP">REAP – all topics (' + (options.sections.REAP || 0) + ')</option>';
+        var subjects = options.subjects || [];
+        var label = function (s) {
+          var text = s.kind === "topic" ? formatTopicName(s.label) : s.label;
+          return escapeHtml(text + (typeof s.count === "number" ? " (" + s.count + ")" : ""));
+        };
+        var html = subjects.filter(function (s) { return s.kind !== "topic"; }).map(function (s) {
+          return '<option value="' + escapeAttribute(s.value) + '">' + label(s) + '</option>';
+        }).join("");
         ["SUPR", "REAP"].forEach(function (section) {
-          var topics = options.topics.filter(function (t) { return t.section === section; });
+          var topics = subjects.filter(function (s) { return s.kind === "topic" && s.section === section; });
           if (!topics.length) return;
-          html += '<optgroup label="' + section + ' topics">' + topics.map(function (t) {
-            return '<option value="' + escapeAttribute("topic:" + section + ":" + t.topic) + '">' + escapeHtml(formatTopicName(t.topic)) + ' (' + t.count + ')</option>';
+          html += '<optgroup label="' + section + ' topics">' + topics.map(function (s) {
+            return '<option value="' + escapeAttribute(s.value) + '">' + label(s) + '</option>';
           }).join("") + '</optgroup>';
         });
-        subjectEl.innerHTML = html;
+        subjectEl.innerHTML = html || '<option value="all">All subjects</option>';
         var keep = Array.prototype.some.call(subjectEl.options, function (option) { return option.value === current; });
-        subjectEl.value = keep ? current : "all";
+        subjectEl.value = keep ? current : (subjectEl.options[0] ? subjectEl.options[0].value : "all");
         updateAvailability();
       }
 
@@ -4725,8 +4731,7 @@
         var subject = document.getElementById("prac-subject") ? document.getElementById("prac-subject").value : "all";
         var difficulty = document.getElementById("prac-difficulty") ? document.getElementById("prac-difficulty").value : "all";
         var countEl = document.getElementById("prac-count");
-        var count = countEl ? parseInt(countEl.value, 10) : 15;
-        count = Math.max(1, Math.min(Number((countEl && countEl.max) || 30), count || 15));
+        var count = countEl ? parseInt(countEl.value, 10) || 15 : 15;
         var timerEl = document.getElementById("prac-timer");
         var timerMinutes = timerEl ? parseInt(timerEl.value, 10) : 30;
         
@@ -9047,7 +9052,7 @@
   }
 
   function mentorSafeUrl(url) {
-    return /^https:\/\//i.test(String(url || "")) ? String(url) : BUY_SERIES_URL;
+    return /^https:\/\//i.test(String(url || "")) ? String(url) : PROGRAMME_URL;
   }
 
   // Mentor replies: a small, safe Markdown subset. Everything is escaped first; only paragraphs,
@@ -10042,8 +10047,8 @@
       '</div>' +
       '<div class="field"><label for="mentor-codes">Programme resource codes</label><input id="mentor-codes" name="programCodes" value="' + escapeAttribute((settings.programCodes || []).join(", ")) + '" placeholder="e.g. CLASS_NOTES" aria-describedby="mentor-codes-help">' +
       '<p class="helper-text" id="mentor-codes-help">Comma-separated. Matches the resource code of an ACTIVE entitlement on the AceIIIT site, or a verified commerce payment recorded here.</p></div>' +
-      '<div class="field"><label for="mentor-url">Programme page (https)</label><input id="mentor-url" name="programUrl" type="url" value="' + escapeAttribute(settings.programUrl || "") + '" placeholder="' + escapeAttribute(BUY_SERIES_URL) + '" aria-describedby="mentor-url-help">' +
-      '<p class="helper-text" id="mentor-url-help">Where "Explore the Preparation Programme" leads. Empty uses ' + escapeHtml(BUY_SERIES_URL) + '.</p></div>' +
+      '<div class="field"><label for="mentor-url">Programme page (https)</label><input id="mentor-url" name="programUrl" type="url" value="' + escapeAttribute(settings.programUrl || "") + '" placeholder="' + escapeAttribute(PROGRAMME_URL) + '" aria-describedby="mentor-url-help">' +
+      '<p class="helper-text" id="mentor-url-help">Where "Explore the Preparation Programme" leads. Empty uses ' + escapeHtml(PROGRAMME_URL) + '.</p></div>' +
       '<p class="mentor-admin-message" role="status" id="mentor-admin-message">' + escapeHtml(message || "") + '</p>' +
       '<div class="button-row"><button class="button button-primary" type="submit">Save mentor settings</button></div>' +
       '</form>' +
@@ -11649,10 +11654,24 @@
       var activeTabContent = "";
 
       if (activeTab === "setup") {
+        // The form either edits a test (the one picked under "Existing Tests", else the selected
+        // one) or, after "+ New test", creates a blank one. It used to show the selected test
+        // labelled "Update Selected Test" while actually creating a copy, so a fresh test was
+        // impossible to make.
+        var formTest = runtime.adminCreatingTest ? null : (editingTest || selectedTest || null);
+        var field = function (key, fallback) {
+          return formTest && formTest[key] !== undefined && formTest[key] !== null ? formTest[key] : fallback;
+        };
+        var formDurations = (formTest && formTest.sectionDurations) || { SUPR: 60, REAP: 120 };
         activeTabContent =
           '<div class="admin-grid">' +
           '<div class="admin-card">' +
           '<p class="section-label">1. Test Basic Information & Instructions</p>' +
+          '<div class="setup-mode" role="status">' +
+          (formTest
+            ? '<span>Editing <strong>' + escapeHtml(formTest.title || "this test") + '</strong></span><button type="button" class="button button-secondary button-compact" id="new-test-btn">+ New test</button>'
+            : '<span><strong>New test</strong>: fill in the details and create it.</span>' + (tests.length ? '<button type="button" class="button button-secondary button-compact" id="cancel-new-test">Cancel</button>' : '')) +
+          '</div>' +
           '<div class="button-row" style="margin-bottom: 14px; gap: 8px;">' +
           '<span class="helper-text" style="align-self: center;">Preset Templates:</span>' +
           '<button type="button" class="button button-secondary button-compact js-apply-template" data-preset="ugee-full">UGEE Full Mock (60m/120m)</button>' +
@@ -11661,14 +11680,14 @@
           '</div>' +
           '<form id="test-form">' +
           '<div class="grid-two">' +
-          '<div class="field"><label for="test-title">Title</label><input id="test-title" name="title" value="' + escapeAttribute(editingTest ? editingTest.title : (selectedTest ? selectedTest.title : "")) + '" required></div>' +
-          '<div class="field"><label for="test-subtitle">Subtitle</label><input id="test-subtitle" name="subtitle" value="' + escapeAttribute(editingTest ? editingTest.subtitle : (selectedTest ? selectedTest.subtitle : "")) + '" required></div>' +
-          '<div class="field"><label for="test-series">Series</label><input id="test-series" name="series" value="' + escapeAttribute(editingTest ? (editingTest.series || "UGEE 2026") : (selectedTest ? (selectedTest.series || "UGEE 2026") : "UGEE 2026")) + '" required></div>' +
-          '<div class="field"><label for="test-access">Access Control</label><select id="test-access" name="isFree"><option value="true"' + ((editingTest ? editingTest.isFree : (selectedTest ? selectedTest.isFree : true)) ? ' selected' : '') + '>Free</option><option value="false"' + (!(editingTest ? editingTest.isFree : (selectedTest ? selectedTest.isFree : true)) ? ' selected' : '') + '>Paid</option></select></div>' +
-          '<div class="field"><label for="supr-duration">SUPR Duration (mins)</label><input id="supr-duration" name="suprDurationMinutes" type="number" inputmode="numeric" value="' + (editingTest && editingTest.sectionDurations ? editingTest.sectionDurations.SUPR : (selectedTest && selectedTest.sectionDurations ? selectedTest.sectionDurations.SUPR : 60)) + '" required></div>' +
-          '<div class="field"><label for="reap-duration">REAP Duration (mins)</label><input id="reap-duration" name="reapDurationMinutes" type="number" inputmode="numeric" value="' + (editingTest && editingTest.sectionDurations ? editingTest.sectionDurations.REAP : (selectedTest && selectedTest.sectionDurations ? selectedTest.sectionDurations.REAP : 120)) + '" required></div>' +
+          '<div class="field"><label for="test-title">Title</label><input id="test-title" name="title" value="' + escapeAttribute(field("title", "")) + '" required></div>' +
+          '<div class="field"><label for="test-subtitle">Subtitle</label><input id="test-subtitle" name="subtitle" value="' + escapeAttribute(field("subtitle", "")) + '" required></div>' +
+          '<div class="field"><label for="test-series">Series</label><input id="test-series" name="series" value="' + escapeAttribute(field("series", "") || "UGEE 2026") + '" required></div>' +
+          '<div class="field"><label for="test-access">Access Control</label><select id="test-access" name="isFree"><option value="true"' + (field("isFree", true) ? ' selected' : '') + '>Free</option><option value="false"' + (!field("isFree", true) ? ' selected' : '') + '>Paid</option></select></div>' +
+          '<div class="field"><label for="supr-duration">SUPR Duration (mins)</label><input id="supr-duration" name="suprDurationMinutes" type="number" inputmode="numeric" value="' + (formDurations.SUPR !== undefined ? formDurations.SUPR : 60) + '" required></div>' +
+          '<div class="field"><label for="reap-duration">REAP Duration (mins)</label><input id="reap-duration" name="reapDurationMinutes" type="number" inputmode="numeric" value="' + (formDurations.REAP !== undefined ? formDurations.REAP : 120) + '" required></div>' +
           (function () {
-            var policySource = editingTest || selectedTest || {};
+            var policySource = formTest || {};
             var policy = policySource.integrity || { mode: "warn", autoSubmitThreshold: 5 };
             return '<div class="field"><label for="test-integrity-mode">Exam integrity</label><select id="test-integrity-mode" name="integrityMode">' +
               [["record", "Record only (no warnings)"], ["warn", "Warn (default)"], ["strict", "Strict (auto-submit over limit)"]].map(function (opt) {
@@ -11679,11 +11698,11 @@
               '<div class="field"><label><input type="checkbox" name="shuffleQuestions"' + (policySource.shuffleQuestions ? ' checked' : '') + '> Shuffle question order per student</label></div>' +
               '<div class="field"><label><input type="checkbox" name="shuffleOptions"' + (policySource.shuffleOptions ? ' checked' : '') + '> Shuffle answer options per student</label></div>';
           })() +
-          '<div class="field"><label for="test-benchmark">Benchmark Scores</label><input id="test-benchmark" name="benchmarkScores" placeholder="18,22,26,31" value="' + escapeAttribute(editingTest && Array.isArray(editingTest.benchmarkScores) ? editingTest.benchmarkScores.join(",") : (selectedTest && Array.isArray(selectedTest.benchmarkScores) ? selectedTest.benchmarkScores.join(",") : "")) + '"></div>' +
+          '<div class="field"><label for="test-benchmark">Benchmark Scores</label><input id="test-benchmark" name="benchmarkScores" placeholder="18,22,26,31" value="' + escapeAttribute(Array.isArray(field("benchmarkScores", null)) ? field("benchmarkScores", []).join(",") : "") + '"></div>' +
           '</div>' +
-          '<div class="field" style="margin-top: 16px;"><label for="test-instructions">Instructions (one line each)</label><textarea id="test-instructions" name="instructions" rows="4">' + escapeHtml(editingTest ? editingTest.instructions.join("\n") : (selectedTest ? selectedTest.instructions.join("\n") : 'Read all instructions carefully.\nSUPR locks after its timer or after every SUPR question is answered.\nREAP opens automatically and the test submits when the REAP timer ends.')) + '</textarea></div>' +
+          '<div class="field" style="margin-top: 16px;"><label for="test-instructions">Instructions (one line each)</label><textarea id="test-instructions" name="instructions" rows="4">' + escapeHtml(Array.isArray(field("instructions", null)) && field("instructions", []).length ? field("instructions", []).join("\n") : 'Read all instructions carefully.\nSUPR locks after its timer or after every SUPR question is answered.\nREAP opens automatically and the test submits when the REAP timer ends.') + '</textarea></div>' +
           '<div class="button-row" style="margin-top: 18px;">' +
-          '<button class="button button-primary" type="submit">' + (editingTest ? 'Update test' : (selectedTest ? 'Update Selected Test' : 'Create test')) + '</button>' +
+          '<button class="button button-primary" type="submit">' + (formTest ? 'Save changes' : 'Create test') + '</button>' +
           (editingTest ? '<button class="button button-secondary" type="button" id="cancel-test-edit">Cancel Edit</button>' : '') +
           '</div>' +
           '</form>' +
@@ -12071,7 +12090,9 @@
 
       var testForm = document.getElementById("test-form");
       var questionForm = document.getElementById("question-form");
-      var testDraftContext = runtime.adminEditingTestId ? ("edit:" + runtime.adminEditingTestId) : "create";
+      var testDraftContext = runtime.adminCreatingTest || (!runtime.adminEditingTestId && !selectedTestId)
+        ? "create"
+        : ("edit:" + (runtime.adminEditingTestId || selectedTestId));
       var questionDraftContext = (runtime.adminEditingQuestionId ? ("edit:" + runtime.adminEditingQuestionId) : "create") + "|test:" + (selectedTestId || "");
 
       if (runtime.questionUploadContext && runtime.questionUploadContext !== questionDraftContext) {
@@ -12691,15 +12712,17 @@
               autoSubmitThreshold: Math.max(1, Math.min(100, Number(form.get("integrityAutoSubmitThreshold") || 5))),
             }
           };
-          if (!runtime.adminEditingTestId) {
-            payload.displayOrder = nextDefaultDisplayOrder;
+          var editTargetId = runtime.adminCreatingTest ? null : (runtime.adminEditingTestId || selectedTestId || null);
+          if (!editTargetId) {
+            payload.displayOrder = Math.min(9999, nextDefaultDisplayOrder);
           }
-          showOverlayLoader("Saving test.");
+          showOverlayLoader(editTargetId ? "Saving test." : "Creating test.");
           try {
-            var savedTest = runtime.adminEditingTestId
-              ? await store.updateTest(runtime.adminEditingTestId, payload)
+            var savedTest = editTargetId
+              ? await store.updateTest(editTargetId, payload)
               : await store.createTest(payload);
             runtime.adminEditingTestId = null;
+            runtime.adminCreatingTest = false;
             runtime.adminSelectedTestId = savedTest ? savedTest.id : runtime.adminSelectedTestId;
             clearLocalDraft(ADMIN_TEST_DRAFT_KEY);
             rerenderAdminPreserveScroll(user, savedTest ? savedTest.id : selectedTestId);
@@ -12708,6 +12731,30 @@
           } finally {
             hideOverlayLoader();
           }
+        });
+      }
+
+      if (runtime.focusNewTestTitle && runtime.adminCreatingTest) {
+        runtime.focusNewTestTitle = false;
+        var newTitle = document.getElementById("test-title");
+        if (newTitle) newTitle.focus({ preventScroll: true });
+      }
+      var newTestBtn = document.getElementById("new-test-btn");
+      if (newTestBtn) {
+        newTestBtn.addEventListener("click", function () {
+          runtime.adminCreatingTest = true;
+          runtime.adminEditingTestId = null;
+          runtime.focusNewTestTitle = true;
+          clearLocalDraft(ADMIN_TEST_DRAFT_KEY);
+          rerenderAdminPreserveScroll(user, selectedTestId);
+        });
+      }
+      var cancelNewTest = document.getElementById("cancel-new-test");
+      if (cancelNewTest) {
+        cancelNewTest.addEventListener("click", function () {
+          runtime.adminCreatingTest = false;
+          clearLocalDraft(ADMIN_TEST_DRAFT_KEY);
+          rerenderAdminPreserveScroll(user, selectedTestId);
         });
       }
 
@@ -13021,6 +13068,7 @@
       app.querySelectorAll(".js-edit-test").forEach(function (button) {
         button.addEventListener("click", function () {
           runtime.adminEditingTestId = button.dataset.id;
+          runtime.adminCreatingTest = false;
           rerenderAdminPreserveScroll(user, button.dataset.id);
         });
       });

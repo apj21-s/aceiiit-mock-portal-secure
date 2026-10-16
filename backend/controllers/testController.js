@@ -286,6 +286,15 @@ async function submitQotdAttempt(req, res, next) {
 const UNTIMED_PRACTICE_MINUTES = 300;
 const FREE_PRACTICE_LIMIT = 1;
 const PRACTICE_LIST_LIMIT = 30;
+// Students pick a paper size, never see how many questions exist: exact counts make topics look
+// thin and give the bank away. A subject is offered only if it can fill the smallest size, and
+// each subject reports only the largest size it can fill.
+const PRACTICE_SIZES = [5, 10, 15, 20, 25, 30];
+const MIN_PRACTICE_POOL = PRACTICE_SIZES[0];
+
+function maxPracticeSize(available) {
+  return PRACTICE_SIZES.filter((size) => size <= available).pop() || 0;
+}
 
 const practiceSchema = z.object({
   // "all" | "SUPR" | "REAP" | "topic:<SECTION>:<topic>" (older clients sent a bare word)
@@ -378,11 +387,15 @@ async function listOwnPracticeTests(userId) {
   return tests.map(practiceTestView);
 }
 
-/** What the practice builder can offer: question counts per section and per topic. */
+/**
+ * What the practice builder can offer. Students get subjects with the largest paper size each
+ * can fill (no question counts; subjects too thin for the smallest size are left out). Admins
+ * also get the exact counts.
+ */
 async function getPracticeOptions(req, res, next) {
   try {
     const { difficulty } = practiceOptionsSchema.parse(req.query || {});
-    const { pool } = await practicePool(req, difficulty);
+    const { pool, isAdmin } = await practicePool(req, difficulty);
     const sections = { SUPR: 0, REAP: 0 };
     const topics = new Map();
     pool.forEach((question) => {
@@ -395,10 +408,26 @@ async function getPracticeOptions(req, res, next) {
       entry.count += 1;
       topics.set(key, entry);
     });
-    const topicList = Array.from(topics.values()).sort(
-      (a, b) => a.section.localeCompare(b.section) || b.count - a.count || a.topic.localeCompare(b.topic)
-    );
-    res.json({ total: pool.length, sections, topics: topicList });
+    const topicList = Array.from(topics.values()).sort((a, b) => a.section.localeCompare(b.section) || a.topic.localeCompare(b.topic));
+    const subject = (value, label, kind, section, count) => ({
+      value,
+      label,
+      kind,
+      section,
+      maxSize: maxPracticeSize(count),
+      ...(isAdmin ? { count } : {}),
+    });
+    const subjects = [
+      subject("all", "All subjects", "all", null, pool.length),
+      subject("SUPR", "SUPR – all topics", "section", "SUPR", sections.SUPR),
+      subject("REAP", "REAP – all topics", "section", "REAP", sections.REAP),
+      ...topicList.map((t) => subject(`topic:${t.section}:${t.topic}`, t.topic, "topic", t.section, t.count)),
+    ].filter((entry) => isAdmin || entry.maxSize > 0);
+    res.json({
+      sizes: PRACTICE_SIZES,
+      subjects,
+      ...(isAdmin ? { total: pool.length, sections, topics: topicList } : {}),
+    });
   } catch (err) {
     next(err);
   }
@@ -416,7 +445,19 @@ async function createPracticeTest(req, res, next) {
       }
     }
 
-    const selected = shuffleInPlace(filterBySubject(pool, input.subject).slice()).slice(0, input.count);
+    const subjectPool = filterBySubject(pool, input.subject);
+    if (!isAdmin) {
+      if (!PRACTICE_SIZES.includes(input.count)) {
+        return res.status(400).json({ error: `Choose a paper size of ${PRACTICE_SIZES.join(", ")} questions.`, code: "PRACTICE_SIZE" });
+      }
+      if (/^topic:/.test(input.subject) && subjectPool.length < MIN_PRACTICE_POOL) {
+        return res.status(400).json({ error: "This topic isn't available for practice yet. Try another topic.", code: "PRACTICE_EMPTY" });
+      }
+      if (subjectPool.length && subjectPool.length < input.count) {
+        return res.status(400).json({ error: "Not enough questions for that size yet. Choose a smaller set.", code: "PRACTICE_TOO_LARGE" });
+      }
+    }
+    const selected = shuffleInPlace(subjectPool.slice()).slice(0, input.count);
     if (!selected.length) {
       return res.status(400).json({ error: "No questions match these practice filters yet. Try another subject or difficulty.", code: "PRACTICE_EMPTY" });
     }
@@ -455,4 +496,4 @@ async function createPracticeTest(req, res, next) {
   }
 }
 
-module.exports = { createPracticeTest, getPracticeOptions, listOwnPracticeTests, splitPracticeMinutes, listTests, getTestById, getTestQuestions, createTest, updateTest, deleteTest, submitQotdAttempt };
+module.exports = { PRACTICE_SIZES, createPracticeTest, getPracticeOptions, listOwnPracticeTests, splitPracticeMinutes, listTests, getTestById, getTestQuestions, createTest, updateTest, deleteTest, submitQotdAttempt };

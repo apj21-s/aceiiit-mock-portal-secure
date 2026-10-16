@@ -213,6 +213,32 @@ const log = (...a) => console.log("[admin-e2e]", ...a);
     await page.keyboard.press("Escape");
     await sleep(300);
     check(!(await page.$(".admin-modal-overlay .user-detail")), "Escape closes the details window");
+    await page.goto(`${BASE}/#/admin`, { waitUntil: "networkidle2" });
+    await page.waitForSelector('.js-studio-tab[data-tab="setup"]', { timeout: 20000 });
+    // Setup: "+ New test" makes a blank form that creates a new test; "Save changes" updates
+    // the test being edited instead of creating a copy (it used to always create a copy).
+    const countTests = async () => { await mongoose.connect(uri); const n = await Test.countDocuments({ deletedAt: null }); await mongoose.disconnect(); return n; };
+    await page.evaluate(() => document.querySelector('.js-studio-tab[data-tab="setup"]').click());
+    await page.waitForSelector("#test-form", { timeout: 10000 });
+    const before = await countTests();
+    const editing = await page.evaluate(() => ({ mode: document.querySelector(".setup-mode").innerText, button: document.querySelector('#test-form button[type="submit"]').textContent }));
+    check(/Editing/.test(editing.mode) && editing.button === "Save changes", `with a test selected, the form says it's editing it (${editing.mode.replace(/\s+/g, " ")} / ${editing.button})`);
+    await page.$eval("#test-subtitle", (el) => { el.value = "Edited subtitle"; });
+    await page.click('#test-form button[type="submit"]');
+    await sleep(1500);
+    check((await countTests()) === before, "Save changes updates the test and creates no copy");
+    await page.waitForSelector("#new-test-btn", { timeout: 10000 });
+    await page.click("#new-test-btn");
+    await page.waitForFunction(() => /New test/.test((document.querySelector(".setup-mode") || {}).innerText || ""), { timeout: 5000 }).catch(() => null);
+    const blank = await page.evaluate(() => ({ title: document.getElementById("test-title").value, button: document.querySelector('#test-form button[type="submit"]').textContent, focus: document.activeElement && document.activeElement.id }));
+    check(blank.title === "" && blank.button === "Create test" && blank.focus === "test-title", `+ New test gives a blank form with focus on the title (${JSON.stringify(blank)})`);
+    await page.type("#test-title", "Brand New Mock 7");
+    await page.type("#test-subtitle", "Created from the e2e");
+    await page.click('#test-form button[type="submit"]');
+    await page.waitForFunction(() => /Editing\s+Brand New Mock 7/.test((document.querySelector(".setup-mode") || {}).innerText || ""), { timeout: 10000 }).catch(() => null);
+    check((await countTests()) === before + 1, "Create test adds exactly one new test");
+    check(/Editing\s+Brand New Mock 7/.test(await page.$eval(".setup-mode", (el) => el.innerText)), "the new test is then selected for editing");
+
   } catch (err) {
     failures.push(`exception: ${err.message}`);
     log("EXCEPTION", err.stack);

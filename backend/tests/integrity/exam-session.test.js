@@ -3,6 +3,7 @@
 const { createApp } = require("../../app");
 const Attempt = require("../../models/Attempt");
 const AttemptSession = require("../../models/AttemptSession");
+const Question = require("../../models/Question");
 const { sweepOnce } = require("../../services/attemptSweeper");
 const { startDb, clearDb, stopDb } = require("../helpers/db");
 const { createUser, createQuestions, createTest, grantEntitlementFor } = require("../helpers/fixtures");
@@ -356,13 +357,21 @@ describe("rank and percentile on read", () => {
 });
 
 describe("custom practice (server-built, server-scored)", () => {
+  // Students build papers of 5+ questions, so the free test gets three more SUPR questions here.
+  async function practiceBank() {
+    const fixture = await setupFreeTest();
+    const extra = await Question.insertMany(Array.from({ length: 3 }, (_, i) => ({ section: "SUPR", topic: "extra", difficulty: "medium", prompt: `Extra SUPR ${i + 1}`, options: ["a", "b", "c", "d"], correctOption: 0, marks: 4, negativeMarks: -1 })));
+    await createTest({ isFree: true, questions: extra });
+    return fixture;
+  }
+
   test("practice is built from accessible questions, scored with negative marking, and unranked", async () => {
     await createUser();
-    const { ids } = await setupFreeTest();
+    const { ids } = await practiceBank();
     const client = await loginClient(app, "student1@test.local");
     const created = await client.post("/api/tests/practice", { subject: "SUPR", difficulty: "all", count: 5, timerMinutes: 10 });
     expect(created.status).toBe(201);
-    expect(created.body.test.questionCount).toBe(2);
+    expect(created.body.test.questionCount).toBe(5);
 
     const { token, sessionId } = await (async () => {
       const r = await exam(client).start(created.body.test.id);
@@ -378,10 +387,10 @@ describe("custom practice (server-built, server-scored)", () => {
 
   test("free accounts get one practice paper; it never appears in the catalog", async () => {
     await createUser();
-    await setupFreeTest();
+    await practiceBank();
     const client = await loginClient(app, "student1@test.local");
-    expect((await client.post("/api/tests/practice", { count: 2 })).status).toBe(201);
-    const second = await client.post("/api/tests/practice", { count: 2 });
+    expect((await client.post("/api/tests/practice", { count: 5 })).status).toBe(201);
+    const second = await client.post("/api/tests/practice", { count: 5 });
     expect(second.status).toBe(402);
     expect(second.body.code).toBe("PRACTICE_LIMIT");
     const catalog = await client.get("/api/tests");
@@ -391,9 +400,9 @@ describe("custom practice (server-built, server-scored)", () => {
   test("another student can't start my practice paper", async () => {
     await createUser();
     await createUser({ email: "student2@test.local", name: "Two" });
-    await setupFreeTest();
+    await practiceBank();
     const owner = await loginClient(app, "student1@test.local");
-    const created = await owner.post("/api/tests/practice", { count: 2 });
+    const created = await owner.post("/api/tests/practice", { count: 5 });
     const other = await loginClient(app, "student2@test.local");
     expect((await exam(other).start(created.body.test.id)).status).toBe(404);
   });

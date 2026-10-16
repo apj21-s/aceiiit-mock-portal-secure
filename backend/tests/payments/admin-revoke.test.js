@@ -39,7 +39,7 @@ describe("after access is revoked, nothing paid stays open", () => {
     const season = await getActiveSeason();
     const student = await createUser({ email: "pro@test.local" });
     await Entitlement.create({ email: "pro@test.local", normalizedEmail: "pro@test.local", seasonId: season._id, tier: "paid", status: "active", source: "admin" });
-    const qs = await Question.insertMany(Array.from({ length: 3 }, (_, i) => ({ section: "SUPR", topic: "algebra", difficulty: "medium", prompt: `Paid Q${i + 1}`, options: ["a", "b", "c", "d"], correctOption: 0 })));
+    const qs = await Question.insertMany(Array.from({ length: 5 }, (_, i) => ({ section: "SUPR", topic: "algebra", difficulty: "medium", prompt: `Paid Q${i + 1}`, options: ["a", "b", "c", "d"], correctOption: 0 })));
     const paid = await createTest({ isFree: false, questions: qs });
     await createUser({ email: "admin@test.local", role: "admin" });
     const admin = await loginClient(app, "admin@test.local");
@@ -51,7 +51,7 @@ describe("after access is revoked, nothing paid stays open", () => {
 
   test("a practice paper built from paid questions can't be started", async () => {
     const { s, revoke } = await setup();
-    const practice = await s.post("/api/tests/practice", { subject: "all", count: 3, timerMinutes: 10 });
+    const practice = await s.post("/api/tests/practice", { subject: "all", count: 5, timerMinutes: 10 });
     expect(practice.status).toBe(201);
     await revoke();
     expect((await start(s, practice.body.test.id)).status).toBe(402);

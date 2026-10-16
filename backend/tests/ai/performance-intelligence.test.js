@@ -305,10 +305,11 @@ describe("practice papers", () => {
     const questions = await Question.insertMany([
       { section: "SUPR", topic: "algebra", difficulty: "easy", prompt: "P1", options: ["a", "b", "c", "d"], correctOption: 1 },
       { section: "SUPR", topic: "algebra", difficulty: "hard", prompt: "P2", options: ["a", "b", "c", "d"], correctOption: 2 },
+      ...Array.from({ length: 3 }, (_, i) => ({ section: "SUPR", topic: "algebra", difficulty: "medium", prompt: `P${i + 3}`, options: ["a", "b", "c", "d"], correctOption: 0 })),
     ]);
     await createTest({ isFree: true, questions });
     const client = await loginClient(app, "student1@test.local");
-    const created = await client.post("/api/tests/practice", { subject: "all", count: 2, timerMinutes: 10 });
+    const created = await client.post("/api/tests/practice", { subject: "all", count: 5, timerMinutes: 10 });
     const start = await client.agent.post("/api/attempt/start").set("X-CSRF-Token", client.csrf).send({ testId: created.body.test.id });
     const submit = await client.agent
       .post("/api/attempt")

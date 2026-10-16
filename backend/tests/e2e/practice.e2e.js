@@ -42,8 +42,10 @@ const SHOTS = path.join(SHOTS_DIR, "practice");
   // Paid, so more than one custom practice session is allowed.
   await Entitlement.create({ userId: student._id, email: student.email, normalizedEmail: student.email, seasonId: season._id, tier: "paid", status: "active", source: "admin" });
   const qs = await Question.insertMany([
-    ...Array.from({ length: 4 }, (_, i) => ({ section: "SUPR", topic: "algebra", difficulty: "medium", prompt: `SUPR algebra ${i + 1}`, options: ["a", "b", "c", "d"], correctOption: 0, marks: 4, negativeMarks: -1 })),
-    ...Array.from({ length: 3 }, (_, i) => ({ section: "REAP", topic: "logic", difficulty: "medium", prompt: `REAP logic ${i + 1}`, options: ["a", "b", "c", "d"], correctOption: 1, marks: 4, negativeMarks: -1 })),
+    ...Array.from({ length: 8 }, (_, i) => ({ section: "SUPR", topic: "algebra", difficulty: "medium", prompt: `SUPR algebra ${i + 1}`, options: ["a", "b", "c", "d"], correctOption: 0, marks: 4, negativeMarks: -1 })),
+    // "puzzles" has too few questions for the smallest practice paper, so students don't see it.
+    ...Array.from({ length: 2 }, (_, i) => ({ section: "REAP", topic: "puzzles", difficulty: "medium", prompt: `REAP puzzle ${i + 1}`, options: ["a", "b", "c", "d"], correctOption: 1, marks: 4, negativeMarks: -1 })),
+    ...Array.from({ length: 5 }, (_, i) => ({ section: "REAP", topic: "logic", difficulty: "medium", prompt: `REAP logic ${i + 1}`, options: ["a", "b", "c", "d"], correctOption: 1, marks: 4, negativeMarks: -1 })),
   ]);
   const mock = await Test.create({ title: "UGEE 2026 Mock Test 1", isFree: true, status: "live", seasonId: season._id, sectionDurations: { SUPR: 60, REAP: 120 }, durationMinutes: 180, questionIds: qs.map((q) => q._id) });
   // The set exam date is past (170 days ago): students now prepare for the next one.
@@ -99,7 +101,7 @@ const SHOTS = path.join(SHOTS_DIR, "practice");
       const s = await (await fetch("/api/attempt/start", { method: "POST", headers: h, body: JSON.stringify({ testId }) })).json();
       const eh = { ...h, "X-Exam-Token": s.examToken };
       const paper = await (await fetch(`/api/attempt/session/${s.session.id}/paper`, { headers: eh })).json();
-      const supr = paper.questions.filter((q) => q.section === "SUPR"); // 4 of 7: not "ended early"
+      const supr = paper.questions.filter((q) => q.section === "SUPR"); // 8 of 15: not "ended early"
       await fetch(`/api/attempt/session/${s.session.id}/answers`, { method: "PUT", headers: eh, body: JSON.stringify({ seq: 1, answers: Object.fromEntries(supr.map((q) => [q.id, 0])) }) });
       const out = await (await fetch("/api/attempt", { method: "POST", headers: { ...eh, "Idempotency-Key": "practice-e2e-mock-1" }, body: JSON.stringify({ sessionId: s.session.id }) })).json();
       return out.attempt.id;
@@ -107,14 +109,22 @@ const SHOTS = path.join(SHOTS_DIR, "practice");
 
     // ---- Practice builder: real subjects ----
     await page.goto(`${BASE}/#/exams/practice`, { waitUntil: "networkidle2" });
-    await page.waitForFunction(() => /REAP – all topics \(3\)/.test((document.getElementById("prac-subject") || {}).innerText || ""), { timeout: 15000 }).catch(() => null);
+    await page.waitForFunction(() => /Algebra/.test((document.getElementById("prac-subject") || {}).innerText || ""), { timeout: 15000 }).catch(() => null);
     const subjects = await page.$$eval("#prac-subject option", (opts) => opts.map((o) => o.textContent));
-    check(subjects.some((s) => /^REAP – all topics \(3\)$/.test(s)) && subjects.some((s) => /^Algebra \(4\)$/.test(s)), `practice subjects come from real topics with counts (${subjects.join(", ")})`);
+    check(subjects.includes("REAP – all topics") && subjects.includes("Algebra") && subjects.includes("Logic"), `practice subjects come from real topics (${subjects.join(", ")})`);
+    check(subjects.every((s) => !/\d/.test(s)) && !subjects.includes("Puzzles"), "students see no question counts, and topics too thin to practise are hidden");
+    await page.select("#prac-subject", "REAP");
+    const sizes = await page.evaluate(() => ({
+      enabled: Array.from(document.querySelectorAll("#prac-count option")).filter((o) => !o.disabled).map((o) => o.value),
+      value: document.getElementById("prac-count").value,
+      note: document.getElementById("practice-availability").textContent,
+    }));
+    check(sizes.enabled.join(",") === "5" && sizes.value === "5" && /aren't available/.test(sizes.note) && !/\d/.test(sizes.note), `sizes a subject can't fill are greyed out, with a reason and no numbers (${sizes.enabled.join(",")}; "${sizes.note}")`);
     await page.select("#prac-difficulty", "hard");
-    await page.waitForFunction(() => /No questions match/.test((document.getElementById("practice-availability") || {}).textContent || ""), { timeout: 10000 }).catch(() => null);
+    await page.waitForFunction(() => /No practice questions/.test((document.getElementById("practice-availability") || {}).textContent || ""), { timeout: 10000 }).catch(() => null);
     check(await page.$eval("#start-practice-btn", (b) => b.disabled), "a difficulty with no questions disables Start and says why");
     await page.select("#prac-difficulty", "all");
-    await page.waitForFunction(() => /available/.test((document.getElementById("practice-availability") || {}).textContent || ""), { timeout: 10000 }).catch(() => null);
+    await page.waitForFunction(() => !document.getElementById("start-practice-btn").disabled, { timeout: 10000 }).catch(() => null);
 
     // ---- REAP-only practice: opens in REAP, is not submitted ----
     await page.select("#prac-subject", "REAP");
@@ -133,7 +143,7 @@ const SHOTS = path.join(SHOTS_DIR, "practice");
       tabs: Array.from(document.querySelectorAll(".exam-sectionbar [data-section]")).map((b) => b.dataset.section),
       body: document.body.innerText,
     }));
-    check(reapExam.hash.indexOf("#/test/") === 0 && /REAP logic/.test(reapExam.body), "REAP-only practice opens on its REAP questions and is not submitted");
+    check(reapExam.hash.indexOf("#/test/") === 0 && /REAP (logic|puzzle)/.test(reapExam.body), "REAP-only practice opens on its REAP questions and is not submitted");
     check(reapExam.tabs.join(",") === "REAP", `the section bar shows only REAP (${reapExam.tabs.join(",")})`);
     await page.evaluate(() => document.getElementById("submit-test").click());
     await page.waitForSelector('[data-transition-action="confirm"]', { timeout: 10000 });

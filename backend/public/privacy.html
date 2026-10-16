@@ -15,7 +15,7 @@
 </head>
 <body>
   <h1>Privacy Policy</h1>
-  <p class="muted">ACEIIIT Mock Portal · Last updated 15 October 2026</p>
+  <p class="muted">ACEIIIT Mock Portal · Last updated 16 October 2026</p>
 
   <h2>What we collect</h2>
   <ul>
@@ -36,13 +36,14 @@
     <li><strong>Google Calendar (only if you connect it):</strong> permission to add your study reminders to your calendar as events, and to update or remove those events when you change or cancel a reminder. We store an encrypted refresh token, your Google account ID and the IDs of the events we create. We don't read your other calendar events.</li>
   </ul>
   <p>We use Google user data only to provide these features. We don't use it for advertising and we don't sell it. It is shared only with the service providers that run the portal for us (hosting, database and email delivery, listed under Sharing), for example to send you the reminder emails you ask for. Our use and transfer of information received from Google APIs adheres to the <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User Data Policy</a>, including the Limited Use requirements.</p>
-  <p><strong>Retention and deletion of Google user data:</strong></p>
+  <h2 id="google-data-retention">Retention and deletion of Google user data</h2>
+  <p>We keep Google user data only for as long as it is needed to provide the feature you connected, and you can have it deleted at any time.</p>
   <ul>
-    <li>We keep it only while your account is active.</li>
-    <li>When you disconnect Google Calendar, we revoke the portal's access with Google and delete the stored token immediately.</li>
-    <li>When you delete your account, we revoke Google Calendar access and delete its stored data immediately. Your Google account ID, name and email are permanently deleted automatically 30 days later, together with the rest of your account.</li>
-    <li>Reminder events already added to your own Google Calendar stay there; you can delete them in Google Calendar.</li>
-    <li>You can also remove the portal's access at any time from your Google Account at <a href="https://myaccount.google.com/permissions">myaccount.google.com/permissions</a>, or email us to have your data deleted.</li>
+    <li><strong>Sign-in data (name, email address, Google account ID):</strong> kept while your portal account is active. When you delete your account (Account → Security → "Delete my account"), you are signed out everywhere and the account is closed; it is permanently deleted automatically 30 days later, including your Google account ID, name and email.</li>
+    <li><strong>Google Calendar:</strong> the encrypted refresh token, your Google account ID and the IDs of the events we created are kept only while Calendar is connected. When you disconnect Google Calendar, we revoke the portal's access with Google and immediately delete the stored token and your Google account ID. The IDs of events we created stay with your reminders so that reconnecting doesn't add duplicate events; they are deleted, together with everything else, as soon as you delete your account (or when you ask us). Events already added to your calendar stay in your Google Calendar, where you can delete them.</li>
+    <li><strong>Google Drive (administrators only):</strong> the encrypted refresh token and the connected account's email are kept only while Drive is connected for study material. When an administrator disconnects Google Drive in the Studio, we revoke the portal's access with Google and delete the stored token immediately. Study-material files stay in that administrator's own Google Drive; the portal keeps no copies, only short-lived folder listings in memory that expire within minutes.</li>
+    <li><strong>Removing access yourself:</strong> you can revoke the portal's access at any time in your Google Account at <a href="https://myaccount.google.com/permissions">myaccount.google.com/permissions</a>. The portal then stops using that access, and we delete the stored token when you disconnect or delete your account.</li>
+    <li><strong>Asking us to delete it:</strong> email <a href="mailto:support@aceiiit.com">support@aceiiit.com</a> from the address on your account and we will delete your Google user data within 30 days.</li>
   </ul>
 
   <h2>AI-assisted performance interpretation</h2>

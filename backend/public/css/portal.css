@@ -16432,3 +16432,22 @@ body[data-theme="dark"] .drive-skeleton span {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
+
+/* Studio → Setup: whether the form edits a test or creates a new one. */
+.setup-mode {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  border: 1px solid rgba(197, 160, 40, 0.35);
+  border-radius: 12px;
+  background: rgba(197, 160, 40, 0.08);
+  font-size: 0.9rem;
+}
+
+body[data-theme="dark"] .setup-mode {
+  border-color: rgba(215, 179, 74, 0.3);
+}
