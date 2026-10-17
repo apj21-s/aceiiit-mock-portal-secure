@@ -1634,6 +1634,35 @@
     return { ok: true };
   }
 
+  // "What's new" notes: students get the newest unseen one; admins manage them in Studio.
+  async function getWhatsNew(latest) {
+    var data = await api("/api/whats-new" + (latest ? "?latest=1" : ""), { method: "GET" });
+    return (data && data.note) || null;
+  }
+
+  async function markWhatsNewSeen() {
+    return api("/api/whats-new/seen", { method: "POST", body: "{}" });
+  }
+
+  async function listReleaseNotes() {
+    var data = await api("/api/admin/whats-new", { method: "GET" });
+    return (data && data.notes) || [];
+  }
+
+  async function saveReleaseNote(id, note) {
+    var data = await api("/api/admin/whats-new" + (id ? "/" + encodeURIComponent(id) : ""), { method: id ? "PUT" : "POST", body: JSON.stringify(note) });
+    return data.note;
+  }
+
+  async function setReleaseNotePublished(id, published) {
+    var data = await api("/api/admin/whats-new/" + encodeURIComponent(id) + (published ? "/publish" : "/unpublish"), { method: "POST", body: "{}" });
+    return data.note;
+  }
+
+  async function deleteReleaseNote(id) {
+    return api("/api/admin/whats-new/" + encodeURIComponent(id), { method: "DELETE" });
+  }
+
   // Import from Excel/CSV: the preview saves nothing; the commit saves every question or none.
   async function previewQuestionImport(file, testId) {
     var form = new FormData();
@@ -2291,6 +2320,12 @@
     detachQuestionFromTest: detachQuestionFromTest,
     attachQuestionsBulk: attachQuestionsBulk,
     previewQuestionImport: previewQuestionImport,
+    getWhatsNew: getWhatsNew,
+    markWhatsNewSeen: markWhatsNewSeen,
+    listReleaseNotes: listReleaseNotes,
+    saveReleaseNote: saveReleaseNote,
+    setReleaseNotePublished: setReleaseNotePublished,
+    deleteReleaseNote: deleteReleaseNote,
     commitQuestionImport: commitQuestionImport,
     detachQuestionsBulk: detachQuestionsBulk,
     reorderTestQuestions: reorderTestQuestions,

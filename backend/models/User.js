@@ -15,6 +15,8 @@ const userSchema = new mongoose.Schema(
     googleSubject: { type: String, default: null, index: true, sparse: true },
     appleSubject: { type: String, default: null, index: true, sparse: true },
     lastSeenAt: { type: Date, default: null, index: true },
+    // Last time the "What's new" pop-up was closed; newer published notes show once.
+    whatsNewSeenAt: { type: Date, default: null },
     deletedAt: { type: Date, default: null },
     // Incremented on any security event (password change, role change, revoke, delete) to
     // invalidate every outstanding session JWT for this user.

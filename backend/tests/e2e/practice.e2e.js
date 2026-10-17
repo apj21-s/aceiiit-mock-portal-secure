@@ -190,6 +190,21 @@ const SHOTS = path.join(SHOTS_DIR, "practice");
     });
     check(mocksCompleted === "1", `dashboard counts 1 mock, not the 2 practice sessions (${mocksCompleted})`);
 
+    // ---- Progress: section accuracy as donuts ----
+    await page.goto(`${BASE}/#/progress/performance`, { waitUntil: "networkidle2" });
+    await page.waitForSelector(".progress-donut", { timeout: 15000 }).catch(() => null);
+    const donuts = await page.evaluate(() => Array.from(document.querySelectorAll(".progress-donut")).map((d) => ({
+      name: d.querySelector("figcaption").textContent,
+      center: d.querySelector(".donut-center strong").textContent,
+      label: d.querySelector(".donut").getAttribute("aria-label"),
+      legend: Array.from(d.querySelectorAll(".progress-donut-legend li")).map((li) => li.innerText.replace(/\s+/g, " ").trim()),
+      slices: d.querySelectorAll(".donut-seg").length,
+      note: d.querySelector(".progress-donut-note").textContent,
+      overflow: d.getBoundingClientRect().right > document.documentElement.clientWidth,
+    })));
+    check(donuts.length >= 1 && donuts.every((d) => (/^\d+(\.\d+)?%$/.test(d.center) || (d.center === "—" && /^0 of/.test(d.note))) && d.slices >= 1 && /accuracy|no questions answered/.test(d.label)), `section accuracy shows a donut per section with the accuracy in the middle (${donuts.map((d) => d.name + " " + d.center).join(", ")})`);
+    check(donuts.every((d) => d.legend.length === 3 && /^Correct \d+$/.test(d.legend[0]) && /attempted$/.test(d.note) && !d.overflow), "each donut has a numbered legend and an attempted count, inside the page");
+
     // ---- AI coach card (intercepted ready interpretation) ----
     page.interceptHook = async (request) => {
       if (!request.url().endsWith(`/api/analysis/${mockAttemptId}/interpretation`)) return false;

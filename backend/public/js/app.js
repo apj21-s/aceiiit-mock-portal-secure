@@ -1886,6 +1886,359 @@
     return overlay;
   }
 
+  // ---- "What's new" pop-up --------------------------------------------------------------------
+  // The newest published note a student hasn't seen opens once, shortly after the portal opens.
+  // Never over an exam, the login screen, Studio, another dialog or the mentor.
+  var whatsNewCheckedFor = "";
+  var whatsNewCleanup = null;
+
+  function scheduleWhatsNew(view, user) {
+    if (!user || !store.getWhatsNew) return;
+    if (whatsNewCheckedFor === user.id) return;
+    if (isExamLikeRoute(view) || view === "instructions" || view === "admin" || view === "login") return;
+    whatsNewCheckedFor = user.id;
+    window.setTimeout(function () {
+      Promise.resolve(store.getWhatsNew(false)).then(function (note) {
+        if (!note) return;
+        var current = routeParts()[0] || "";
+        var busy = document.querySelector("[data-admin-modal='true'], [data-whats-new], .sync-overlay") ||
+          (document.getElementById("mentor-panel") && !document.getElementById("mentor-panel").hidden);
+        if (busy || isExamLikeRoute(current) || current === "instructions" || current === "admin" || document.hidden) {
+          whatsNewCheckedFor = ""; // try again on the next page
+          return;
+        }
+        showWhatsNew(note, { preview: false });
+      }).catch(function () { /* optional; never blocks the page */ });
+    }, 700);
+  }
+
+  function formatNoteDate(iso) {
+    var d = iso ? new Date(iso) : null;
+    if (!d || Number.isNaN(d.getTime())) return "";
+    return d.toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric", timeZone: "Asia/Kolkata" });
+  }
+
+  /** The pop-up card's inner HTML (also used by the live preview in Studio). */
+  function buildWhatsNewCardHtml(note, titleId) {
+    var cta = note.cta || (note.ctaLabel && note.ctaHref ? { label: note.ctaLabel, href: note.ctaHref } : null);
+    var external = cta && /^https:\/\//i.test(cta.href);
+    var date = formatNoteDate(note.publishedAt);
+    return '<div class="wn-head">' +
+      '<p class="wn-eyebrow"><span class="wn-spark" aria-hidden="true"></span>What\'s new' + (date ? '<span class="wn-date"> · ' + escapeHtml(date) + '</span>' : '') + '</p>' +
+      '<h2 class="wn-title" id="' + titleId + '">' + escapeHtml(note.title || "Untitled") + '</h2>' +
+      (note.summary ? '<p class="wn-summary">' + escapeHtml(note.summary) + '</p>' : '') +
+      '</div>' +
+      (note.imageUrl && /^https:\/\//i.test(note.imageUrl) ? '<img class="wn-image" src="' + escapeAttribute(note.imageUrl) + '" alt="" loading="lazy" decoding="async">' : '') +
+      '<ul class="wn-items">' + (note.items || []).map(function (item, i) {
+        return '<li style="--i:' + i + '">' +
+          '<span class="wn-icon" aria-hidden="true">' + escapeHtml(item.icon || "✦") + '</span>' +
+          '<div><strong>' + escapeHtml(item.title || "") + '</strong>' + (item.body ? '<p>' + escapeHtml(item.body) + '</p>' : '') + '</div>' +
+          '</li>';
+      }).join("") + '</ul>' +
+      '<div class="wn-actions">' +
+      (cta ? (external
+        ? '<a class="button button-secondary" href="' + escapeAttribute(cta.href) + '" target="_blank" rel="noopener noreferrer" data-wn-cta>' + escapeHtml(cta.label) + '</a>'
+        : '<a class="button button-secondary" href="' + escapeAttribute(cta.href) + '" data-wn-cta>' + escapeHtml(cta.label) + '</a>') : '') +
+      '<button type="button" class="button button-primary" data-wn-close>Got it</button>' +
+      '</div>';
+  }
+
+  function showWhatsNew(note, options) {
+    options = options || {};
+    if (document.querySelector("[data-whats-new]")) return;
+    var titleId = "wn-title-" + Math.random().toString(36).slice(2, 8);
+    var overlay = document.createElement("div");
+    overlay.className = "wn-overlay";
+    overlay.setAttribute("data-whats-new", "true");
+    overlay.setAttribute("data-state", "closed");
+    overlay.innerHTML = '<section class="wn-card" role="dialog" aria-modal="true" aria-labelledby="' + titleId + '">' + buildWhatsNewCardHtml(note, titleId) + '</section>';
+    document.body.appendChild(overlay);
+    var card = overlay.querySelector(".wn-card");
+    var closed = false;
+
+    function close() {
+      if (closed) return;
+      closed = true;
+      if (!options.preview && store.markWhatsNewSeen) Promise.resolve(store.markWhatsNewSeen()).catch(function () { });
+      overlay.setAttribute("data-state", "closing");
+      if (whatsNewCleanup) { whatsNewCleanup(); whatsNewCleanup = null; }
+      var done = function () { overlay.remove(); };
+      if (prefersReducedMotion()) done();
+      else window.setTimeout(done, 200);
+    }
+
+    // Open on the next frame so the entry transition runs from the closed state.
+    window.requestAnimationFrame(function () {
+      window.requestAnimationFrame(function () { overlay.setAttribute("data-state", "open"); });
+    });
+    whatsNewCleanup = activateModalFocus(card, { onEscape: close, titleId: titleId, initialFocusEl: overlay.querySelector("[data-wn-close]") });
+    overlay.addEventListener("click", function (event) {
+      if (event.target === overlay) close();
+    });
+    overlay.querySelector("[data-wn-close]").addEventListener("click", close);
+    var cta = overlay.querySelector("[data-wn-cta]");
+    if (cta) {
+      cta.addEventListener("click", function (event) {
+        var href = cta.getAttribute("href") || "";
+        close();
+        if (href.charAt(0) === "#") {
+          event.preventDefault();
+          window.location.hash = href;
+        }
+      });
+    }
+  }
+
+  // ---- Studio → What's New: write, preview live, publish ------------------------------------
+  var wnAdmin = { notes: [], editingId: "", draft: null, message: "", error: "" };
+
+  function blankReleaseNote() {
+    return { title: "", summary: "", items: [{ icon: "✨", title: "", body: "" }], imageUrl: "", ctaLabel: "", ctaHref: "", audience: "all" };
+  }
+
+  function buildAdminWhatsNewHtml() {
+    return '<div class="wn-studio" id="wn-admin-root"><div class="admin-card"><p class="helper-text" aria-busy="true">Loading notes…</p></div></div>';
+  }
+
+  function mountAdminWhatsNew() {
+    var root = document.getElementById("wn-admin-root");
+    if (!root || !store.listReleaseNotes) return;
+    Promise.resolve(store.listReleaseNotes()).then(function (notes) {
+      wnAdmin.notes = notes || [];
+      if (!wnAdmin.draft) {
+        wnAdmin.editingId = "";
+        wnAdmin.draft = blankReleaseNote();
+      }
+      var current = document.getElementById("wn-admin-root");
+      if (current) renderAdminWhatsNew(current);
+    }).catch(function (error) {
+      var current = document.getElementById("wn-admin-root");
+      if (current) current.innerHTML = '<div class="admin-card"><p class="helper-text">Couldn\'t load the notes: ' + escapeHtml((error && error.message) || "network error") + '</p></div>';
+    });
+  }
+
+  function wnItemsEditorHtml(items) {
+    return items.map(function (item, i) {
+      var n = i + 1;
+      return '<div class="wn-item-editor" data-wn-item="' + i + '">' +
+        '<div class="field"><label for="wn-icon-' + i + '">Icon</label><input id="wn-icon-' + i + '" data-wn-field="icon" maxlength="16" value="' + escapeAttribute(item.icon || "") + '" placeholder="✨"></div>' +
+        '<div class="field"><label for="wn-item-title-' + i + '">Item ' + n + ' title</label><input id="wn-item-title-' + i + '" data-wn-field="title" maxlength="60" value="' + escapeAttribute(item.title || "") + '"></div>' +
+        '<div class="wn-item-tools">' +
+        '<button type="button" class="button button-secondary button-compact" data-wn-move="-1" aria-label="Move item ' + n + ' up"' + (i === 0 ? ' disabled' : '') + '>↑</button>' +
+        '<button type="button" class="button button-secondary button-compact" data-wn-move="1" aria-label="Move item ' + n + ' down"' + (i === items.length - 1 ? ' disabled' : '') + '>↓</button>' +
+        '<button type="button" class="button button-secondary button-compact" data-wn-remove aria-label="Remove item ' + n + '"' + (items.length === 1 ? ' disabled' : '') + '>✕</button>' +
+        '</div>' +
+        '<div class="field wn-item-body"><label for="wn-item-body-' + i + '">Item ' + n + ' text (optional)</label><textarea id="wn-item-body-' + i + '" data-wn-field="body" rows="2" maxlength="240">' + escapeHtml(item.body || "") + '</textarea></div>' +
+        '</div>';
+    }).join("");
+  }
+
+  function renderAdminWhatsNew(root) {
+    var d = wnAdmin.draft;
+    var editingNote = wnAdmin.notes.filter(function (n) { return n.id === wnAdmin.editingId; })[0] || null;
+    var audienceLabel = { all: "All students", free: "Free students", paid: "Enrolled students" };
+    var notesHtml = wnAdmin.notes.length
+      ? '<ul class="wn-notes">' + wnAdmin.notes.map(function (n) {
+          var published = n.status === "published";
+          return '<li class="wn-note-row' + (n.id === wnAdmin.editingId ? ' is-editing' : '') + '">' +
+            '<div><strong>' + escapeHtml(n.title) + '</strong><span class="wn-note-meta">' +
+            '<span class="meta-chip ' + (published ? 'is-live' : 'is-draft') + '">' + (published ? 'Published ' + escapeHtml(formatNoteDate(n.publishedAt)) : 'Draft') + '</span> · ' + escapeHtml(audienceLabel[n.audience] || "All students") + '</span></div>' +
+            '<div class="wn-note-actions">' +
+            '<button type="button" class="button button-secondary button-compact" data-wn-edit="' + escapeAttribute(n.id) + '">Edit</button>' +
+            '<button type="button" class="button button-secondary button-compact" data-wn-publish="' + escapeAttribute(n.id) + '" data-wn-to="' + (published ? "0" : "1") + '">' + (published ? "Unpublish" : "Publish") + '</button>' +
+            '<button type="button" class="button button-danger button-compact" data-wn-delete="' + escapeAttribute(n.id) + '" aria-label="Delete ' + escapeAttribute(n.title) + '">Delete</button>' +
+            '</div></li>';
+        }).join("") + '</ul>'
+      : '<p class="helper-text">No notes yet. Write the first one below: it pops up once for every student after you publish it.</p>';
+
+    root.innerHTML =
+      '<section class="admin-card" aria-labelledby="wn-admin-title">' +
+      '<div class="button-row" style="justify-content:space-between;align-items:center;">' +
+      '<p class="section-label" id="wn-admin-title" style="margin:0;">11. What\'s New</p>' +
+      '<button type="button" class="button button-secondary button-compact" data-wn-new>+ New note</button>' +
+      '</div>' +
+      '<p class="helper-text">Published notes pop up once for each student (on their next visit), then stay under “What\'s new” in the footer.</p>' +
+      notesHtml +
+      '<form class="wn-form" data-wn-form novalidate>' +
+      '<h3 class="wn-form-title">' + (editingNote ? "Edit “" + escapeHtml(editingNote.title) + "”" : "New note") + '</h3>' +
+      '<div class="field"><label for="wn-title">Title</label><input id="wn-title" data-wn-top="title" maxlength="80" required value="' + escapeAttribute(d.title) + '" placeholder="e.g. Practice papers are here"></div>' +
+      '<div class="field"><label for="wn-summary">Summary (optional)</label><textarea id="wn-summary" data-wn-top="summary" rows="2" maxlength="280">' + escapeHtml(d.summary) + '</textarea></div>' +
+      '<div class="grid-two">' +
+      '<div class="field"><label for="wn-audience">Show to</label><select id="wn-audience" data-wn-top="audience">' +
+      ["all", "free", "paid"].map(function (a) { return '<option value="' + a + '"' + (d.audience === a ? ' selected' : '') + '>' + audienceLabel[a] + '</option>'; }).join("") +
+      '</select></div>' +
+      '<div class="field"><label for="wn-image">Image link (optional, https)</label><input id="wn-image" data-wn-top="imageUrl" inputmode="url" value="' + escapeAttribute(d.imageUrl) + '" placeholder="https://…"></div>' +
+      '<div class="field"><label for="wn-cta-label">Button text (optional)</label><input id="wn-cta-label" data-wn-top="ctaLabel" maxlength="30" value="' + escapeAttribute(d.ctaLabel) + '" placeholder="Try it"></div>' +
+      '<div class="field"><label for="wn-cta-href">Button link</label><input id="wn-cta-href" data-wn-top="ctaHref" value="' + escapeAttribute(d.ctaHref) + '" placeholder="#exams/practice or https://…"></div>' +
+      '</div>' +
+      '<p class="section-label" style="margin:14px 0 8px;">Items (' + d.items.length + ' of 6)</p>' +
+      '<div class="wn-items-editor" data-wn-items>' + wnItemsEditorHtml(d.items) + '</div>' +
+      '<div class="button-row" style="margin-top:10px;"><button type="button" class="button button-secondary button-compact" data-wn-add' + (d.items.length >= 6 ? ' disabled' : '') + '>+ Add item</button></div>' +
+      '<p class="import-message is-error" role="alert" data-wn-error>' + escapeHtml(wnAdmin.error) + '</p>' +
+      '<p class="import-message is-success" role="status" data-wn-message>' + escapeHtml(wnAdmin.message) + '</p>' +
+      '<div class="button-row" style="margin-top:12px;">' +
+      '<button type="submit" class="button button-secondary" data-wn-save="draft">' + (editingNote ? "Save changes" : "Save draft") + '</button>' +
+      (editingNote && editingNote.status === "published" ? '' : '<button type="button" class="button button-primary" data-wn-save="publish">Save &amp; publish</button>') +
+      '<button type="button" class="button button-secondary" data-wn-try>Show me the pop-up</button>' +
+      '</div>' +
+      '</form>' +
+      '</section>' +
+      '<section class="admin-card" aria-labelledby="wn-preview-title">' +
+      '<p class="section-label" id="wn-preview-title">Live preview</p>' +
+      '<div class="wn-preview-frame" aria-hidden="true"><section class="wn-card" data-wn-preview>' + buildWhatsNewCardHtml(wnPreviewNote(), "wn-preview-heading") + '</section></div>' +
+      '</section>';
+    bindAdminWhatsNew(root);
+  }
+
+  function wnPreviewNote() {
+    var d = wnAdmin.draft;
+    return {
+      title: d.title || "Your title",
+      summary: d.summary,
+      items: d.items.map(function (i) { return { icon: i.icon, title: i.title || "Item title", body: i.body }; }),
+      imageUrl: d.imageUrl,
+      cta: d.ctaLabel && d.ctaHref ? { label: d.ctaLabel, href: d.ctaHref } : null,
+      publishedAt: new Date().toISOString(),
+    };
+  }
+
+  function bindAdminWhatsNew(root) {
+    var form = root.querySelector("[data-wn-form]");
+    var preview = root.querySelector("[data-wn-preview]");
+    var refreshPreview = function () {
+      if (preview) {
+        preview.innerHTML = buildWhatsNewCardHtml(wnPreviewNote(), "wn-preview-heading");
+        // The preview is a picture, not a second set of controls.
+        Array.prototype.forEach.call(preview.querySelectorAll("a, button"), function (el) { el.setAttribute("tabindex", "-1"); });
+      }
+    };
+    refreshPreview();
+    var rerender = function (focusSelector) {
+      renderAdminWhatsNew(root);
+      if (focusSelector) {
+        var el = root.querySelector(focusSelector);
+        if (el) el.focus();
+      }
+    };
+    form.addEventListener("input", function (event) {
+      var t = event.target;
+      if (t.hasAttribute("data-wn-top")) wnAdmin.draft[t.getAttribute("data-wn-top")] = t.value;
+      var itemEl = t.closest("[data-wn-item]");
+      if (itemEl && t.hasAttribute("data-wn-field")) wnAdmin.draft.items[Number(itemEl.getAttribute("data-wn-item"))][t.getAttribute("data-wn-field")] = t.value;
+      refreshPreview();
+    });
+    form.addEventListener("change", function (event) {
+      if (event.target.id === "wn-audience") wnAdmin.draft.audience = event.target.value;
+    });
+    root.querySelector("[data-wn-new]").addEventListener("click", function () {
+      wnAdmin.editingId = "";
+      wnAdmin.draft = blankReleaseNote();
+      wnAdmin.message = "";
+      wnAdmin.error = "";
+      rerender("#wn-title");
+    });
+    root.querySelector("[data-wn-add]").addEventListener("click", function () {
+      if (wnAdmin.draft.items.length >= 6) return;
+      wnAdmin.draft.items.push({ icon: "", title: "", body: "" });
+      rerender("#wn-item-title-" + (wnAdmin.draft.items.length - 1));
+    });
+    Array.prototype.forEach.call(root.querySelectorAll("[data-wn-move], [data-wn-remove]"), function (button) {
+      button.addEventListener("click", function () {
+        var i = Number(button.closest("[data-wn-item]").getAttribute("data-wn-item"));
+        var items = wnAdmin.draft.items;
+        if (button.hasAttribute("data-wn-remove")) {
+          items.splice(i, 1);
+          rerender("#wn-item-title-" + Math.max(0, i - 1));
+          return;
+        }
+        var j = i + Number(button.getAttribute("data-wn-move"));
+        if (j < 0 || j >= items.length) return;
+        var moved = items.splice(i, 1)[0];
+        items.splice(j, 0, moved);
+        rerender('[data-wn-item="' + j + '"] [data-wn-move="' + button.getAttribute("data-wn-move") + '"]:not([disabled]), #wn-item-title-' + j);
+      });
+    });
+    Array.prototype.forEach.call(root.querySelectorAll("[data-wn-edit]"), function (button) {
+      button.addEventListener("click", function () {
+        var note = wnAdmin.notes.filter(function (n) { return n.id === button.getAttribute("data-wn-edit"); })[0];
+        if (!note) return;
+        wnAdmin.editingId = note.id;
+        wnAdmin.draft = { title: note.title, summary: note.summary, items: note.items.map(function (i) { return { icon: i.icon, title: i.title, body: i.body }; }), imageUrl: note.imageUrl, ctaLabel: note.ctaLabel, ctaHref: note.ctaHref, audience: note.audience };
+        wnAdmin.message = "";
+        wnAdmin.error = "";
+        rerender("#wn-title");
+      });
+    });
+    Array.prototype.forEach.call(root.querySelectorAll("[data-wn-publish]"), function (button) {
+      button.addEventListener("click", async function () {
+        button.disabled = true;
+        try {
+          var to = button.getAttribute("data-wn-to") === "1";
+          await store.setReleaseNotePublished(button.getAttribute("data-wn-publish"), to);
+          wnAdmin.message = to ? "Published. Students see it on their next visit." : "Unpublished.";
+          wnAdmin.error = "";
+          mountAdminWhatsNew();
+        } catch (error) {
+          wnAdmin.error = (error && error.message) || "That didn't work.";
+          rerender();
+        }
+      });
+    });
+    Array.prototype.forEach.call(root.querySelectorAll("[data-wn-delete]"), function (button) {
+      button.addEventListener("click", async function () {
+        if (!window.confirm("Delete this note? It can't be undone.")) return;
+        try {
+          var id = button.getAttribute("data-wn-delete");
+          await store.deleteReleaseNote(id);
+          if (wnAdmin.editingId === id) { wnAdmin.editingId = ""; wnAdmin.draft = blankReleaseNote(); }
+          wnAdmin.message = "Deleted.";
+          wnAdmin.error = "";
+          mountAdminWhatsNew();
+        } catch (error) {
+          wnAdmin.error = (error && error.message) || "Couldn't delete it.";
+          rerender();
+        }
+      });
+    });
+    root.querySelector("[data-wn-try]").addEventListener("click", function () {
+      showWhatsNew(wnPreviewNote(), { preview: true });
+    });
+    async function save(publish) {
+      var d = wnAdmin.draft;
+      var body = {
+        title: d.title.trim(), summary: d.summary.trim(), audience: d.audience,
+        imageUrl: d.imageUrl.trim(), ctaLabel: d.ctaLabel.trim(), ctaHref: d.ctaHref.trim(),
+        items: d.items.map(function (i) { return { icon: (i.icon || "").trim(), title: (i.title || "").trim(), body: (i.body || "").trim() }; }),
+      };
+      try {
+        var saved = await store.saveReleaseNote(wnAdmin.editingId, body);
+        if (publish) saved = await store.setReleaseNotePublished(saved.id, true);
+        wnAdmin.editingId = saved.id;
+        wnAdmin.error = "";
+        wnAdmin.message = publish ? "Published. Students see it on their next visit." : "Saved.";
+        mountAdminWhatsNew();
+      } catch (error) {
+        wnAdmin.message = "";
+        wnAdmin.error = (error && error.message) || "Couldn't save the note.";
+        var field = String((error && error.data && error.data.field) || "");
+        rerender(field === "title" ? "#wn-title" : field === "imageUrl" ? "#wn-image" : field === "ctaHref" ? "#wn-cta-href" : field.indexOf("items") === 0 ? "#wn-item-title-0" : null);
+      }
+    }
+    form.addEventListener("submit", function (event) { event.preventDefault(); save(false); });
+    var publishBtn = root.querySelector('[data-wn-save="publish"]');
+    if (publishBtn) publishBtn.addEventListener("click", function () { save(true); });
+  }
+
+  // Footer → "What's new": reopens the latest note at any time.
+  document.addEventListener("click", function (event) {
+    var link = event.target && event.target.closest ? event.target.closest(".js-whats-new") : null;
+    if (!link || !store.getWhatsNew) return;
+    Promise.resolve(store.getWhatsNew(true)).then(function (note) {
+      if (note) showWhatsNew(note, { preview: false });
+      else showWhatsNew({ title: "You're all caught up", summary: "New features and changes will show up here.", items: [{ icon: "✓", title: "Nothing new right now" }] }, { preview: true });
+    }).catch(function () { });
+  });
+
   // Studio → Import from Excel/CSV. Step 1: template + file (+ which test to add to). Step 2: a
   // preview of every row rendered as students will see it, with the problems per row; nothing is
   // saved until "Import N questions", which saves all the ready rows at once.
@@ -3670,15 +4023,18 @@
     var shellClass = "page-shell";
     var footerText = options.footerText || "AceIIIT MockTest Portal";
     var footerClass = options.footerClass || "app-footer";
+    var shellUser = auth.getCurrentUser ? auth.getCurrentUser() : (store.getCurrentUser ? store.getCurrentUser() : null);
     var footerHtml = options.hideFooter
       ? ""
       : ('<div class="' + footerClass + '">' + escapeHtml(footerText) +
         '<span class="app-footer-sep"> · </span><span class="app-footer-links">' +
         '<a href="/privacy.html" target="_blank" rel="noopener">Privacy</a>' +
         ' · <a href="/terms.html" target="_blank" rel="noopener">Terms</a>' +
-        ' · <a href="mailto:support@aceiiit.com">Support</a></span></div>');
+        ' · <a href="mailto:support@aceiiit.com">Support</a>' +
+        (shellUser ? ' · <button type="button" class="app-footer-link js-whats-new">What\'s new</button>' : '') +
+        '</span></div>');
     // The one floating help button: it opens ACEIIIT Mentor (WhatsApp support is linked inside).
-    var currentUser = auth.getCurrentUser ? auth.getCurrentUser() : (store.getCurrentUser ? store.getCurrentUser() : null);
+    var currentUser = shellUser;
     var mentorOpen = Boolean(mentorState && mentorState.open);
     var supportChatHtml = options.hideSupportChat || !currentUser
       ? ""
@@ -5086,12 +5442,31 @@
       '<section class="progress-card">' +
       '<p class="section-label">SECTION ACCURACY</p>' +
       (stats.sections.length
-        ? '<div class="progress-sections">' + stats.sections.map(function (row) {
-            return '<div class="progress-section">' +
-              '<div class="progress-section-top"><strong>' + escapeHtml(row.key) + '</strong><span>' + escapeHtml(String(row.accuracy)) + '% accuracy</span></div>' +
-              buildOutcomeBar(row.correct, row.wrong, row.skipped) +
-              '<div class="rs-meta"><span><i class="rs-dot is-correct"></i>' + row.correct + ' correct</span><span><i class="rs-dot is-wrong"></i>' + row.wrong + ' wrong</span><span><i class="rs-dot is-skipped"></i>' + row.skipped + ' skipped</span></div>' +
-              '</div>';
+        ? '<div class="progress-donuts">' + stats.sections.map(function (row) {
+            var attempted = row.correct + row.wrong;
+            var total = attempted + row.skipped;
+            // Accuracy = correct / attempted; the ring shows every question, so skipping is visible too.
+            return '<figure class="progress-donut">' +
+              '<figcaption><strong>' + escapeHtml(row.key) + '</strong></figcaption>' +
+              buildDonut([
+                { label: "correct", value: row.correct, tone: "correct" },
+                { label: "wrong", value: row.wrong, tone: "wrong" },
+                { label: "skipped", value: row.skipped, tone: "skipped" }
+              ], {
+                className: "progress-donut-ring",
+                // No answers yet means no accuracy, not 0%.
+                centerValue: attempted ? row.accuracy + "%" : "—",
+                centerLabel: attempted ? "accuracy" : "none answered",
+                tipPrefix: row.key,
+                ariaLabel: row.key + ": " + (attempted ? row.accuracy + "% accuracy. " : "no questions answered yet. ") + row.correct + " correct, " + row.wrong + " wrong, " + row.skipped + " skipped."
+              }) +
+              '<ul class="progress-donut-legend">' +
+              '<li><i class="rs-dot is-correct" aria-hidden="true"></i><span>Correct</span><b>' + row.correct + '</b></li>' +
+              '<li><i class="rs-dot is-wrong" aria-hidden="true"></i><span>Wrong</span><b>' + row.wrong + '</b></li>' +
+              '<li><i class="rs-dot is-skipped" aria-hidden="true"></i><span>Skipped</span><b>' + row.skipped + '</b></li>' +
+              '</ul>' +
+              '<p class="progress-donut-note">' + attempted + ' of ' + total + ' attempted</p>' +
+              '</figure>';
           }).join("") + '</div>'
         : '<p class="pi-muted">Section breakdowns appear for attempts submitted on the current scoring pipeline.</p>') +
       '</section>' +
@@ -9123,24 +9498,202 @@
     return ["Thinking", "Working it out", "Checking each step"];
   }
 
-  /** The reply unfolds block by block (MorphOrb's word reveal, per paragraph/list item). */
+  /**
+   * Ink-in: the reply's words surface one after another (a quick blur-and-fade, about 0.7 s in
+   * all), so a reply that arrives whole still reads like it's being written. Long replies unfold
+   * by paragraph instead. The text is in the DOM from the start (screen readers get it at once),
+   * and any click or key finishes the reveal immediately.
+   */
   function revealMentorReply(bubble) {
     if (!bubble || typeof bubble.animate !== "function" || MentorOrb.reduced()) return;
-    var blocks = [];
-    Array.prototype.forEach.call(bubble.children, function (child) {
-      if (child.tagName === "UL" || child.tagName === "OL") Array.prototype.forEach.call(child.children, function (li) { blocks.push(li); });
-      else blocks.push(child);
+    bubble.setAttribute("data-revealing", "true");
+    bubble.animate([{ opacity: 0, transform: "scale(0.98)" }, { opacity: 1, transform: "none" }], { duration: 220, easing: MentorOrb.CSS.out });
+    var words = wrapMentorWords(bubble);
+    var total = 0;
+    if (words.length && words.length <= 220) {
+      var step = Math.min(24, 680 / words.length);
+      words.forEach(function (word, i) {
+        word.animate(
+          [{ opacity: 0, transform: "translateY(3px)", filter: "blur(3px)" }, { opacity: 1, transform: "none", filter: "blur(0px)" }],
+          { duration: 260, delay: 40 + i * step, easing: MentorOrb.CSS.out, fill: "backwards" }
+        );
+      });
+      total = 40 + words.length * step + 260;
+    } else {
+      var blocks = [];
+      Array.prototype.forEach.call(bubble.children, function (child) {
+        if (child.tagName === "UL" || child.tagName === "OL") Array.prototype.forEach.call(child.children, function (li) { blocks.push(li); });
+        else blocks.push(child);
+      });
+      blocks = blocks.slice(0, 16);
+      var stagger = blocks.length > 1 ? Math.min(45, 360 / (blocks.length - 1)) : 0;
+      blocks.forEach(function (block, i) {
+        block.animate(
+          [{ opacity: 0, transform: "translateY(4px)", filter: "blur(4px)" }, { opacity: 1, transform: "none", filter: "blur(0px)" }],
+          { duration: 320, delay: 60 + i * stagger, easing: MentorOrb.CSS.out, fill: "backwards" }
+        );
+      });
+      total = 60 + blocks.length * stagger + 320;
+    }
+    window.setTimeout(function () { bubble.removeAttribute("data-revealing"); }, total + 50);
+  }
+
+  /** Wraps each word of a reply in a span (maths, code and very long tokens stay as they are). */
+  function wrapMentorWords(root) {
+    var spans = [];
+    var walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+      acceptNode: function (node) {
+        if (!node.nodeValue || !node.nodeValue.trim()) return NodeFilter.FILTER_REJECT;
+        var parent = node.parentNode;
+        if (parent && parent.closest && parent.closest(".katex, code, pre")) return NodeFilter.FILTER_REJECT;
+        return NodeFilter.FILTER_ACCEPT;
+      }
     });
-    blocks = blocks.slice(0, 16);
-    var n = blocks.length;
-    var stagger = n > 1 ? Math.min(45, 360 / (n - 1)) : 0;
-    bubble.animate([{ opacity: 0, transform: "scale(0.97)" }, { opacity: 1, transform: "none" }], { duration: 260, easing: MentorOrb.CSS.out });
-    blocks.forEach(function (block, i) {
-      block.animate(
-        [{ opacity: 0, transform: "translateY(4px)", filter: "blur(4px)" }, { opacity: 1, transform: "none", filter: "blur(0px)" }],
-        { duration: 320, delay: 60 + i * stagger, easing: MentorOrb.CSS.out, fill: "backwards" }
-      );
+    var nodes = [];
+    while (walker.nextNode()) nodes.push(walker.currentNode);
+    nodes.forEach(function (node) {
+      var parts = node.nodeValue.split(/(\s+)/);
+      var frag = document.createDocumentFragment();
+      parts.forEach(function (part) {
+        if (!part) return;
+        if (/^\s+$/.test(part) || part.length > 32) {
+          frag.appendChild(document.createTextNode(part));
+          return;
+        }
+        var span = document.createElement("span");
+        span.className = "mentor-word";
+        span.textContent = part;
+        frag.appendChild(span);
+        spans.push(span);
+      });
+      node.parentNode.replaceChild(frag, node);
     });
+    return spans;
+  }
+
+  function finishMentorReveal() {
+    var s = mentorState;
+    if (!s || !s.el) return;
+    Array.prototype.forEach.call(s.el.querySelectorAll("[data-revealing]"), function (bubble) {
+      if (typeof bubble.getAnimations === "function") {
+        bubble.getAnimations({ subtree: true }).forEach(function (anim) { try { anim.finish(); } catch (_e) { } });
+      }
+      bubble.removeAttribute("data-revealing");
+    });
+  }
+
+  /** The sent message travels from where it was written (the chip or the box) into the chat. */
+  function landMentorMessage(fromRect) {
+    if (MentorOrb.reduced() || !fromRect || !fromRect.width) return;
+    var bubbles = mentorState.el ? mentorState.el.querySelectorAll(".mentor-msg.is-user .mentor-bubble") : [];
+    var bubble = bubbles[bubbles.length - 1];
+    if (!bubble || typeof bubble.animate !== "function") return;
+    var to = bubble.getBoundingClientRect();
+    var dx = fromRect.left - to.left;
+    var dy = fromRect.top - to.top;
+    if (Math.abs(dy) > 700) return;
+    bubble.animate(
+      [{ transform: "translate(" + dx.toFixed(1) + "px," + dy.toFixed(1) + "px) scale(0.96)", opacity: 0.7 }, { transform: "none", opacity: 1 }],
+      { duration: 300, easing: "cubic-bezier(0.32, 0.72, 0, 1)" }
+    );
+  }
+
+  /** Send: the arrow flies up and out while a fresh one rises into place. */
+  function launchMentorSendArrow(button) {
+    var icon = button && button.querySelector("svg");
+    if (!icon || typeof icon.animate !== "function") return;
+    icon.animate(
+      [
+        { transform: "none", opacity: 1 },
+        { transform: "translateY(-130%)", opacity: 0, offset: 0.45 },
+        { transform: "translateY(130%)", opacity: 0, offset: 0.46 },
+        { transform: "none", opacity: 1 }
+      ],
+      { duration: 380, easing: MentorOrb.CSS.out }
+    );
+  }
+
+  /** "12 of 100 replies remaining": a small ring plus a number that rolls when a reply is used. */
+  function renderMentorUsage(el, usage) {
+    var text = mentorUsageLine(usage);
+    if (!usage || !text) {
+      el.textContent = "";
+      el.removeAttribute("data-remaining");
+      return;
+    }
+    var remaining = Math.max(0, Number(usage.remaining) || 0);
+    var limit = Math.max(1, Number(usage.limit) || 1);
+    var before = el.hasAttribute("data-remaining") ? Number(el.getAttribute("data-remaining")) : remaining;
+    if (el.getAttribute("data-text") === text) return;
+    var rest = text.slice(String(remaining).length);
+    el.innerHTML = '<span class="mentor-meter" aria-hidden="true" style="--mentor-p:' + (remaining / limit).toFixed(3) + '"></span>' +
+      '<span class="mentor-roll"><span>' + remaining + '</span></span>' + escapeHtml(rest);
+    el.setAttribute("data-text", text);
+    el.setAttribute("data-remaining", String(remaining));
+    if (remaining < before && !MentorOrb.reduced()) {
+      var digits = el.querySelector(".mentor-roll span");
+      if (digits && typeof digits.animate === "function") {
+        digits.animate([{ transform: "translateY(90%)", opacity: 0 }, { transform: "none", opacity: 1 }], { duration: 280, easing: MentorOrb.CSS.out });
+      }
+    }
+  }
+
+  function showMentorNewPill(on) {
+    var pill = mentorPart("[data-mentor-newpill]");
+    if (!pill) return;
+    if (on) {
+      var panel = mentorPart(".mentor-panel");
+      var body = mentorPart("[data-mentor-body]");
+      if (panel && body) pill.style.bottom = Math.max(8, panel.getBoundingClientRect().bottom - body.getBoundingClientRect().bottom + 10) + "px";
+      pill.hidden = false;
+      window.requestAnimationFrame(function () { pill.setAttribute("data-state", "open"); });
+    } else {
+      pill.removeAttribute("data-state");
+      pill.hidden = true;
+    }
+  }
+
+  function mentorMessageFor(button) {
+    var bubble = button.closest(".mentor-msg") && button.closest(".mentor-msg").querySelector("[data-mentor-msg-id]");
+    var id = bubble ? bubble.getAttribute("data-mentor-msg-id") : "";
+    return mentorState.messages.filter(function (m) { return String(m.id) === id; })[0] || null;
+  }
+
+  function copyMentorReply(button) {
+    var message = mentorMessageFor(button);
+    if (!message) return;
+    var done = function () {
+      button.classList.add("is-done");
+      button.innerHTML = MENTOR_ICONS.check + "<span>Copied</span>";
+      mentorAnnounce("Reply copied.");
+      window.setTimeout(function () {
+        if (!button.isConnected) return;
+        button.classList.remove("is-done");
+        button.innerHTML = MENTOR_ICONS.copy + "<span>Copy</span>";
+      }, 1600);
+    };
+    var text = String(message.content || "");
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done).catch(function () { mentorAnnounce("Couldn't copy. Select the text instead."); });
+    } else {
+      mentorAnnounce("Couldn't copy. Select the text instead.");
+    }
+  }
+
+  function quoteMentorReply(button) {
+    var message = mentorMessageFor(button);
+    var input = mentorPart("#mentor-input");
+    if (!message || !input || input.closest("[hidden]")) return;
+    var plain = String(message.content || "").replace(/^\s*(?:[-*+]|\d+[.)])\s+/gm, "").replace(/[*_#>`]/g, "").replace(/\s+/g, " ").trim();
+    var snippet = plain.length > 90 ? plain.slice(0, 89).replace(/\s+\S*$/, "") + "…" : plain;
+    input.value = "About “" + snippet + "”: ";
+    mentorState.draft = input.value;
+    sizeMentorInput(input);
+    updateMentorCount();
+    var composer = mentorPart("[data-mentor-composer]");
+    if (composer) composer.classList.add("has-text");
+    input.focus();
+    try { input.setSelectionRange(input.value.length, input.value.length); } catch (_e) { }
   }
 
   /** MorphOrb's launch: a small spark flies from the send button into the waiting orb. */
@@ -9243,8 +9796,17 @@
     plus: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 5v14M5 12h14"/></svg>',
     minimise: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m6 9 6 6 6-6"/></svg>',
     send: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 19V5M5 12l7-7 7 7"/></svg>',
-    trash: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>'
+    trash: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>',
+    copy: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>',
+    check: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m5 12 5 5 9-10"/></svg>',
+    quote: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 12h12M4 6h16M4 18h8"/></svg>'
   };
+  // Shown under the newest reply: the obvious next questions, one tap away.
+  var MENTOR_FOLLOWUPS = [
+    "Explain that more simply.",
+    "Turn this into a 7-day plan.",
+    "Give me 3 practice questions on this."
+  ];
 
   function createMentorState(userId) {
     return {
@@ -9454,6 +10016,7 @@
       '</div>' +
       '</header>' +
       '<div class="mentor-body" data-mentor-body></div>' +
+      '<button type="button" class="mentor-new-pill" data-mentor-newpill hidden>↓ New reply</button>' +
       '<footer class="mentor-foot">' +
       '<div class="mentor-status" data-mentor-status></div>' +
       '<form class="mentor-composer" data-mentor-composer novalidate>' +
@@ -9797,7 +10360,7 @@
     return mentorState.messages.filter(function (m) { return m.role === "user" && m.clientMessageId === clientMessageId; })[0] || null;
   }
 
-  async function sendMentorMessage(content, retryOf) {
+  async function sendMentorMessage(content, retryOf, sourceEl) {
     var s = mentorState;
     if (s.sending) return;
     var text = String(content || "").trim();
@@ -9841,7 +10404,18 @@
     s.orb = introRect ? introOrb : MentorOrb.create();
     if (introRect) s.introOrb = null;
     var sendButton = mentorPart("[data-mentor-send]");
+    // Where the message comes from: the tapped chip, else the text box.
+    var fromEl = sourceEl && sourceEl.isConnected ? sourceEl : mentorPart("#mentor-input");
+    var fromRect = !retryOf && fromEl ? fromEl.getBoundingClientRect() : null;
+    if (!retryOf && !MentorOrb.reduced()) {
+      launchMentorSendArrow(sendButton);
+      if (navigator.vibrate && window.matchMedia && window.matchMedia("(pointer: coarse)").matches) {
+        try { navigator.vibrate(8); } catch (_e) { }
+      }
+    }
+    s.readingUp = false;
     renderMentorPanel({ scroll: true });
+    if (fromRect) landMentorMessage(fromRect);
     var orb = s.orb;
     var stages = mentorStages(text, Boolean((s.conversation && s.conversation.attempt) || s.linkAttemptId));
     if (introRect && !MentorOrb.reduced() && typeof orb.el.animate === "function") {
@@ -9880,7 +10454,10 @@
         await orb.finish();
       }
       if (mentorState !== s) return;
-      if (result && result.assistantMessage) s.revealId = result.assistantMessage.id;
+      if (result && result.assistantMessage) {
+        s.revealId = result.assistantMessage.id;
+        s.followupsFresh = true;
+      }
       if (result && result.usage) s.usage = result.usage;
       if (s.conversationId === conversationId) {
         mentorReplaceMessage(localId, result.userMessage);
@@ -9939,7 +10516,10 @@
           s.orb = null;
         }
         s.sending = null;
-        renderMentorPanel({ scroll: true });
+        // Reading earlier messages while waiting? Don't pull them down: offer the pill instead.
+        var stayPut = Boolean(s.readingUp && s.revealId);
+        renderMentorPanel({ scroll: !stayPut, keep: stayPut });
+        if (stayPut) showMentorNewPill(true);
         if (s.open && !s.sheet) focusMentorComposer();
       }
     }
@@ -9948,7 +10528,11 @@
   function buildMentorMessageHtml(message) {
     var s = mentorState;
     if (message.role === "assistant") {
-      return '<li class="mentor-msg is-assistant"><div class="mentor-bubble rich-mentor" data-mentor-msg-id="' + escapeAttribute(String(message.id || "")) + '">' + renderMentorMarkdown(message.content) + '</div></li>';
+      return '<li class="mentor-msg is-assistant"><div class="mentor-bubble rich-mentor" data-mentor-msg-id="' + escapeAttribute(String(message.id || "")) + '">' + renderMentorMarkdown(message.content) + '</div>' +
+        '<div class="mentor-msg-actions">' +
+        '<button type="button" class="mentor-msg-action" data-mentor-copy aria-label="Copy this reply">' + MENTOR_ICONS.copy + '<span>Copy</span></button>' +
+        '<button type="button" class="mentor-msg-action" data-mentor-quote aria-label="Ask about this reply">' + MENTOR_ICONS.quote + '<span>Ask about this</span></button>' +
+        '</div></li>';
     }
     var failed = message.status === "failed";
     var fresh = failed && s.sendError && s.sendError.clientMessageId === message.clientMessageId ? s.sendError : null;
@@ -9997,8 +10581,8 @@
         '<h3>Hi ' + escapeHtml(firstName(user && user.name)) + ', what should we look at?</h3>' +
         '<p>I read your AceIIIT mock results to explain where marks go and what to practise next. I can help with doubts too.</p>' +
         '<ul class="mentor-suggestions" aria-label="Suggested questions">' +
-        MENTOR_SUGGESTIONS.map(function (text) {
-          return '<li><button type="button" class="mentor-suggestion" data-mentor-suggest="' + escapeAttribute(text) + '">' + escapeHtml(text) + '</button></li>';
+        MENTOR_SUGGESTIONS.map(function (text, i) {
+          return '<li style="--i:' + i + '"><button type="button" class="mentor-suggestion" data-mentor-suggest="' + escapeAttribute(text) + '">' + escapeHtml(text) + '</button></li>';
         }).join("") +
         '</ul>' +
         '<p class="mentor-intro-note">Each answer uses one reply from your monthly allowance, however long it is. Replies that fail aren\'t counted.</p>' +
@@ -10008,7 +10592,21 @@
       '<ol class="mentor-log" aria-label="Conversation">' +
       s.messages.map(buildMentorMessageHtml).join("") +
       (s.sending ? '<li class="mentor-msg is-assistant is-thinking" data-mentor-orb-slot="thinking"></li>' : '') +
-      '</ol>';
+      '</ol>' +
+      buildMentorFollowupsHtml();
+  }
+
+  function buildMentorFollowupsHtml() {
+    var s = mentorState;
+    var last = s.messages[s.messages.length - 1];
+    if (s.sending || !last || last.role !== "assistant" || !mentorCanType()) return "";
+    var fresh = s.followupsFresh;
+    s.followupsFresh = false;
+    return '<ul class="mentor-followups' + (fresh ? ' is-fresh' : '') + '" aria-label="Follow-up questions">' +
+      MENTOR_FOLLOWUPS.map(function (text, i) {
+        return '<li style="--i:' + i + '"><button type="button" class="mentor-followup" data-mentor-suggest="' + escapeAttribute(text) + '">' + escapeHtml(text) + '</button></li>';
+      }).join("") +
+      '</ul>';
   }
 
   function buildMentorHistoryHtml() {
@@ -10090,7 +10688,10 @@
       send.disabled = blocked;
       send.setAttribute("aria-label", s.sending ? "Sending… wait for the reply" : "Send message");
     }
-    if (usageText) usageText.textContent = mentorUsageLine(s.usage);
+    if (usageText) renderMentorUsage(usageText, s.usage);
+    var panelEl = mentorPart(".mentor-panel");
+    if (panelEl) panelEl.classList.toggle("is-thinking", Boolean(s.sending));
+    if (composer && input) composer.classList.toggle("has-text", Boolean(input.value.trim()));
     if (input && input.value !== s.draft && document.activeElement !== input) input.value = s.draft;
     updateMentorCount();
     if (hadFocus && composer && composer.hidden) {
@@ -10123,6 +10724,7 @@
     if (historyButton) historyButton.setAttribute("aria-pressed", s.view === "history" ? "true" : "false");
     if (body) {
       var nearBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 48;
+      var keepTop = body.scrollTop;
       body.innerHTML = s.view === "history" ? buildMentorHistoryHtml() : buildMentorChatHtml();
       if (s.view === "chat") {
         mountMentorOrbs(body);
@@ -10134,6 +10736,8 @@
         }
         if (!s.messages.length && !s.sending) {
           body.scrollTop = 0; // the greeting reads from the top
+        } else if (options.keep) {
+          body.scrollTop = keepTop;
         } else if (options.scroll || nearBottom) {
           body.scrollTop = body.scrollHeight;
           window.requestAnimationFrame(function () { body.scrollTop = body.scrollHeight; });
@@ -10217,6 +10821,16 @@
         closeMentor();
       }
     });
+    var body = root.querySelector("[data-mentor-body]");
+    body.addEventListener("scroll", function () {
+      var near = body.scrollHeight - body.scrollTop - body.clientHeight < 48;
+      mentorState.readingUp = !near;
+      if (near) showMentorNewPill(false);
+    }, { passive: true });
+    // A click or key finishes the word-by-word reveal at once.
+    ["pointerdown", "keydown"].forEach(function (type) {
+      panel.addEventListener(type, finishMentorReveal, true);
+    });
     composer.addEventListener("submit", function (event) {
       event.preventDefault();
       if (!input.value.trim()) {
@@ -10240,6 +10854,7 @@
       }
       sizeMentorInput(input);
       updateMentorCount();
+      composer.classList.toggle("has-text", Boolean(input.value.trim()));
     });
     input.addEventListener("keydown", function (event) {
       // Enter sends on keyboards with a pointer; on touch screens Enter adds a line and the
@@ -10262,7 +10877,23 @@
       var deleteId = target.closest("[data-mentor-delete]");
       var s = mentorState;
       if (suggest) {
-        sendMentorMessage(suggest.getAttribute("data-mentor-suggest"));
+        sendMentorMessage(suggest.getAttribute("data-mentor-suggest"), null, suggest);
+        return;
+      }
+      var copy = target.closest("[data-mentor-copy]");
+      if (copy) {
+        copyMentorReply(copy);
+        return;
+      }
+      var quote = target.closest("[data-mentor-quote]");
+      if (quote) {
+        quoteMentorReply(quote);
+        return;
+      }
+      if (target.closest("[data-mentor-newpill]")) {
+        var newest = mentorPart(".mentor-log .mentor-msg.is-assistant:last-of-type");
+        if (newest) newest.scrollIntoView({ block: "start", behavior: MentorOrb.reduced() ? "auto" : "smooth" });
+        showMentorNewPill(false);
         return;
       }
       if (retry) {
@@ -11640,25 +12271,502 @@
       '</div>';
   }
 
-  function validateTestForPublish(test, questions) {
+  // ---- Paper Health Check (Studio → Review & Validate) ----------------------------------------
+  var PAPER_LETTERS = ["A", "B", "C", "D", "E", "F"];
+  var PAPER_TARGET = { SUPR: 40, REAP: 50 };
+  // Same delimiters the import checks: $$…$$, \[…\], \(…\), environments, $…$.
+  // (An escaped \$ is swapped for a placeholder first: no regex lookbehind, for older Safari.)
+  var PAPER_MATH_RE = /\$\$([\s\S]+?)\$\$|\\\[([\s\S]+?)\\\]|\\\(([\s\S]+?)\\\)|(\\begin\{(equation|align|alignat|gather|CD)\*?\}[\s\S]+?\\end\{\5\*?\})|\$([^$]+?)\$/g;
+
+  /** KaTeX-checks every formula in a text; null when KaTeX hasn't loaded yet. */
+  function formulaProblems(text) {
+    if (!window.katex || typeof window.katex.renderToString !== "function") return null;
+    var src = String(text || "").replace(/\\\$/g, "\uE001");
+    var rest = src;
+    var problems = [];
+    var m;
+    PAPER_MATH_RE.lastIndex = 0;
+    while ((m = PAPER_MATH_RE.exec(src))) {
+      var display = m[1] !== undefined || m[2] !== undefined || m[4] !== undefined;
+      try {
+        window.katex.renderToString((m[1] || m[2] || m[3] || m[4] || m[6] || "").replace(/\uE001/g, "\\$"), { throwOnError: true, displayMode: display, strict: "ignore" });
+      } catch (err) {
+        problems.push("“" + truncateText(m[0], 36) + "”: " + String((err && err.message) || err).replace(/^KaTeX parse error:\s*/, ""));
+      }
+      rest = rest.replace(m[0], "");
+    }
+    if ((rest.match(/\$/g) || []).length) problems.push("a $ without its closing $");
+    return problems;
+  }
+
+  function prefersReducedMotion() {
+    return Boolean(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+  }
+
+  function truncateText(text, max) {
+    var s = String(text || "").replace(/\s+/g, " ").trim();
+    return s.length > max ? s.slice(0, max - 1) + "…" : s;
+  }
+
+  function paperQuestionKey(q) {
+    return [q.section, String(q.prompt || "").replace(/\s+/g, " ").trim().toLowerCase(), (q.options || []).map(function (o) { return String(o).trim().toLowerCase(); }).join("|")].join("::");
+  }
+
+  /**
+   * Everything the Review tab shows about a paper: blocking errors, warnings, what passed, a
+   * 0–100 health score and the paper's blueprint. `imageFailures` is the set of image links that
+   * failed to load (checked in the background).
+   */
+  function reviewPaper(test, allQuestions, allTests, attempts, imageFailures) {
     var errors = [];
     var warnings = [];
-    if (!test) return { errors: [{ msg: "No test selected." }], warnings: [] };
-    if (!test.title || !test.title.trim()) errors.push({ type: "title", msg: "Test title is required." });
-    var qIds = Array.isArray(test.questionIds) ? test.questionIds : [];
-    var testQuestions = questions.filter(function (q) { return qIds.indexOf(q.id) !== -1; });
-    if (testQuestions.length === 0) {
-      errors.push({ type: "questions", msg: "Test currently has 0 attached questions." });
+    var passed = [];
+    var empty = { score: 0, errors: [{ id: "no-test", title: "No test selected.", questionIds: [] }], warnings: [], passed: [], blueprint: null, order: [], numbers: {} };
+    if (!test) return empty;
+    var byId = {};
+    (allQuestions || []).forEach(function (q) { byId[q.id] = q; });
+    var ids = Array.isArray(test.questionIds) ? test.questionIds.map(String) : [];
+    var missingIds = ids.filter(function (id) { return !byId[id]; });
+    var order = sortQuestionsForSelectedTest(test, ids.filter(function (id) { return byId[id]; }).map(function (id) { return byId[id]; }));
+    var numbers = {};
+    order.forEach(function (q, i) { numbers[q.id] = i + 1; });
+    var mathReady = Boolean(window.katex && window.katex.renderToString);
+
+    function add(list, id, title, detail, qs, weight) {
+      list.push({ id: id, title: title, detail: detail || "", questionIds: (qs || []).map(function (q) { return q.id || q; }), weight: weight || 0 });
     }
-    testQuestions.forEach(function (q, idx) {
-      var num = idx + 1;
-      if (!q.prompt || !q.prompt.trim()) errors.push({ type: "question", questionId: q.id, msg: "Question #" + num + " (ID: " + q.id + ") has empty prompt text." });
-      if (!Array.isArray(q.options) || q.options.length < 2) errors.push({ type: "question", questionId: q.id, msg: "Question #" + num + " has fewer than 2 options." });
-      if (q.correctOption === undefined || q.correctOption === null || Number(q.correctOption) < 0) errors.push({ type: "question", questionId: q.id, msg: "Question #" + num + " is missing correct answer." });
-      if (!q.explanation || !q.explanation.trim()) warnings.push({ type: "question", questionId: q.id, msg: "Question #" + num + " is missing solution / explanation." });
-      if (!q.topic || !q.topic.trim()) warnings.push({ type: "question", questionId: q.id, msg: "Question #" + num + " is missing topic tag." });
+    function check(id, passedTitle, failing, list, title, detail, weight) {
+      if (failing.length) add(list, id, title.replace("{n}", failing.length), detail, failing, weight);
+      else passed.push({ id: id, title: passedTitle });
+    }
+
+    // Blocking
+    if (!String(test.title || "").trim()) add(errors, "title", "The test has no title.", "Add one in Setup.");
+    else passed.push({ id: "title", title: "Title set" });
+    if (!order.length) add(errors, "empty", "No questions attached yet.", "Add questions in Questions Studio or import a sheet.");
+    if (missingIds.length) add(errors, "missing", missingIds.length + " attached question" + (missingIds.length === 1 ? " no longer exists" : "s no longer exist"), "They were deleted from the bank. Remove them from the paper in Questions Studio.");
+    check("prompt", "Every question has text", order.filter(function (q) { return !String(q.prompt || "").trim(); }), errors, "{n} question(s) have no text");
+    check("options", "Every question has at least 2 filled options", order.filter(function (q) {
+      var opts = Array.isArray(q.options) ? q.options : [];
+      return opts.length < 2 || opts.some(function (o) { return !String(o || "").trim(); });
+    }), errors, "{n} question(s) have fewer than 2 options or an empty option");
+    check("answer", "Every answer key points at a real option", order.filter(function (q) {
+      var c = Number(q.correctOption);
+      return q.correctOption === null || q.correctOption === undefined || !Number.isInteger(c) || c < 0 || c >= (q.options || []).length;
+    }), errors, "{n} question(s) have a missing or invalid answer key");
+    check("same-options", "No question repeats an option", order.filter(function (q) {
+      var seen = {};
+      return (q.options || []).some(function (o) { var k = String(o || "").trim().toLowerCase(); if (!k) return false; if (seen[k]) return true; seen[k] = true; return false; });
+    }), errors, "{n} question(s) have two identical options");
+    if (mathReady) {
+      var broken = [];
+      var brokenDetail = "";
+      order.forEach(function (q) {
+        var parts = [q.prompt, q.passage, q.explanation].concat(q.options || []);
+        for (var i = 0; i < parts.length; i += 1) {
+          var p = formulaProblems(parts[i]);
+          if (p && p.length) { broken.push(q); if (!brokenDetail) brokenDetail = "Q" + numbers[q.id] + ": " + p[0]; return; }
+        }
+      });
+      check("latex", "Every formula renders", broken, errors, "{n} question(s) have a formula that won't render", brokenDetail);
+    } else {
+      passed.push({ id: "latex", title: "Formula check waits for the maths engine to load" });
+    }
+    var counts = { SUPR: 0, REAP: 0 };
+    order.forEach(function (q) { counts[q.section === "REAP" ? "REAP" : "SUPR"] += 1; });
+    var durations = test.sectionDurations || {};
+    var zeroTime = ["SUPR", "REAP"].filter(function (s) { return counts[s] && !Number(durations[s]); });
+    if (zeroTime.length) add(errors, "time", zeroTime.join(" and ") + " has questions but 0 minutes", "Set the section time in Setup.");
+    else passed.push({ id: "time", title: "Each section with questions has time" });
+    if (test.status === "scheduled" && test.publishAt && new Date(test.publishAt).getTime() <= Date.now()) {
+      add(errors, "schedule", "The scheduled time has already passed", "Publish now or pick a new time.");
+    }
+
+    // Warnings
+    if (order.length && (counts.SUPR !== PAPER_TARGET.SUPR || counts.REAP !== PAPER_TARGET.REAP)) {
+      add(warnings, "full", "Not a full UGEE paper (" + counts.SUPR + "/40 SUPR, " + counts.REAP + "/50 REAP)", "Fine for a sectional test; a full mock has 40 + 50.", [], 10);
+    } else if (order.length) passed.push({ id: "full", title: "Full UGEE paper: 40 SUPR + 50 REAP" });
+    var noExplanation = order.filter(function (q) { return !String(q.explanation || "").trim(); });
+    check("explanation", "Every question has a solution", noExplanation, warnings, "{n} question(s) have no solution", "Students see solutions in the review after the test.", Math.min(12, 2 + Math.round((noExplanation.length / Math.max(1, order.length)) * 10)));
+    check("topic", "Every question has a topic", order.filter(function (q) { return !String(q.topic || "").trim(); }), warnings, "{n} question(s) have no topic", "Topics drive practice papers and the topic analysis.", 8);
+    var seenKeys = {};
+    var dupes = [];
+    order.forEach(function (q) { var k = paperQuestionKey(q); if (seenKeys[k]) dupes.push(q); else seenKeys[k] = true; });
+    check("duplicates", "No question appears twice", dupes, warnings, "{n} question(s) appear twice in this paper", "", 8);
+    var attemptedTests = {};
+    (attempts || []).forEach(function (a) { if (a && a.testId && !a.invalidated) attemptedTests[String(a.testId)] = (attemptedTests[String(a.testId)] || 0) + 1; });
+    var otherLive = {};
+    var otherSeen = {};
+    (allTests || []).forEach(function (t) {
+      if (!t || t.id === test.id || t.isPractice) return;
+      (t.questionIds || []).forEach(function (id) {
+        if (t.status === "live" || t.status === "scheduled") otherLive[String(id)] = t.title;
+        if (attemptedTests[t.id]) otherSeen[String(id)] = t.title;
+      });
     });
-    return { errors: errors, warnings: warnings };
+    var reused = order.filter(function (q) { return otherLive[q.id]; });
+    check("reused", "No question is in another live test", reused, warnings, "{n} question(s) are also in another live test", reused.length ? "e.g. Q" + numbers[reused[0].id] + " is in “" + otherLive[reused[0].id] + "”." : "", 6);
+    var seen = order.filter(function (q) { return otherSeen[q.id]; });
+    check("seen", "No question has been seen by students in another test", seen, warnings, "{n} question(s) students have already seen", seen.length ? "They were in “" + otherSeen[seen[0].id] + "”, and its solutions are open in review." : "", 8);
+    check("marks", "Marks follow the section defaults", order.filter(function (q) {
+      var d = getSectionDefaultMarking(q.section);
+      return (q.marks !== undefined && q.marks !== null && Number(q.marks) !== d.marks) || (q.negativeMarks !== undefined && q.negativeMarks !== null && Number(q.negativeMarks) !== d.negativeMarks);
+    }), warnings, "{n} question(s) use non-default marks", "SUPR is +1/−0.25 and REAP +2/−0.5 unless you changed it on purpose.", 4);
+
+    // Answer key: skew and long runs of the same letter, per section.
+    var answerKey = { SUPR: [0, 0, 0, 0, 0, 0], REAP: [0, 0, 0, 0, 0, 0] };
+    var longestRun = { SUPR: { len: 0, letter: "" }, REAP: { len: 0, letter: "" } };
+    ["SUPR", "REAP"].forEach(function (s) {
+      var run = 0;
+      var prev = -1;
+      order.filter(function (q) { return (q.section === "REAP" ? "REAP" : "SUPR") === s; }).forEach(function (q) {
+        var c = Number(q.correctOption);
+        if (!Number.isInteger(c) || c < 0 || c > 5) { prev = -1; run = 0; return; }
+        answerKey[s][c] += 1;
+        run = c === prev ? run + 1 : 1;
+        prev = c;
+        if (run > longestRun[s].len) longestRun[s] = { len: run, letter: PAPER_LETTERS[c] };
+      });
+    });
+    var skewNotes = [];
+    ["SUPR", "REAP"].forEach(function (s) {
+      var total = answerKey[s].reduce(function (a, b) { return a + b; }, 0);
+      var top = Math.max.apply(null, answerKey[s]);
+      if (total >= 10 && top / total > 0.4) skewNotes.push(s + ": " + PAPER_LETTERS[answerKey[s].indexOf(top)] + " is the answer " + Math.round((top / total) * 100) + "% of the time");
+      if (longestRun[s].len >= 5) skewNotes.push(s + ": " + longestRun[s].len + " " + longestRun[s].letter + "s in a row");
+    });
+    if (skewNotes.length) add(warnings, "answer-key", "The answer key has a pattern students can guess", skewNotes.join(" · ") + ".", [], 6);
+    else if (order.length) passed.push({ id: "answer-key", title: "Answers are spread out" });
+    check("http-images", "Every image link is https", order.filter(function (q) { return (q.imageUrls || []).some(function (u) { return /^http:\/\//i.test(String(u)); }); }), warnings, "{n} question(s) use an http:// image", "Browsers may block it on the https site.", 4);
+    var failedImages = imageFailures || {};
+    var brokenImages = order.filter(function (q) { return (q.imageUrls || []).some(function (u) { return failedImages[u]; }); });
+    var hasImages = order.some(function (q) { return (q.imageUrls || []).length; });
+    if (hasImages) check("images", "Every image loads", brokenImages, warnings, "{n} question(s) have an image that doesn't load", "", 8);
+
+    // Score: 100 minus warning weights; any blocking error caps it at 49.
+    var score = 100 - warnings.reduce(function (sum, w) { return sum + (w.weight || 0); }, 0);
+    if (errors.length) score = Math.min(49, score - errors.length * 12);
+    score = Math.max(0, Math.min(100, Math.round(score)));
+
+    // Blueprint
+    var difficulty = { SUPR: { easy: 0, medium: 0, hard: 0 }, REAP: { easy: 0, medium: 0, hard: 0 } };
+    var topics = {};
+    var maxMarks = { SUPR: 0, REAP: 0 };
+    order.forEach(function (q) {
+      var s = q.section === "REAP" ? "REAP" : "SUPR";
+      var d = ["easy", "medium", "hard"].indexOf(q.difficulty) !== -1 ? q.difficulty : "medium";
+      difficulty[s][d] += 1;
+      var name = String(q.topic || "").trim() || "(no topic)";
+      topics[name] = topics[name] || { SUPR: 0, REAP: 0 };
+      topics[name][s] += 1;
+      var marks = q.marks !== undefined && q.marks !== null ? Number(q.marks) : getSectionDefaultMarking(s).marks;
+      maxMarks[s] += Number.isFinite(marks) ? marks : 0;
+    });
+    return {
+      score: score,
+      errors: errors,
+      warnings: warnings,
+      passed: passed,
+      order: order,
+      numbers: numbers,
+      blueprint: {
+        counts: counts,
+        difficulty: difficulty,
+        answerKey: answerKey,
+        longestRun: longestRun,
+        maxMarks: maxMarks,
+        durations: { SUPR: Number(durations.SUPR || 0), REAP: Number(durations.REAP || 0) },
+        topics: Object.keys(topics).map(function (name) { return { name: name, SUPR: topics[name].SUPR, REAP: topics[name].REAP, total: topics[name].SUPR + topics[name].REAP }; })
+          .sort(function (a, b) { return b.total - a.total || a.name.localeCompare(b.name); }),
+      },
+    };
+  }
+
+  /**
+   * A donut chart (SVG). segments: [{label, value, tone}] (tone = CSS class suffix). Every
+   * non-zero slice keeps a visible minimum; slices are separated by a 2px surface gap. The
+   * legend next to it carries the numbers, so the chart itself is aria-hidden behind a label.
+   */
+  function buildDonut(segments, options) {
+    options = options || {};
+    var thickness = options.thickness || 12;
+    var r = 50 - thickness / 2;
+    var c = 2 * Math.PI * r;
+    var total = segments.reduce(function (sum, s) { return sum + Math.max(0, Number(s.value) || 0); }, 0);
+    var live = segments.filter(function (s) { return Number(s.value) > 0; });
+    var minLen = c * 0.025;
+    var raw = live.map(function (s) { return total ? (Number(s.value) / total) * c : 0; });
+    var boosted = raw.map(function (len) { return Math.max(len, minLen); });
+    var extra = boosted.reduce(function (a, b) { return a + b; }, 0) - c;
+    if (extra > 0) {
+      var bigTotal = boosted.reduce(function (sum, len) { return sum + (len > minLen ? len : 0); }, 0) || 1;
+      boosted = boosted.map(function (len) { return len > minLen ? len - (len / bigTotal) * extra : len; });
+    }
+    var gap = live.length > 1 ? 2 : 0;
+    var offset = 0;
+    var arcs = live.map(function (s, i) {
+      var len = Math.max(0.5, boosted[i] - gap);
+      var pct = total ? Math.round((Number(s.value) / total) * 1000) / 10 : 0;
+      var arc = '<circle class="donut-seg is-' + escapeAttribute(s.tone) + '" cx="50" cy="50" r="' + r + '" stroke-width="' + thickness + '"' +
+        ' stroke-dasharray="' + len.toFixed(2) + ' ' + (c - len).toFixed(2) + '" stroke-dashoffset="' + (-offset).toFixed(2) + '"' +
+        ' style="--len:' + len.toFixed(2) + ';--rest:' + (c - len).toFixed(2) + ';--i:' + i + '"' +
+        ' data-donut-tip="' + escapeAttribute((options.tipPrefix ? options.tipPrefix + " · " : "") + s.value + " " + s.label + " (" + pct + "%)") + '"></circle>';
+      offset += boosted[i];
+      return arc;
+    }).join("");
+    return '<div class="donut' + (options.className ? " " + options.className : "") + '" role="img" aria-label="' + escapeAttribute(options.ariaLabel || "") + '">' +
+      '<svg viewBox="0 0 100 100" aria-hidden="true" focusable="false">' +
+      '<circle class="donut-track" cx="50" cy="50" r="' + r + '" stroke-width="' + thickness + '"></circle>' +
+      '<g transform="rotate(-90 50 50)">' + arcs + '</g></svg>' +
+      (options.centerValue !== undefined ? '<div class="donut-center" aria-hidden="true"><strong>' + escapeHtml(String(options.centerValue)) + '</strong>' + (options.centerLabel ? '<span>' + escapeHtml(options.centerLabel) + '</span>' : '') + '</div>' : '') +
+      '</div>';
+  }
+
+  // One floating tooltip for every donut slice (hover on fine pointers).
+  (function bindDonutTips() {
+    var tip = null;
+    function hide() { if (tip) tip.hidden = true; }
+    document.addEventListener("pointerover", function (event) {
+      var seg = event.target && event.target.closest ? event.target.closest("[data-donut-tip]") : null;
+      if (!seg || event.pointerType === "touch") return hide();
+      if (!tip) {
+        tip = document.createElement("div");
+        tip.className = "donut-tooltip";
+        tip.setAttribute("aria-hidden", "true");
+        document.body.appendChild(tip);
+      }
+      tip.textContent = seg.getAttribute("data-donut-tip");
+      tip.hidden = false;
+    });
+    document.addEventListener("pointermove", function (event) {
+      if (!tip || tip.hidden) return;
+      tip.style.transform = "translate(" + Math.round(event.clientX + 12) + "px, " + Math.round(event.clientY - 32) + "px)";
+    });
+    document.addEventListener("pointerout", function (event) {
+      if (event.target && event.target.closest && event.target.closest("[data-donut-tip]")) hide();
+    });
+    window.addEventListener("scroll", hide, { passive: true });
+  })();
+
+  function downloadTextFile(name, text, type) {
+    var blob = new Blob(["﻿" + text], { type: type || "text/csv;charset=utf-8" });
+    var url = URL.createObjectURL(blob);
+    var link = document.createElement("a");
+    link.href = url;
+    link.download = name;
+    link.setAttribute("data-download-name", name);
+    document.body.appendChild(link);
+    link.click();
+    window.setTimeout(function () { URL.revokeObjectURL(url); link.remove(); }, 1000);
+  }
+
+  function csvRow(cells) {
+    return cells.map(function (v) {
+      var t = String(v === null || v === undefined ? "" : v);
+      return /[",\r\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t;
+    }).join(",");
+  }
+
+  function paperFileName(test, suffix) {
+    return (String(test && test.title || "paper").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "paper") + "-" + suffix + ".csv";
+  }
+
+  function answerKeyCsv(review) {
+    return [csvRow(["question", "section", "topic", "answer", "marks", "negative_marks"])].concat(review.order.map(function (q) {
+      var d = getSectionDefaultMarking(q.section);
+      return csvRow([review.numbers[q.id], q.section, q.topic, PAPER_LETTERS[Number(q.correctOption)] || "", q.marks !== undefined && q.marks !== null ? q.marks : d.marks, q.negativeMarks !== undefined && q.negativeMarks !== null ? q.negativeMarks : d.negativeMarks]);
+    })).join("\r\n") + "\r\n";
+  }
+
+  function buildPaperReviewHtml(test, review) {
+    if (!test) {
+      return '<div class="admin-card"><p class="section-label">4. Review &amp; Validate</p><p class="helper-text">Pick or create a test first.</p></div>';
+    }
+    var bp = review.blueprint;
+    var errorCount = review.errors.length;
+    var warnCount = review.warnings.length;
+    var tone = errorCount ? "bad" : (review.score >= 80 ? "good" : "warn");
+    var verdict = errorCount
+      ? "Fix " + errorCount + (errorCount === 1 ? " blocking issue" : " blocking issues") + " first"
+      : (warnCount ? "Ready, with " + warnCount + (warnCount === 1 ? " warning" : " warnings") : "Ready to publish");
+    var totalQuestions = bp.counts.SUPR + bp.counts.REAP;
+    var totalMarks = bp.maxMarks.SUPR + bp.maxMarks.REAP;
+    var fmt = function (n) { return String(Math.round(n * 100) / 100); };
+    var statusLabel = test.status === "scheduled" && testOpensAt(test) ? "Scheduled · " + formatOpensAt(testOpensAt(test)) : (test.status === "live" ? "Live" : "Draft");
+
+    var qChips = function (item) {
+      if (!item.questionIds.length) return "";
+      var shown = item.questionIds.slice(0, 14);
+      return '<div class="pr-qs">' + shown.map(function (id) {
+        var n = review.numbers[id];
+        return n ? '<button type="button" class="pr-q js-pr-fix" data-id="' + escapeAttribute(id) + '" aria-label="Open question ' + n + ' in the editor">Q' + n + '</button>' : "";
+      }).join("") + (item.questionIds.length > shown.length ? '<span class="pr-more">+' + (item.questionIds.length - shown.length) + ' more</span>' : '') + '</div>';
+    };
+    var itemHtml = function (item, kind) {
+      var firstId = item.questionIds.filter(function (id) { return review.numbers[id]; })[0];
+      return '<li class="pr-item is-' + kind + '">' +
+        '<span class="pr-icon" aria-hidden="true">' + (kind === "error" ? "✕" : kind === "warning" ? "!" : "✓") + '</span>' +
+        '<div class="pr-item-body"><strong>' + escapeHtml(item.title) + '</strong>' +
+        (item.detail ? '<p>' + escapeHtml(item.detail) + '</p>' : '') + (kind === "passed" ? "" : qChips(item)) + '</div>' +
+        (firstId ? '<button type="button" class="button button-secondary button-compact js-pr-fix" data-id="' + escapeAttribute(firstId) + '">Fix Q' + review.numbers[firstId] + '</button>' : '') +
+        '</li>';
+    };
+
+    var sectionCard = ["SUPR", "REAP"].map(function (s) {
+      var n = bp.counts[s];
+      var pct = Math.min(100, Math.round((n / PAPER_TARGET[s]) * 100));
+      return '<div class="pr-section">' +
+        '<div class="pr-section-top"><strong>' + s + '</strong><span class="pr-num">' + n + ' / ' + PAPER_TARGET[s] + '</span></div>' +
+        '<div class="pr-meter" role="img" aria-label="' + s + ': ' + n + ' of ' + PAPER_TARGET[s] + ' questions"><span style="transform:scaleX(' + (pct / 100) + ')"' + (n === PAPER_TARGET[s] ? ' class="is-full"' : '') + '></span></div>' +
+        '<p class="pr-sub">' + fmt(bp.maxMarks[s]) + ' marks · ' + bp.durations[s] + ' min</p>' +
+        '</div>';
+    }).join("");
+
+    var difficultyCard = ["SUPR", "REAP"].map(function (s) {
+      var d = bp.difficulty[s];
+      var total = d.easy + d.medium + d.hard;
+      var seg = function (key) {
+        var share = total ? (d[key] / total) * 100 : 0;
+        return share ? '<span class="pr-diff-seg is-' + key + '" style="flex-grow:' + share.toFixed(2) + '" title="' + d[key] + ' ' + key + '"></span>' : "";
+      };
+      return '<div class="pr-diff-row">' +
+        '<div class="pr-section-top"><strong>' + s + '</strong><span class="pr-num">' + d.easy + ' · ' + d.medium + ' · ' + d.hard + '</span></div>' +
+        (total ? '<div class="pr-diff" role="img" aria-label="' + s + ': ' + d.easy + ' easy, ' + d.medium + ' medium, ' + d.hard + ' hard">' + seg("easy") + seg("medium") + seg("hard") + '</div>' : '<p class="pr-sub">No questions yet.</p>') +
+        '</div>';
+    }).join("") +
+      '<ul class="pr-legend" aria-hidden="true"><li><i class="is-easy"></i>Easy</li><li><i class="is-medium"></i>Medium</li><li><i class="is-hard"></i>Hard</li></ul>';
+
+    var answerCard = ["SUPR", "REAP"].map(function (s) {
+      var counts = bp.answerKey[s];
+      var letters = counts[4] || counts[5] ? 6 : 4;
+      var max = Math.max.apply(null, counts.slice(0, letters).concat([1]));
+      var run = bp.longestRun[s];
+      return '<div class="pr-key">' +
+        '<div class="pr-section-top"><strong>' + s + '</strong><span class="pr-sub">' + (run.len > 1 ? "longest run: " + run.len + " × " + run.letter : "no repeats") + '</span></div>' +
+        '<div class="pr-key-bars" role="img" aria-label="' + escapeAttribute(s + " answers: " + PAPER_LETTERS.slice(0, letters).map(function (l, i) { return l + " " + counts[i]; }).join(", ")) + '">' +
+        PAPER_LETTERS.slice(0, letters).map(function (l, i) {
+          return '<div class="pr-key-col"><span class="pr-key-n">' + counts[i] + '</span><span class="pr-key-bar"><i style="transform:scaleY(' + (counts[i] / max).toFixed(3) + ')"></i></span><span class="pr-key-l">' + l + '</span></div>';
+        }).join("") +
+        '</div></div>';
+    }).join("");
+
+    // The few issues worth fixing first, right under the score (blocking before warnings).
+    var nextItems = review.errors.map(function (i) { return { item: i, kind: "error" }; })
+      .concat(review.warnings.slice().sort(function (a, b) { return (b.weight || 0) - (a.weight || 0); }).map(function (i) { return { item: i, kind: "warning" }; }))
+      .slice(0, 3);
+    var nextFixesHtml = nextItems.length
+      ? '<div class="pr-next"><p class="pr-next-title">Fix next</p><ol class="pr-next-list">' + nextItems.map(function (n) {
+          var firstId = n.item.questionIds.filter(function (id) { return review.numbers[id]; })[0];
+          return '<li class="is-' + n.kind + '"><span class="pr-next-dot" aria-hidden="true"></span><span class="pr-next-text"><span class="sr-only">' + (n.kind === "error" ? "Blocking: " : "Warning: ") + '</span>' + escapeHtml(n.item.title) + '</span>' +
+            (firstId ? '<button type="button" class="pr-link js-pr-fix" data-id="' + escapeAttribute(firstId) + '">Open Q' + review.numbers[firstId] + '</button>' : '') + '</li>';
+        }).join("") + '</ol></div>'
+      : '<div class="pr-next is-clear"><p class="pr-next-title">All ' + review.passed.length + ' checks passed</p><p class="pr-sub">Nothing to fix. Preview it as a student, then publish or schedule.</p></div>';
+
+    var topicsHtml = bp.topics.length
+      ? '<div class="pr-topics-wrap"><table class="pr-topics"><thead><tr><th scope="col">Topic</th><th scope="col">SUPR</th><th scope="col">REAP</th></tr></thead><tbody>' +
+        bp.topics.map(function (t) {
+          return '<tr><th scope="row">' + escapeHtml(t.name) + '</th><td>' + (t.SUPR || "–") + '</td><td>' + (t.REAP || "–") + '</td></tr>';
+        }).join("") + '</tbody></table></div>'
+      : '<p class="helper-text">Topics appear once questions are attached.</p>';
+
+    return '<div class="paper-review" data-paper-review>' +
+      '<div class="pr-top">' +
+      '<section class="admin-card pr-health is-' + tone + '" aria-labelledby="pr-health-title">' +
+      '<p class="section-label" id="pr-health-title">4. Paper health</p>' +
+      '<div class="pr-health-body">' +
+      buildDonut([{ label: "health", value: review.score, tone: "score" }, { label: "to go", value: 100 - review.score, tone: "rest" }], {
+        className: "pr-ring", thickness: 10, centerValue: review.score, centerLabel: "of 100",
+        ariaLabel: "Health score " + review.score + " of 100. " + verdict + ".",
+      }) +
+      '<div class="pr-verdict">' +
+      '<h3>' + escapeHtml(verdict) + '</h3>' +
+      '<p class="pr-title">' + escapeHtml(test.title || "Untitled test") + '</p>' +
+      '<ul class="pr-counts">' +
+      '<li class="is-error"><span aria-hidden="true">✕</span> ' + errorCount + ' blocking</li>' +
+      '<li class="is-warning"><span aria-hidden="true">!</span> ' + warnCount + (warnCount === 1 ? ' warning' : ' warnings') + '</li>' +
+      '<li class="is-passed"><span aria-hidden="true">✓</span> ' + review.passed.length + ' passed</li>' +
+      '</ul></div></div>' +
+      nextFixesHtml +
+      '</section>' +
+      '<section class="admin-card pr-publish" aria-labelledby="pr-publish-title">' +
+      '<p class="section-label" id="pr-publish-title">Publish</p>' +
+      '<dl class="pr-facts">' +
+      '<div><dt>Questions</dt><dd>' + totalQuestions + '</dd></div>' +
+      '<div><dt>Max marks</dt><dd>' + fmt(totalMarks) + '</dd></div>' +
+      '<div><dt>Time</dt><dd>' + (bp.durations.SUPR + bp.durations.REAP) + ' min</dd></div>' +
+      '<div><dt>Access</dt><dd>' + (test.isFree ? "Free" : "Paid") + '</dd></div>' +
+      '</dl>' +
+      '<p class="pr-state"><span class="meta-chip ' + (test.status === "live" ? "is-live" : test.status === "scheduled" ? "is-scheduled" : "is-draft") + '">' + escapeHtml(statusLabel) + '</span>' +
+      (test.status === "live" ? '<span class="pr-sub">Students can start it now.</span>' : '') + '</p>' +
+      '<div class="pr-actions">' +
+      (test.status === "live" ? '' :
+        '<button class="button button-primary" type="button" id="publish-test-btn"' + (errorCount ? ' disabled aria-describedby="pr-publish-why"' : '') + '>Publish now</button>' +
+        '<button class="button button-secondary" type="button" data-pr-schedule-toggle aria-expanded="false" aria-controls="pr-schedule"' + (errorCount ? ' disabled aria-describedby="pr-publish-why"' : '') + '>' + (test.status === "scheduled" ? "Change time…" : "Schedule…") + '</button>') +
+      '<button class="button button-secondary js-pr-preview" type="button">Preview as student</button>' +
+      '</div>' +
+      '<form class="pr-schedule" id="pr-schedule" hidden>' +
+      '<div class="field"><label for="pr-publish-at">Goes live at (your local time)</label><input id="pr-publish-at" type="datetime-local" required></div>' +
+      '<button class="button button-primary button-compact" type="submit">Save schedule</button>' +
+      '</form>' +
+      (errorCount ? '<p class="pr-why" id="pr-publish-why">Publishing unlocks when the blocking issues are fixed.</p>' : '') +
+      '<p class="import-message" role="status" tabindex="-1" data-pr-status></p>' +
+      '<div class="pr-downloads"><span>Download</span>' +
+      '<button type="button" class="pr-link" data-pr-download="key">Answer key (.csv)</button>' +
+      '<button type="button" class="pr-link" data-pr-download="paper">Whole paper (.csv)</button>' +
+      '</div>' +
+      '</section>' +
+      '</div>' +
+      '<div class="pr-grid">' +
+      '<section class="admin-card pr-card" aria-labelledby="pr-sec-title"><p class="section-label" id="pr-sec-title">Sections</p>' + sectionCard + '</section>' +
+      '<section class="admin-card pr-card" aria-labelledby="pr-diff-title"><p class="section-label" id="pr-diff-title">Difficulty mix</p>' + difficultyCard + '</section>' +
+      '<section class="admin-card pr-card" aria-labelledby="pr-key-title"><p class="section-label" id="pr-key-title">Answer key</p>' + answerCard + '</section>' +
+      '</div>' +
+      '<div class="pr-split">' +
+      '<section class="admin-card pr-checks" aria-labelledby="pr-checks-title">' +
+      '<div class="pr-checks-head"><p class="section-label" id="pr-checks-title">Checks</p><button type="button" class="pr-link" data-pr-rerun>Re-run checks</button></div>' +
+      (errorCount ? '<h4 class="pr-group is-error">Blocking (' + errorCount + ')</h4><ul class="pr-list">' + review.errors.map(function (i) { return itemHtml(i, "error"); }).join("") + '</ul>' : '') +
+      (warnCount ? '<h4 class="pr-group is-warning">Warnings (' + warnCount + ')</h4><ul class="pr-list">' + review.warnings.map(function (i) { return itemHtml(i, "warning"); }).join("") + '</ul>' : '') +
+      (!errorCount && !warnCount ? '<p class="pr-clear">Every check passed. This paper is ready.</p>' : '') +
+      '<details class="pr-passed"><summary>Passed (' + review.passed.length + ')</summary><ul class="pr-list">' + review.passed.map(function (i) { return itemHtml({ title: i.title, detail: "", questionIds: [] }, "passed"); }).join("") + '</ul></details>' +
+      '</section>' +
+      '<section class="admin-card pr-card" aria-labelledby="pr-topics-title"><p class="section-label" id="pr-topics-title">Topic coverage (' + bp.topics.length + ')</p>' + topicsHtml + '</section>' +
+      '</div>' +
+      '</div>';
+  }
+
+  // Image links are checked in the background; failures show up as a warning on the next render.
+  function checkPaperImages(review, onFailure) {
+    runtime.paperImageStatus = runtime.paperImageStatus || {};
+    runtime.paperImageFailures = runtime.paperImageFailures || {};
+    (review.order || []).forEach(function (q) {
+      (q.imageUrls || []).forEach(function (url) {
+        if (!url || runtime.paperImageStatus[url]) return;
+        runtime.paperImageStatus[url] = "pending";
+        var img = new Image();
+        img.onload = function () { runtime.paperImageStatus[url] = "ok"; };
+        img.onerror = function () {
+          runtime.paperImageStatus[url] = "fail";
+          runtime.paperImageFailures[url] = true;
+          onFailure();
+        };
+        img.src = url;
+      });
+    });
+  }
+
+  // The import format (Import from Excel/CSV), so an exported paper can be edited and imported.
+  function paperExportCsv(review) {
+    var header = ["section", "topic", "difficulty", "question", "option_a", "option_b", "option_c", "option_d", "option_e", "option_f", "answer", "marks", "negative_marks", "explanation", "passage", "image_urls"];
+    return [csvRow(header)].concat(review.order.map(function (q) {
+      var opts = (q.options || []).slice(0, 6);
+      while (opts.length < 6) opts.push("");
+      return csvRow([q.section, q.topic, q.difficulty || "medium", q.prompt].concat(opts).concat([
+        PAPER_LETTERS[Number(q.correctOption)] || "",
+        q.marks !== undefined && q.marks !== null ? q.marks : "",
+        q.negativeMarks !== undefined && q.negativeMarks !== null ? q.negativeMarks : "",
+        q.explanation || "", q.passage || "", (q.imageUrls || []).join("|"),
+      ]));
+    })).join("\r\n") + "\r\n";
   }
 
   function renderAdmin(user, preferredTestId) {
@@ -11717,7 +12825,8 @@
       runtime.adminCheckedBankQuestionIds = runtime.adminCheckedBankQuestionIds || [];
       runtime.adminCheckedTestQuestionIds = runtime.adminCheckedTestQuestionIds || [];
 
-      var validation = validateTestForPublish(selectedTest, questions);
+      var paperReview = reviewPaper(selectedTest, questions, tests, (adminSnapshot && adminSnapshot.attempts) || [], runtime.paperImageFailures);
+      var validation = { errors: paperReview.errors, warnings: paperReview.warnings };
 
       var activePaperSummaryHtml = selectedTest
         ? (
@@ -12133,36 +13242,7 @@
           bankPagerHtml +
           '</div>';
       } else if (activeTab === "review") {
-        activeTabContent =
-          '<div class="admin-card">' +
-          '<p class="section-label">4. Pre-Publish Review & Validation Engine</p>' +
-          '<div class="active-paper-panel" style="margin-bottom: 20px;">' +
-          '<div class="active-paper-title-row"><strong>' + escapeHtml(selectedTest ? selectedTest.title : "No test selected") + '</strong></div>' +
-          '<p>' + totalAttachedCount + ' / 90 questions attached. (' + selectedSuprCount + ' SUPR / ' + selectedReapCount + ' REAP)</p>' +
-          '</div>' +
-
-          '<h3>Validation Checks</h3>' +
-          (validation.errors.length ? (
-            '<div><h4 style="color:var(--red);">Errors (Blocking Publish)</h4>' +
-            validation.errors.map(function (err) {
-              return '<div class="validation-card is-error"><strong>❌ ' + escapeHtml(err.msg) + '</strong></div>';
-            }).join("") +
-            '</div>'
-          ) : '<div class="validation-card is-success"><strong>✓ No blocking errors found! Test meets minimum criteria.</strong></div>') +
-
-          (validation.warnings.length ? (
-            '<div style="margin-top: 20px;"><h4 style="color:var(--gold-strong);">Warnings & Recommended Fixes</h4>' +
-            validation.warnings.map(function (warn) {
-              return '<div class="validation-card is-warning"><strong>⚠️ ' + escapeHtml(warn.msg) + '</strong></div>';
-            }).join("") +
-            '</div>'
-          ) : '') +
-
-          '<div class="button-row" style="margin-top: 24px; justify-content: flex-end;">' +
-          '<button class="button button-secondary js-studio-tab" data-tab="questions">← Back to Questions Studio</button>' +
-          '<button class="button button-primary" id="publish-test-btn" ' + (validation.errors.length ? "disabled" : "") + '>Publish Test Now</button>' +
-          '</div>' +
-          '</div>';
+        activeTabContent = buildPaperReviewHtml(selectedTest, paperReview);
       } else if (activeTab === "tests") {
         activeTabContent =
           '<div class="admin-card">' +
@@ -12343,6 +13423,8 @@
         activeTabContent = buildAdminMaterialsHtml();
       } else if (activeTab === "mentor") {
         activeTabContent = buildAdminMentorHtml();
+      } else if (activeTab === "whatsnew") {
+        activeTabContent = buildAdminWhatsNewHtml();
       }
 
       app.innerHTML = buildShell(
@@ -12376,13 +13458,14 @@
         '<button type="button" class="studio-step-btn js-studio-tab ' + (activeTab === "setup" ? 'is-active' : '') + '" data-tab="setup"><span class="studio-step-num">1</span> Setup & Basic Info</button>' +
         '<button type="button" class="studio-step-btn js-studio-tab ' + (activeTab === "questions" ? 'is-active' : '') + '" data-tab="questions"><span class="studio-step-num">2</span> Questions Studio (' + totalAttachedCount + '/90)</button>' +
         '<button type="button" class="studio-step-btn js-studio-tab ' + (activeTab === "bank" ? 'is-active' : '') + '" data-tab="bank"><span class="studio-step-num">3</span> Question Bank</button>' +
-        '<button type="button" class="studio-step-btn js-studio-tab ' + (activeTab === "review" ? 'is-active' : '') + '" data-tab="review"><span class="studio-step-num">4</span> Review & Validate (' + validation.errors.length + ' errors)</button>' +
+        '<button type="button" class="studio-step-btn js-studio-tab ' + (activeTab === "review" ? 'is-active' : '') + '" data-tab="review"><span class="studio-step-num">4</span> Review & Validate (' + (validation.errors.length ? validation.errors.length + (validation.errors.length === 1 ? ' error' : ' errors') : 'health ' + paperReview.score) + ')</button>' +
         '<button type="button" class="studio-step-btn js-studio-tab ' + (activeTab === "tests" ? 'is-active' : '') + '" data-tab="tests"><span class="studio-step-num">5</span> Existing Tests (' + tests.length + ')</button>' +
         '<button type="button" class="studio-step-btn js-studio-tab ' + (activeTab === "payments" ? 'is-active' : '') + '" data-tab="payments"><span class="studio-step-num">6</span> User Payments</button>' +
         '<button type="button" class="studio-step-btn js-studio-tab ' + (activeTab === "seasons" ? 'is-active' : '') + '" data-tab="seasons"><span class="studio-step-num">7</span> Seasons</button>' +
         '<button type="button" class="studio-step-btn js-studio-tab ' + (activeTab === "audit" ? 'is-active' : '') + '" data-tab="audit"><span class="studio-step-num">8</span> Audit Logs</button>' +
         '<button type="button" class="studio-step-btn js-studio-tab ' + (activeTab === "materials" ? 'is-active' : '') + '" data-tab="materials"><span class="studio-step-num">9</span> Study Materials</button>' +
         '<button type="button" class="studio-step-btn js-studio-tab ' + (activeTab === "mentor" ? 'is-active' : '') + '" data-tab="mentor"><span class="studio-step-num">10</span> ACEIIIT Mentor</button>' +
+        '<button type="button" class="studio-step-btn js-studio-tab ' + (activeTab === "whatsnew" ? 'is-active' : '') + '" data-tab="whatsnew"><span class="studio-step-num">11</span> What\'s New</button>' +
         '</div>' +
 
         '<div class="studio-body">' +
@@ -13484,25 +14567,127 @@
         });
       });
 
-      app.querySelectorAll("#publish-test-btn").forEach(function (button) {
-        button.addEventListener("click", async function () {
-          if (!selectedTestId) return;
-          var valRes = validateTestForPublish(selectedTest, questions);
-          if (valRes.errors.length) {
-            window.alert("Cannot publish: Please fix all blocking errors first in Step 4 Review & Validate.");
-            runtime.adminStudioTab = "review";
-            rerenderAdminPreserveScroll(user, selectedTestId);
+      // Review & Validate (Paper Health Check)
+      var prStatus = app.querySelector("[data-pr-status]");
+      var prSay = function (text, isError) {
+        if (!prStatus) return;
+        prStatus.textContent = text;
+        prStatus.classList.toggle("is-error", Boolean(isError));
+        prStatus.classList.toggle("is-success", !isError);
+        prStatus.focus();
+      };
+      if (activeTab === "review" && selectedTest) {
+        checkPaperImages(paperReview, function () {
+          window.clearTimeout(runtime.paperImageRerender);
+          runtime.paperImageRerender = window.setTimeout(function () {
+            if (runtime.adminStudioTab === "review" && location.hash.indexOf("admin") !== -1) rerenderAdminPreserveScroll(user, selectedTestId);
+          }, 400);
+        });
+      }
+      app.querySelectorAll(".js-pr-fix").forEach(function (button) {
+        button.addEventListener("click", function () {
+          runtime.adminStudioTab = "questions";
+          runtime.adminEditingQuestionId = button.dataset.id;
+          runtime.adminQuestionEditorOpen = false;
+          rerenderAdminPreserveScroll(user, selectedTestId);
+          window.requestAnimationFrame(function () {
+            var form = document.getElementById("question-form");
+            if (form) {
+              form.scrollIntoView({ block: "start", behavior: prefersReducedMotion() ? "auto" : "smooth" });
+              var first = form.querySelector("textarea, input");
+              if (first) first.focus({ preventScroll: true });
+            }
+          });
+        });
+      });
+      app.querySelectorAll(".js-pr-preview").forEach(function (button) {
+        button.addEventListener("click", function () {
+          runtime.adminStudentPreviewOpen = true;
+          rerenderAdminPreserveScroll(user, selectedTestId);
+        });
+      });
+      app.querySelectorAll("[data-pr-rerun]").forEach(function (button) {
+        button.addEventListener("click", function () {
+          runtime.paperImageStatus = {};
+          runtime.paperImageFailures = {};
+          rerenderAdminPreserveScroll(user, selectedTestId);
+          var again = document.querySelector("[data-pr-status]");
+          if (again) again.textContent = "Checks re-run.";
+        });
+      });
+      app.querySelectorAll("[data-pr-download]").forEach(function (button) {
+        button.addEventListener("click", function () {
+          if (!selectedTest) return;
+          var kind = button.getAttribute("data-pr-download");
+          if (kind === "key") downloadTextFile(paperFileName(selectedTest, "answer-key"), answerKeyCsv(paperReview));
+          else downloadTextFile(paperFileName(selectedTest, "paper"), paperExportCsv(paperReview));
+        });
+      });
+      var prScheduleToggle = app.querySelector("[data-pr-schedule-toggle]");
+      var prScheduleForm = app.querySelector("#pr-schedule");
+      if (prScheduleToggle && prScheduleForm) {
+        prScheduleToggle.addEventListener("click", function () {
+          var open = prScheduleForm.hidden;
+          prScheduleForm.hidden = !open;
+          prScheduleToggle.setAttribute("aria-expanded", String(open));
+          if (open) {
+            var input = prScheduleForm.querySelector("#pr-publish-at");
+            var when = testOpensAt(selectedTest) || new Date(Date.now() + 24 * 60 * 60 * 1000);
+            var pad = function (n) { return String(n).padStart(2, "0"); };
+            if (input && !input.value) input.value = when.getFullYear() + "-" + pad(when.getMonth() + 1) + "-" + pad(when.getDate()) + "T" + pad(when.getHours()) + ":" + pad(when.getMinutes());
+            if (input) input.focus();
+          }
+        });
+        prScheduleForm.addEventListener("submit", async function (event) {
+          event.preventDefault();
+          var input = prScheduleForm.querySelector("#pr-publish-at");
+          var when = input && input.value ? new Date(input.value) : null;
+          if (!when || Number.isNaN(when.getTime()) || when.getTime() < Date.now() + 60 * 1000) {
+            prSay("Pick a time at least a minute from now.", true);
+            if (input) input.focus();
             return;
           }
-          showOverlayLoader("Publishing test...", { delayMs: 200 });
+          var submit = prScheduleForm.querySelector("button[type=submit]");
+          if (submit) submit.disabled = true;
+          try {
+            await store.updateTest(selectedTestId, { status: "scheduled", publishAt: when.toISOString() });
+            rerenderAdminPreserveScroll(user, selectedTestId);
+            var after = document.querySelector("[data-pr-status]");
+            if (after) {
+              after.textContent = "Scheduled: opens " + formatOpensAt(when) + ".";
+              after.classList.add("is-success");
+              after.focus();
+            }
+          } catch (error) {
+            prSay((error && error.message) || "Could not schedule the test.", true);
+            if (submit) submit.disabled = false;
+          }
+        });
+      }
+
+      app.querySelectorAll("#publish-test-btn").forEach(function (button) {
+        button.addEventListener("click", async function () {
+          if (!selectedTestId || selectedTest.status === "live") return;
+          if (paperReview.errors.length) {
+            prSay("Fix the blocking issues first.", true);
+            return;
+          }
+          if (!window.confirm("Publish “" + selectedTest.title + "” now? Students can start it straight away.")) return;
+          button.disabled = true;
+          button.textContent = "Publishing…";
           try {
             await store.updateTest(selectedTestId, { status: "live" });
-            window.alert("🎉 Test '" + selectedTest.title + "' is now LIVE!");
             rerenderAdminPreserveScroll(user, selectedTestId);
+            var after = document.querySelector("[data-pr-status]");
+            if (after) {
+              after.textContent = "“" + selectedTest.title + "” is live. Students can start it now.";
+              after.classList.add("is-success");
+              after.focus();
+            }
           } catch (error) {
-            window.alert(error && error.message ? error.message : "Failed to publish test.");
-          } finally {
-            hideOverlayLoader();
+            button.disabled = false;
+            button.textContent = "Publish now";
+            prSay((error && error.message) || "Failed to publish the test.", true);
           }
         });
       });
@@ -13510,10 +14695,28 @@
       app.querySelectorAll(".js-toggle-live").forEach(function (button) {
         button.addEventListener("click", async function () {
           var test = store.getTestById(button.dataset.id);
+          if (!test) return;
+          var publishing = test.status !== "live";
+          // Publishing runs the same health check as Review & Validate; blocking issues open it.
+          if (publishing) {
+            var check = reviewPaper(test, questions, tests, (adminSnapshot && adminSnapshot.attempts) || [], runtime.paperImageFailures);
+            if (check.errors.length) {
+              runtime.adminSelectedTestId = test.id;
+              runtime.adminStudioTab = "review";
+              rerenderAdminPreserveScroll(user, test.id);
+              var notice = document.querySelector("[data-pr-status]");
+              if (notice) {
+                notice.textContent = "“" + test.title + "” can't go live yet: " + check.errors.length + (check.errors.length === 1 ? " blocking issue" : " blocking issues") + " below.";
+                notice.classList.add("is-error");
+                notice.focus();
+              }
+              return;
+            }
+          }
           showOverlayLoader("Updating test.", { delayMs: 320 });
           try {
             await store.updateTest(button.dataset.id, {
-              status: test.status === "live" ? "draft" : "live"
+              status: publishing ? "live" : "draft"
             });
             rerenderAdminPreserveScroll(user, selectedTestId);
           } catch (error) {
@@ -14119,27 +15322,6 @@
         });
       });
 
-      var publishTestBtn = document.getElementById("publish-test-btn");
-      if (publishTestBtn && selectedTestId) {
-        publishTestBtn.addEventListener("click", async function () {
-          if (!window.confirm("Publish test now? It will become visible and live to students.")) return;
-          showOverlayLoader("Publishing test...", { delayMs: 200 });
-          try {
-            if (typeof store.publishTest === "function") {
-              await store.publishTest(selectedTestId);
-            } else {
-              await store.updateTest(selectedTestId, { status: "live" });
-            }
-            window.alert("Test published successfully!");
-            rerenderAdminPreserveScroll(user, selectedTestId);
-          } catch (err) {
-            window.alert("Publish failed: " + (err.message || String(err)));
-          } finally {
-            hideOverlayLoader();
-          }
-        });
-      }
-
       app.querySelectorAll(".js-activate-season").forEach(function (btn) {
         btn.addEventListener("click", async function () {
           var sId = btn.dataset.id;
@@ -14252,6 +15434,7 @@
 
       bindAdminMaterials(user, selectedTestId);
       if (runtime.adminStudioTab === "mentor") mountAdminMentor();
+      if (runtime.adminStudioTab === "whatsnew") mountAdminWhatsNew();
 
       var userSearchInput = document.getElementById("admin-user-search");
       if (userSearchInput) {
@@ -14754,6 +15937,7 @@
     var view = route.view || (user ? (savedLastView || "dashboard") : "login");
     applyTheme();
     syncMentorWithRoute(view, parts, user);
+    scheduleWhatsNew(view, user);
 
     if (view !== "test") {
       stopRuntime(true);
@@ -14906,6 +16090,8 @@
     var header = document.querySelector(".dashboard-header");
     var autohideBars = document.querySelectorAll(".autohide-bar");
     
+    // Scrolling inside the mentor, a dialog or a scroll box isn't the page moving: leave the header.
+    if (e.target && e.target.closest && e.target.closest(".mentor-root, [data-admin-modal], [data-whats-new], .admin-modal-overlay, .import-table-wrap, .pr-topics-wrap")) return;
     var currentScrollY = window.scrollY || document.documentElement.scrollTop || document.body.scrollTop;
     if (e.target && e.target.scrollTop !== undefined && e.target !== document && e.target !== document.body && e.target !== document.documentElement) {
        currentScrollY = e.target.scrollTop;

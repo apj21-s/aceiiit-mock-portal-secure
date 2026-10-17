@@ -136,6 +136,7 @@ function createApp() {
   app.use("/api/calendar", require("./routes/calendarRoutes"));
   app.use("/api/materials", require("./routes/materialRoutes"));
   app.use("/api/mentor", require("./routes/mentorRoutes"));
+  app.use("/api/whats-new", require("./routes/whatsNewRoutes"));
   app.use("/api/internal", require("./routes/internalRoutes"));
 
   // Only backend/public is web-served. The repo root and backend source are never exposed.

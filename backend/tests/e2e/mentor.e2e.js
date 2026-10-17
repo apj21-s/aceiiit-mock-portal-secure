@@ -219,6 +219,11 @@ function fakeMentor() {
     await page.screenshot({ path: path.join(SHOTS, "intro-1366.png") });
 
     await page.click(".mentor-suggestion");
+    const landed = await page.evaluate(() => {
+      const bubble = document.querySelector(".mentor-msg.is-user .mentor-bubble");
+      return bubble ? bubble.getAnimations().length : -1;
+    });
+    check(landed > 0, "the tapped suggestion travels into the chat as your message");
     await sleep(150);
     const thinkingOrb = await page.evaluate(() => {
       const li = document.querySelector(".mentor-msg.is-thinking");
@@ -242,6 +247,30 @@ function fakeMentor() {
     check(!(await page.$(".mentor-msg.is-thinking")) && !(await page.$(".mentor-orb")) && (await page.$$eval(".mentor-msg.is-assistant .mentor-bubble > *", (els) => els.every((e) => getComputedStyle(e).opacity === "1"))), "the orb hands over to the reply, which ends fully shown");
     st = await panelState(page);
     check(st.usage === "9 of 10 free replies remaining this month." && fake.creates.length === 1 && fake.creates[0].attemptId === undefined, `usage updates after the reply; the first send created the conversation (${st.usage})`);
+    const ink = await page.evaluate(() => {
+      const bubble = Array.from(document.querySelectorAll(".mentor-msg.is-assistant .mentor-bubble")).pop();
+      const words = bubble.querySelectorAll(".mentor-word");
+      return { words: words.length, allShown: Array.from(words).every((w) => getComputedStyle(w).opacity === "1"), meter: !!document.querySelector("[data-mentor-usage] .mentor-meter") };
+    });
+    check(ink.words > 10 && ink.allShown, `the reply inks in word by word and ends fully shown (${ink.words} words)`);
+    check(ink.meter, "the allowance shows as a small ring next to the count");
+    const followups = await page.$$eval(".mentor-followup", (els) => els.map((e) => e.getAttribute("data-mentor-suggest")));
+    check(followups.length === 3 && followups[0] === "Explain that more simply.", `follow-up questions appear under the newest reply (${followups.length})`);
+    await page.evaluate(() => {
+      window.__copied = null;
+      Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: (t) => { window.__copied = t; return Promise.resolve(); } } });
+    });
+    await page.click(".mentor-msg.is-assistant [data-mentor-copy]");
+    await page.waitForFunction(() => /Copied/.test((document.querySelector(".mentor-msg.is-assistant [data-mentor-copy]") || {}).textContent || ""), { timeout: 3000 }).catch(() => null);
+    const copied = await page.evaluate(() => ({ text: window.__copied || "", label: (document.querySelector(".mentor-msg.is-assistant [data-mentor-copy]") || {}).textContent || "" }));
+    check(/main lever/.test(copied.text) && /Copied/.test(copied.label), "Copy puts the reply on the clipboard and says Copied");
+    await page.click(".mentor-msg.is-assistant [data-mentor-quote]");
+    const quoted = await page.evaluate(() => ({ value: document.getElementById("mentor-input").value, focused: document.activeElement && document.activeElement.id }));
+    check(/^About “.+”: $/.test(quoted.value) && quoted.focused === "mentor-input", `"Ask about this" quotes the reply into the message box (${quoted.value.slice(0, 40)}…)`);
+    await page.evaluate(() => { const i = document.getElementById("mentor-input"); i.value = ""; i.dispatchEvent(new Event("input", { bubbles: true })); });
+    await page.mouse.move(1100, 500);
+    await sleep(300);
+    await page.screenshot({ path: path.join(SHOTS, "reply-1366.png") });
 
     // A failed reply: not counted, retried with the same message id.
     fake.failNext = "ACEIIIT Mentor couldn't answer this time. It wasn't counted; please try again.";

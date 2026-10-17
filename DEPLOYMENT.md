@@ -262,6 +262,16 @@ The usage line drops by one, and Studio → ACEIIIT Mentor shows the reply under
   stored; every formula is checked with KaTeX on the server before anything is saved. The sheet format, with instructions for having an AI agent convert a PDF paper, is in
   [`QUESTION_IMPORT_FORMAT.md`](QUESTION_IMPORT_FORMAT.md).
 
+## What's new pop-ups
+
+Studio → **11 What's New** writes short release notes (title, summary, up to 6 items, an
+optional https image and a button to a portal page or an https link) and shows a live preview.
+**Save & publish** makes a note pop up once for each student on their next visit (paid-only or
+free-only notes use the server's entitlement check). Students can reopen the latest note from
+"What's new" in the footer. Notes are stored in the new `releasenotes` collection, and when a
+student closes one, `users.whatsNewSeenAt` is set. Run `2026-10-sync-indexes.js` (dry run, then
+`--apply`) after deploying, for the `{status, publishedAt}` index.
+
 ## Scaling
 
 - Run **one instance**. The rate limiters, the submit queue, the rank cache and the

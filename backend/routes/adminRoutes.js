@@ -13,6 +13,7 @@ const { audit } = require("../middleware/audit");
 const { readLimiter } = require("../middleware/rateLimit");
 const multer = require("multer");
 const questionImport = require("../controllers/questionImportController");
+const whatsNew = require("../controllers/whatsNewController");
 
 const router = express.Router();
 
@@ -138,6 +139,14 @@ router.post("/attach-bulk", requireAuth, requireAdmin, audit("TEST_QUESTIONS_ATT
 router.post("/detach-bulk", requireAuth, requireAdmin, audit("TEST_QUESTIONS_DETACHED", "Test"), admin.detachQuestionsBulk);
 router.post("/reorder-questions", requireAuth, requireAdmin, audit("TEST_QUESTIONS_REORDERED", "Test"), admin.reorderTestQuestions);
 router.post("/tests/reorder", requireAuth, requireAdmin, audit("TESTS_REORDERED", "Test"), admin.reorderTests);
+
+// "What's new" notes (Studio → What's New).
+router.get("/whats-new", requireAuth, requireAdmin, readLimiter(), whatsNew.adminList);
+router.post("/whats-new", requireAuth, requireAdmin, audit("RELEASE_NOTE_CREATED", "ReleaseNote"), whatsNew.adminCreate);
+router.put("/whats-new/:id", requireAuth, requireAdmin, audit("RELEASE_NOTE_UPDATED", "ReleaseNote"), whatsNew.adminUpdate);
+router.delete("/whats-new/:id", requireAuth, requireAdmin, audit("RELEASE_NOTE_DELETED", "ReleaseNote"), whatsNew.adminDelete);
+router.post("/whats-new/:id/publish", requireAuth, requireAdmin, audit("RELEASE_NOTE_PUBLISHED", "ReleaseNote"), whatsNew.adminPublish);
+router.post("/whats-new/:id/unpublish", requireAuth, requireAdmin, audit("RELEASE_NOTE_UNPUBLISHED", "ReleaseNote"), whatsNew.adminUnpublish);
 
 // Bulk question import (Excel/CSV): template, a preview that saves nothing, then import.
 const sheetUpload = multer({

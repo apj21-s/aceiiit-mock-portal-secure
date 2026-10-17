@@ -6,13 +6,15 @@ const path = require("path");
 const fs = require("fs");
 const { spawn } = require("child_process");
 const puppeteer = require("puppeteer-core");
-const { BACKEND, CHROME_PATH, serverEnv, newHermeticPage } = require("./helpers");
+const { BACKEND, CHROME_PATH, SHOTS_DIR, serverEnv, newHermeticPage } = require("./helpers");
 
 const PORT = 4979;
 const BASE = `http://127.0.0.1:${PORT}`;
 const req = (m) => require(path.join(BACKEND, m));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = (...a) => console.log("[admin-e2e]", ...a);
+const SHOTS = path.join(SHOTS_DIR, "admin");
+fs.mkdirSync(SHOTS, { recursive: true });
 
 (async () => {
   const { MongoMemoryServer } = req("node_modules/mongodb-memory-server");
@@ -318,7 +320,7 @@ const log = (...a) => console.log("[admin-e2e]", ...a);
 
     // CSV into the question bank only (from the Bank tab).
     const csvPath = path.join(sheetDir, "bank.csv");
-    fs.writeFileSync(csvPath, "﻿section,topic,question,option_a,option_b,answer\r\nREAP,Series,\"Sum $\\sum_{k=1}^{n} k$, for n = 3\",6,9,A\r\n");
+    fs.writeFileSync(csvPath, "\ufeffsection,topic,question,option_a,option_b,answer\r\nREAP,Series,\"Sum $\\sum_{k=1}^{n} k$, for n = 3\",6,9,A\r\n");
     await page.evaluate(() => document.querySelector('.js-studio-tab[data-tab="bank"]').click());
     await page.waitForSelector("#bank-search", { timeout: 10000 });
     await page.evaluate(() => document.querySelector(".js-open-question-import").click());
@@ -346,15 +348,21 @@ const log = (...a) => console.log("[admin-e2e]", ...a);
       el.value = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
     });
     await page.click('#test-form button[type="submit"]');
-    await sleep(1500);
+    // Wait for the save to reach the database (it can take a moment on a slow machine).
     await mongoose.connect(uri);
-    const scheduled = await Test.findOne({ title: "Brand New Mock 7" }).lean();
+    let scheduled = null;
+    for (let i = 0; i < 20; i += 1) {
+      scheduled = await Test.findOne({ title: "Brand New Mock 7" }).lean();
+      if (scheduled.status === "scheduled") break;
+      await sleep(500);
+    }
     await mongoose.disconnect();
     const inMs = scheduled.publishAt ? new Date(scheduled.publishAt).getTime() - Date.now() : 0;
     check(scheduled.status === "scheduled" && inMs > 100 * 60 * 1000 && inMs < 121 * 60 * 1000, `the test is saved as scheduled about 2 h ahead (${scheduled.status}, ${Math.round(inMs / 60000)} min)`);
     await page.evaluate(() => document.querySelector('.js-studio-tab[data-tab="tests"]').click());
     await page.waitForSelector("[data-tests-order]", { timeout: 10000 });
-    check(await page.evaluate(() => Array.from(document.querySelectorAll(".meta-chip.is-scheduled")).some((c) => /scheduled ·/.test(c.textContent))), "Existing Tests shows the scheduled time");
+    const chipShown = await page.waitForFunction(() => Array.from(document.querySelectorAll(".meta-chip.is-scheduled")).some((c) => /scheduled ·/.test(c.textContent)), { timeout: 8000 }).then(() => true).catch(() => false);
+    check(chipShown, "Existing Tests shows the scheduled time");
 
     const studentCtx = await browser.createBrowserContext();
     const student = await newHermeticPage(studentCtx);
@@ -394,6 +402,147 @@ const log = (...a) => console.log("[admin-e2e]", ...a);
     await sleep(1200);
     check(!(await student.evaluate(() => window.__overlaySeen)), "changing pages shows no full-screen loader");
     await studentCtx.close();
+
+    // ---- Review & Validate: the Paper Health Check ----
+    await mongoose.connect(uri);
+    const liveTest = await Test.findOne({ title: "Admin E2E Test" }).lean();
+    const reviewQs = await Question.insertMany([
+      { section: "SUPR", topic: "calculus", prompt: "Broken $\\frac{1}{$ formula", options: ["1", "2", "3", "4"], correctOption: 0, explanation: "x" },
+      { section: "SUPR", topic: "algebra", prompt: "Answer out of range", options: ["1", "2", "3", "4"], correctOption: 5, explanation: "x" },
+      { section: "REAP", topic: "logic", prompt: "Same options twice", options: ["yes", "yes", "no"], correctOption: 2, explanation: "x" },
+      { section: "REAP", topic: "logic", prompt: "A fine question $x^2$", options: ["a", "b"], correctOption: 1 },
+    ]);
+    const reviewTest = await Test.create({ title: "Review E2E Paper", isFree: true, status: "draft", seasonId: season._id, sectionDurations: { SUPR: 60, REAP: 120 }, questionIds: reviewQs.map((q) => q._id).concat(liveTest.questionIds) });
+    await mongoose.disconnect();
+    await page.evaluate((id) => { localStorage.setItem("aceiiit_last_admin_testid", id); }, String(reviewTest._id));
+    await page.goto(`${BASE}/#/admin`, { waitUntil: "networkidle2" });
+    await page.reload({ waitUntil: "networkidle2" });
+    await page.waitForSelector('.js-studio-tab[data-tab="review"]', { timeout: 20000 });
+    const reviewLabel = await page.$eval('.js-studio-tab[data-tab="review"]', (b) => b.textContent);
+    check(/\(3 errors\)/.test(reviewLabel), `the Review tab label counts the blocking issues (${reviewLabel.trim()})`);
+    await page.evaluate(() => document.querySelector('.js-studio-tab[data-tab="review"]').click());
+    await page.waitForSelector("[data-paper-review]", { timeout: 10000 });
+    const health = await page.evaluate(() => ({
+      verdict: document.querySelector(".pr-verdict h3").textContent,
+      score: Number(document.querySelector(".pr-ring .donut-center strong").textContent),
+      blocking: Array.from(document.querySelectorAll(".pr-item.is-error strong")).map((e) => e.textContent),
+      warnings: Array.from(document.querySelectorAll(".pr-item.is-warning strong")).map((e) => e.textContent),
+      publishDisabled: document.getElementById("publish-test-btn").disabled,
+      chips: Array.from(document.querySelectorAll(".pr-item.is-error .pr-q")).map((e) => e.textContent),
+      sections: document.querySelector(".pr-grid").innerText,
+    }));
+    check(/Fix 3 blocking issues first/.test(health.verdict) && health.score <= 49, `health ring and verdict (${health.score}: ${health.verdict})`);
+    check(health.blocking.some((t) => /formula that won't render/.test(t)) && health.blocking.some((t) => /invalid answer key/.test(t)) && health.blocking.some((t) => /two identical options/.test(t)), `blocking checks: broken LaTeX, answer out of range, repeated option (${health.blocking.join(" | ")})`);
+    check(health.warnings.some((t) => /also in another live test/.test(t)) && health.warnings.some((t) => /Not a full UGEE paper/.test(t)), `warnings: reused questions and a partial paper (${health.warnings.length})`);
+    check(health.publishDisabled && health.chips.length >= 3, "Publish is locked while blocking issues remain; each issue names its questions");
+    await page.screenshot({ path: path.join(SHOTS, "review-errors-1366.png"), fullPage: true });
+    check(/SUPR/.test(health.sections) && /Easy/.test(health.sections) && /longest run|no repeats/.test(health.sections), "the blueprint shows sections, difficulty mix and the answer key");
+    // Capture the generated files instead of saving them: the Blob handed to createObjectURL,
+    // and the file name from the link that would be clicked.
+    await page.evaluate(() => {
+      window.__downloads = [];
+      const blobs = {};
+      const create = URL.createObjectURL.bind(URL);
+      URL.createObjectURL = (blob) => { const url = create(blob); blobs[url] = blob; return url; };
+      const original = HTMLAnchorElement.prototype.click;
+      HTMLAnchorElement.prototype.click = function () {
+        if (this.download && blobs[this.href]) { const name = this.download; blobs[this.href].text().then((t) => window.__downloads.push({ name, text: t })); return; }
+        return original.call(this);
+      };
+    });
+    await page.click('[data-pr-download="key"]');
+    await page.click('[data-pr-download="paper"]');
+    await page.waitForFunction(() => window.__downloads.length === 2, { timeout: 5000 }).catch(() => null);
+    const files = await page.evaluate(() => window.__downloads);
+    const keyFile = files.find((f) => /answer-key\.csv$/.test(f.name));
+    const paperFile = files.find((f) => /-paper\.csv$/.test(f.name));
+    check(keyFile && /^\ufeff?question,section,topic,answer/.test(keyFile.text) && keyFile.text.trim().split(/\r?\n/).length === 1 + reviewQs.length + liveTest.questionIds.length, `answer key download: one row per question (${keyFile && keyFile.name})`);
+    check(paperFile && /^\ufeff?section,topic,difficulty,question,option_a/.test(paperFile.text) && /Broken \$\\frac\{1\}\{\$ formula/.test(paperFile.text), "whole-paper download uses the import format, LaTeX unchanged");
+    const brokenId = String(reviewQs[0]._id);
+    await page.evaluate((id) => document.querySelector(`.pr-item.is-error .js-pr-fix[data-id="${id}"]`).click(), brokenId);
+    await page.waitForSelector("#question-form", { timeout: 10000 }).catch(() => null);
+    const fixing = await page.evaluate(() => ({ tab: (document.querySelector(".js-studio-tab.is-active") || {}).getAttribute ? document.querySelector(".js-studio-tab.is-active").getAttribute("data-tab") : "", prompt: (document.querySelector("#question-form textarea") || {}).value || "" }));
+    check(fixing.tab === "questions" && /Broken/.test(fixing.prompt), `Fix opens that question in Questions Studio (${fixing.tab})`);
+    // Publishing from Existing Tests runs the same check and sends you to Review.
+    await page.evaluate(() => document.querySelector('.js-studio-tab[data-tab="tests"]').click());
+    await page.waitForSelector("[data-tests-order]", { timeout: 10000 });
+    await page.evaluate((id) => document.querySelector(`.js-toggle-live[data-id="${id}"]`).click(), String(reviewTest._id));
+    await page.waitForSelector("[data-paper-review] [data-pr-status]", { timeout: 10000 }).catch(() => null);
+    const bounced = await page.evaluate(() => (document.querySelector("[data-pr-status]") || {}).textContent || "");
+    await mongoose.connect(uri);
+    const stillDraft = (await Test.findById(reviewTest._id).lean()).status;
+    await Question.updateOne({ _id: reviewQs[0]._id }, { $set: { prompt: "Fixed $\\frac{1}{2}$ formula" } });
+    await Question.updateOne({ _id: reviewQs[1]._id }, { $set: { correctOption: 1 } });
+    await Question.updateOne({ _id: reviewQs[2]._id }, { $set: { options: ["yes", "maybe", "no"] } });
+    await mongoose.disconnect();
+    check(/can't go live yet: 3 blocking issues/.test(bounced) && stillDraft === "draft", `Existing Tests → Publish on a paper with errors opens Review instead (${bounced.slice(0, 60)})`);
+    await page.reload({ waitUntil: "networkidle2" });
+    await page.waitForSelector('.js-studio-tab[data-tab="review"]', { timeout: 20000 });
+    await page.evaluate(() => document.querySelector('.js-studio-tab[data-tab="review"]').click());
+    await page.waitForSelector("[data-paper-review]", { timeout: 10000 });
+    const fixed = await page.evaluate(() => ({ score: Number(document.querySelector(".pr-ring .donut-center strong").textContent), blocking: document.querySelectorAll(".pr-item.is-error").length, publish: !document.getElementById("publish-test-btn").disabled }));
+    check(fixed.blocking === 0 && fixed.score > 49 && fixed.publish, `after the fixes: no blocking issues, score ${fixed.score}, Publish unlocked`);
+    await page.click("#publish-test-btn");
+    await page.waitForFunction(() => /is live/.test((document.querySelector("[data-pr-status]") || {}).textContent || ""), { timeout: 10000 }).catch(() => null);
+    await mongoose.connect(uri);
+    const published = (await Test.findById(reviewTest._id).lean()).status;
+    await mongoose.disconnect();
+    check(published === "live" && /is live/.test(await page.$eval("[data-pr-status]", (e) => e.textContent)), "Publish now makes it live and says so");
+
+    // ---- What's New: write in Studio, students see it once ----
+    await page.evaluate(() => document.querySelector('.js-studio-tab[data-tab="whatsnew"]').click());
+    await page.waitForSelector("[data-wn-form]", { timeout: 10000 });
+    await page.type("#wn-title", "Paper health checks");
+    await page.type("#wn-summary", "Studio now checks every paper before it goes live.");
+    await page.type("#wn-item-title-0", "Broken maths is caught");
+    await page.click("[data-wn-add]");
+    await page.type("#wn-item-title-1", "One-click fixes");
+    const previewText = await page.$eval("[data-wn-preview]", (el) => el.innerText);
+    check(/Paper health checks/.test(previewText) && /One-click fixes/.test(previewText), "the live preview follows the editor as you type");
+    await page.screenshot({ path: path.join(SHOTS, "whats-new-studio-1366.png"), fullPage: true });
+    await page.click('[data-wn-save="publish"]');
+    await page.waitForFunction(() => /Published/.test((document.querySelector(".wn-notes") || {}).innerText || ""), { timeout: 10000 }).catch(() => null);
+    check(/Published/.test(await page.$eval("#wn-admin-root", (el) => el.innerText)), "Save & publish lists the note as Published");
+    const wnCtx = await browser.createBrowserContext();
+    const reader = await newHermeticPage(wnCtx);
+    reader.on("pageerror", (e) => pageErrors.push(e.stack || e.message));
+    await reader.setViewport({ width: 1280, height: 900 });
+    await reader.goto(`${BASE}/#/login`, { waitUntil: "networkidle2" });
+    await reader.waitForSelector("#login-email");
+    await reader.type("#login-email", "buyer@test.local");
+    await reader.type("#login-password", "Passw0rd!long");
+    await reader.click("#login-submit-btn");
+    await reader.waitForSelector("[data-whats-new] .wn-card", { timeout: 15000 }).catch(() => null);
+    await sleep(500);
+    const popup = await reader.evaluate(() => {
+      const card = document.querySelector("[data-whats-new] .wn-card");
+      return card ? { text: card.innerText, focusInside: card.contains(document.activeElement), dialog: card.getAttribute("role"), labelled: !!document.getElementById(card.getAttribute("aria-labelledby")) } : null;
+    });
+    check(popup && /Paper health checks/.test(popup.text) && /Broken maths is caught/.test(popup.text), "a student sees the new note as a pop-up when they open the portal");
+    check(popup && popup.focusInside && popup.dialog === "dialog" && popup.labelled, "the pop-up is a labelled dialog with focus inside");
+    const seenSaved = reader.waitForResponse((r) => /\/api\/whats-new\/seen$/.test(r.url()), { timeout: 8000 }).catch(() => null);
+    await reader.keyboard.press("Escape");
+    await reader.waitForFunction(() => !document.querySelector("[data-whats-new]"), { timeout: 3000 }).catch(() => null);
+    await seenSaved;
+    await reader.reload({ waitUntil: "networkidle2" });
+    await sleep(1800);
+    check(!(await reader.$("[data-whats-new]")), "once closed, it doesn't come back on the next visit");
+    await reader.evaluate(() => document.querySelector(".js-whats-new").click());
+    await reader.waitForSelector("[data-whats-new] .wn-card", { timeout: 5000 }).catch(() => null);
+    check(/Paper health checks/.test(await reader.evaluate(() => (document.querySelector("[data-whats-new]") || {}).innerText || "")), "the footer's What's new link reopens it");
+    await sleep(500);
+    await reader.screenshot({ path: path.join(SHOTS, "whats-new-popup-1280.png") });
+    // Switching to phone emulation reloads the page, so reopen it from the footer there.
+    await reader.setViewport({ width: 390, height: 844, isMobile: true, hasTouch: true });
+    await reader.waitForSelector(".js-whats-new", { timeout: 15000 }).catch(() => null);
+    await reader.evaluate(() => document.querySelector(".js-whats-new").click());
+    await reader.waitForSelector("[data-whats-new][data-state='open'] .wn-card", { timeout: 5000 }).catch(() => null);
+    await sleep(500);
+    await reader.screenshot({ path: path.join(SHOTS, "whats-new-popup-390.png") });
+    await reader.evaluate(() => document.body.setAttribute("data-theme", "dark"));
+    await sleep(200);
+    await reader.screenshot({ path: path.join(SHOTS, "whats-new-popup-390-dark.png") });
+    await wnCtx.close();
   } catch (err) {
     failures.push(`exception: ${err.message}`);
     log("EXCEPTION", err.stack);
