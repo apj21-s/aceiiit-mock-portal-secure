@@ -2,6 +2,7 @@ const Question = require("../models/Question");
 const QotdPick = require("../models/QotdPick");
 const Test = require("../models/Test");
 const { MemoryCache } = require("../utils/memoryCache");
+const { eventView } = require("./liveEventService");
 
 const cache = new MemoryCache(64);
 
@@ -9,7 +10,7 @@ const TEST_LIST_TTL_MS = 60 * 1000;
 const TEST_RUNTIME_TTL_MS = 5 * 60 * 1000;
 
 const TEST_PUBLIC_FIELDS =
-  "title subtitle series type isFree status publishAt displayOrder durationMinutes sectionDurations instructions benchmarkScores totalMarks negativeMarks questionIds shuffleQuestions shuffleOptions integrity seasonId createdAt updatedAt";
+  "title subtitle series type isFree status publishAt event displayOrder durationMinutes sectionDurations instructions benchmarkScores totalMarks negativeMarks questionIds shuffleQuestions shuffleOptions integrity seasonId createdAt updatedAt";
 
 const QUESTION_PUBLIC_FIELDS =
   "section topic difficulty prompt passage imageUrls imageWidths options marks negativeMarks createdAt updatedAt";
@@ -41,6 +42,8 @@ function mapCatalogTest(test, accessible, sectionSummary) {
     status: test.status,
     // Scheduled tests are listed with the time they open; they can't be started before it.
     opensAt: test.status === "scheduled" && test.publishAt ? new Date(test.publishAt).toISOString() : null,
+    // Live mock event: join window and results time (null for ordinary tests).
+    event: eventView(test),
     displayOrder: Number.isFinite(Number(test.displayOrder)) ? Number(test.displayOrder) : 100,
     durationMinutes: test.durationMinutes,
     sectionDurations: test.sectionDurations || { SUPR: 60, REAP: 120 },

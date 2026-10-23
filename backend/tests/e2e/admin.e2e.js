@@ -31,6 +31,8 @@ fs.mkdirSync(SHOTS, { recursive: true });
   const Test = req("models/Test");
   const Season = req("models/Season");
   const Entitlement = req("models/Entitlement");
+  const QuestionReport = req("models/QuestionReport");
+  const Attempt = req("models/Attempt");
   const season = await Season.create({ name: "UGEE 2026", year: 2026, status: "active", isDefaultActive: true });
   const hash = await bcrypt.hash("Passw0rd!long", 4);
   await User.create({ name: "Admin", email: "admin@test.local", role: "admin", status: "active", isActivated: true, emailVerified: true, passwordHash: hash });
@@ -44,8 +46,7 @@ fs.mkdirSync(SHOTS, { recursive: true });
   const server = spawn(process.execPath, ["server.js"], { cwd: BACKEND, env: serverEnv({ MONGODB_URI: uri, PORT: String(PORT), ADMIN_EMAILS: "admin@test.local" }) });
   let serverLog = "";
   server.stdout.on("data", (d) => (serverLog += d));
-  server.stderr.on("data", (d) => (serverLog += d));
-  await sleep(3500);
+  for (let i = 0; i < 40; i += 1) { try { if ((await fetch(`${BASE}/ready`)).status === 200) break; } catch (_e) {} await sleep(250); }
 
   const browser = await puppeteer.launch({ executablePath: CHROME_PATH, headless: true, args: ["--no-sandbox"] });
   const failures = [];
@@ -340,6 +341,8 @@ fs.mkdirSync(SHOTS, { recursive: true });
     // Scheduled publishing from Setup; students see a countdown and no Start button.
     await page.evaluate(() => document.querySelector('.js-studio-tab[data-tab="setup"]').click());
     await page.waitForSelector("#test-publishing", { timeout: 10000 });
+    const currentTitleInForm = await page.$eval("#test-title", (el) => el.value);
+    log("currentTitleInForm before select:", currentTitleInForm);
     await page.select("#test-publishing", "scheduled");
     check(await page.$eval(".test-publish-at", (el) => !el.hidden), "choosing Scheduled shows the date-time field");
     await page.$eval("#test-publish-at", (el) => {
@@ -347,9 +350,21 @@ fs.mkdirSync(SHOTS, { recursive: true });
       const pad = (n) => String(n).padStart(2, "0");
       el.value = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
     });
+    const publishAtVal = await page.$eval("#test-publish-at", (el) => el.value);
+    log("publishAtVal:", publishAtVal);
+    const formValidity = await page.evaluate(() => {
+      const form = document.getElementById("test-form");
+      if (!form) return "NO FORM";
+      const invalid = Array.from(form.elements).filter((e) => !e.checkValidity()).map((e) => ({ id: e.id, name: e.name, val: e.value, msg: e.validationMessage }));
+      return { valid: form.checkValidity(), invalid };
+    });
+    log("formValidity scheduled:", formValidity);
     await page.click('#test-form button[type="submit"]');
+    await sleep(1000);
     // Wait for the save to reach the database (it can take a moment on a slow machine).
     await mongoose.connect(uri);
+    const allTestsInDb = await Test.find({}).lean();
+    log("allTestsInDb:", allTestsInDb.map((t) => ({ title: t.title, status: t.status, publishAt: t.publishAt })));
     let scheduled = null;
     for (let i = 0; i < 20; i += 1) {
       scheduled = await Test.findOne({ title: "Brand New Mock 7" }).lean();
@@ -412,7 +427,7 @@ fs.mkdirSync(SHOTS, { recursive: true });
       { section: "REAP", topic: "logic", prompt: "Same options twice", options: ["yes", "yes", "no"], correctOption: 2, explanation: "x" },
       { section: "REAP", topic: "logic", prompt: "A fine question $x^2$", options: ["a", "b"], correctOption: 1 },
     ]);
-    const reviewTest = await Test.create({ title: "Review E2E Paper", isFree: true, status: "draft", seasonId: season._id, sectionDurations: { SUPR: 60, REAP: 120 }, questionIds: reviewQs.map((q) => q._id).concat(liveTest.questionIds) });
+    const reviewTest = await Test.create({ title: "Review E2E Paper", subtitle: "Full paper review", isFree: true, status: "draft", seasonId: season._id, sectionDurations: { SUPR: 60, REAP: 120 }, questionIds: reviewQs.map((q) => q._id).concat(liveTest.questionIds) });
     await mongoose.disconnect();
     await page.evaluate((id) => { localStorage.setItem("aceiiit_last_admin_testid", id); }, String(reviewTest._id));
     await page.goto(`${BASE}/#/admin`, { waitUntil: "networkidle2" });
@@ -543,6 +558,115 @@ fs.mkdirSync(SHOTS, { recursive: true });
     await sleep(200);
     await reader.screenshot({ path: path.join(SHOTS, "whats-new-popup-390-dark.png") });
     await wnCtx.close();
+
+    // ---- Reports inbox: what students flagged, Fix and Resolve ----
+    await mongoose.connect(uri);
+    const buyer = await User.findOne({ email: "buyer@test.local" }).lean();
+    const reportedQ = reviewQs[3];
+    const fakeAttempt = await Attempt.create({ userId: buyer._id, testId: reviewTest._id, attemptNumber: 1, submittedAt: new Date(), questionReview: [{ questionId: reportedQ._id, status: "wrong" }] });
+    await QuestionReport.create({ questionId: reportedQ._id, userId: buyer._id, attemptId: fakeAttempt._id, reason: "wrong_answer", note: "I think option A is right" });
+    await mongoose.disconnect();
+    await page.reload({ waitUntil: "networkidle2" });
+    await page.waitForSelector('.js-studio-tab[data-tab="reports"]', { timeout: 20000 });
+    await page.waitForFunction(() => /Reports\s*1/.test((document.querySelector('.js-studio-tab[data-tab="reports"]') || {}).textContent || ""), { timeout: 8000 }).catch(() => null);
+    check(/Reports\s*1/.test(await page.$eval('.js-studio-tab[data-tab="reports"]', (b) => b.textContent)), "the Reports tab shows how many reports are open");
+    await page.evaluate(() => document.querySelector('.js-studio-tab[data-tab="reports"]').click());
+    await page.waitForSelector(".report-card", { timeout: 10000 }).catch(() => null);
+    const reportCard = await page.evaluate(() => (document.querySelector(".report-card") || {}).innerText || "");
+    check(/Answer key × 1/.test(reportCard) && /I think option A is right/.test(reportCard) && /Buyer/.test(reportCard) && !/buyer@test\.local/.test(reportCard), "a report card shows the reason, the student's note and name (no email)");
+    await page.type(".report-resolve-note", "Checked: the key is right");
+    await page.click("[data-report-resolve]");
+    await page.waitForFunction(() => /1 report resolved/.test((document.querySelector("[data-reports-message]") || {}).textContent || ""), { timeout: 10000 }).catch(() => null);
+    check(/1 report resolved/.test(await page.evaluate(() => (document.querySelector("[data-reports-message]") || {}).textContent || "")) && !(await page.$(".report-card")), "Resolve clears it from the open list");
+    await mongoose.connect(uri);
+    const resolvedReport = await QuestionReport.findOne({}).lean();
+    await mongoose.disconnect();
+    check(resolvedReport.status === "resolved" && resolvedReport.resolutionNote === "Checked: the key is right", "the resolution is saved with its note");
+
+    // ---- Live event: Setup fields, then the student's card ----
+    await page.evaluate(() => document.querySelector('.js-studio-tab[data-tab="setup"]').click());
+    await page.waitForSelector("#test-event-enabled", { timeout: 10000 });
+    await sleep(400);
+    check(await page.$eval(".test-event", (el) => !el.hidden), "Setup offers the live-event option for a running event-capable test");
+    await page.evaluate(() => { const el = document.getElementById("test-event-enabled"); if (el) el.click(); });
+    const isChecked = await page.$eval("#test-event-enabled", (el) => el.checked);
+    log("test-event-enabled checked:", isChecked);
+    await page.$eval("#test-event-results", (el) => {
+      const d = new Date(Date.now() + 5 * 60 * 60 * 1000);
+      const pad = (n) => String(n).padStart(2, "0");
+      el.value = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    });
+    const resultsVal = await page.$eval("#test-event-results", (el) => el.value);
+    const titleVal = await page.$eval("#test-title", (el) => el.value);
+    log("resultsVal:", resultsVal, "titleVal:", titleVal);
+    const formValidity2 = await page.evaluate(() => {
+      const form = document.getElementById("test-form");
+      if (!form) return "NO FORM";
+      const invalid = Array.from(form.elements).filter((e) => !e.checkValidity()).map((e) => ({ id: e.id, name: e.name, val: e.value, msg: e.validationMessage }));
+      return { valid: form.checkValidity(), invalid };
+    });
+    log("formValidity2 live-event:", formValidity2);
+    await page.evaluate(() => { const btn = document.querySelector('#test-form button[type="submit"]'); if (btn) btn.click(); });
+    await sleep(1000);
+    await mongoose.connect(uri);
+    let eventTest = null;
+    for (let i = 0; i < 20; i += 1) {
+      eventTest = await Test.findById(reviewTest._id).lean();
+      log("checking eventTest attempt", i, "event:", eventTest ? eventTest.event : null);
+      if (eventTest.event && eventTest.event.enabled) break;
+      await sleep(500);
+    }
+    await mongoose.disconnect();
+    check(eventTest.event && eventTest.event.enabled && eventTest.event.joinMinutes === 15 && eventTest.event.resultsAt, "saving with Live event stores the join window and results time");
+
+    const evCtx = await browser.createBrowserContext();
+    const pupil = await newHermeticPage(evCtx);
+    pupil.on("pageerror", (e) => pageErrors.push(e.stack || e.message));
+    await pupil.setViewport({ width: 1280, height: 900 });
+    await pupil.goto(`${BASE}/#/login`, { waitUntil: "networkidle2" });
+    await pupil.waitForSelector("#login-email");
+    await pupil.type("#login-email", "buyer@test.local");
+    await pupil.type("#login-password", "Passw0rd!long");
+    await pupil.click("#login-submit-btn");
+    await pupil.waitForFunction(() => location.hash.length > 2 && !/login/.test(location.hash), { timeout: 15000 });
+    await pupil.evaluate(() => { location.hash = "#/exams/mock-tests"; });
+    await pupil.waitForFunction(() => /Join live mock/.test(document.body.innerText), { timeout: 15000 }).catch(() => null);
+    const liveCard = await pupil.evaluate(() => (document.querySelector(".test-opens.is-live-event") || {}).textContent || "");
+    check(/Live now/.test(liveCard) && /joining closes in/.test(liveCard), `students see "Join live mock" with the joining countdown (${liveCard.trim()})`);
+
+    // Quick search: Ctrl+K, type, Enter.
+    await pupil.keyboard.down("Control");
+    await pupil.keyboard.press("k");
+    await pupil.keyboard.up("Control");
+    await pupil.waitForSelector("[data-quick-search] .qs-input", { timeout: 5000 }).catch(() => null);
+    const qsOpen = await pupil.evaluate(() => document.activeElement && document.activeElement.classList.contains("qs-input"));
+    await pupil.keyboard.type("bookm");
+    const firstOption = await pupil.evaluate(() => (document.querySelector(".qs-option.is-active .qs-label") || {}).textContent || "");
+    await pupil.keyboard.press("Enter");
+    await pupil.waitForFunction(() => /bookmarks/.test(location.hash), { timeout: 8000 }).catch(() => null);
+    check(qsOpen && firstOption === "Bookmarks" && /bookmarks/.test(await pupil.evaluate(() => location.hash)) && !(await pupil.$("[data-quick-search]")), `Ctrl+K quick search finds and opens a page by keyboard (${firstOption})`);
+
+    // Phone: the bottom tab bar, with the mentor button above it.
+    await pupil.setViewport({ width: 390, height: 844 });
+    await pupil.evaluate(() => { location.hash = "#/progress/performance"; });
+    await sleep(1500);
+    const bar = await pupil.evaluate(() => {
+      const nav = document.querySelector(".bottom-tabbar");
+      const mentor = document.querySelector(".support-chat-button");
+      const r = nav ? nav.getBoundingClientRect() : null;
+      return {
+        shown: !!nav && getComputedStyle(nav).display !== "none",
+        items: nav ? nav.querySelectorAll(".tabbar-item").length : 0,
+        active: (document.querySelector(".tabbar-item.is-active") || {}).textContent || "",
+        atBottom: r ? Math.round(window.innerHeight - r.bottom) : -1,
+        mentorAbove: mentor && r ? mentor.getBoundingClientRect().bottom <= r.top + 1 : true,
+        overflow: document.documentElement.scrollWidth > window.innerWidth,
+      };
+    });
+    check(bar.shown && bar.items === 5 && bar.active === "Progress" && bar.atBottom === 0, `phones get a bottom tab bar with the current section marked (${bar.active})`);
+    check(bar.mentorAbove && !bar.overflow, "the mentor button sits above the bar and nothing scrolls sideways");
+    await pupil.screenshot({ path: path.join(SHOTS, "tabbar-390.png") });
+    await evCtx.close();
   } catch (err) {
     failures.push(`exception: ${err.message}`);
     log("EXCEPTION", err.stack);

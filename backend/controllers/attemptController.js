@@ -6,6 +6,7 @@ const Test = require("../models/Test");
 const { canAccessPaperContent } = require("../services/entitlementService");
 const { getRankFor, getRanksForAttempts } = require("../services/rankService");
 const { getTestRuntimeSnapshot } = require("../services/testDataService");
+const { heldResults } = require("../services/liveEventService");
 const {
   sessionView,
   startSession,
@@ -65,7 +66,49 @@ function toAttemptResponse(attempt, rankInfo) {
   };
 }
 
-async function respondWithAttempt(res, status, attempt) {
+/**
+ * A live event's attempt before its results are out: submitted, but no score, rank, sections,
+ * analysis or review yet (admins see everything as usual).
+ */
+function toPendingResponse(attempt, resultsAt) {
+  return {
+    id: String(attempt._id || attempt.id),
+    testId: String(attempt.testId),
+    sessionId: attempt.sessionId ? String(attempt.sessionId) : null,
+    attemptNumber: attempt.attemptNumber,
+    submittedAt: attempt.submittedAt,
+    submittedReason: attempt.submittedReason || "submitted",
+    isPractice: Boolean(attempt.isPractice),
+    invalidated: Boolean(attempt.invalidatedAt),
+    resultsPending: true,
+    resultsAt: new Date(resultsAt).toISOString(),
+    score: null,
+    accuracy: null,
+    rank: 0,
+    percentile: 0,
+    rankTotal: 0,
+    correctCount: null,
+    wrongCount: null,
+    skippedCount: null,
+    unattemptedCount: null,
+    timeTakenSeconds: attempt.timeTakenSeconds,
+    totalTime: attempt.totalTime || attempt.timeTakenSeconds,
+    sectionScores: null,
+    analysis: null,
+  };
+}
+
+/** resultsAt when this attempt's results are held for this viewer (never for admins). */
+async function heldFor(req, attempt) {
+  if (req.auth.role === "admin") return null;
+  return (await heldResults([attempt.testId])).get(String(attempt.testId)) || null;
+}
+
+const RESULTS_HELD = (resultsAt) => ({ error: "Results for this live mock come out at the announced time.", code: "RESULTS_HELD", resultsAt: new Date(resultsAt).toISOString() });
+
+async function respondWithAttempt(res, status, attempt, req) {
+  const held = req ? await heldFor(req, attempt) : null;
+  if (held) return res.status(status).json({ attempt: toPendingResponse(attempt, held) });
   const rankInfo = await getRankFor(attempt);
   return res.status(status).json({ attempt: toAttemptResponse(attempt, rankInfo) });
 }
@@ -172,7 +215,7 @@ async function submitAttempt(req, res, next) {
       examToken: examToken(req),
       payload: input,
     });
-    return respondWithAttempt(res, replay ? 200 : 201, attempt);
+    return respondWithAttempt(res, replay ? 200 : 201, attempt, req);
   } catch (err) {
     return next(err);
   }
@@ -188,7 +231,7 @@ async function abandonAttempt(req, res, next) {
       payload: req.body,
       reason: "abandoned",
     });
-    return respondWithAttempt(res, 200, attempt);
+    return respondWithAttempt(res, 200, attempt, req);
   } catch (err) {
     return next(err);
   }
@@ -215,8 +258,15 @@ async function listAttempts(req, res, next) {
       .sort({ submittedAt: -1 })
       .limit(200)
       .lean();
-    const ranks = await getRanksForAttempts(attempts);
-    res.json({ attempts: attempts.map((attempt) => toAttemptResponse(attempt, ranks.get(String(attempt._id)))) });
+    const [ranks, held] = await Promise.all([
+      getRanksForAttempts(attempts),
+      req.auth.role === "admin" ? new Map() : heldResults(attempts.map((a) => a.testId)),
+    ]);
+    res.json({
+      attempts: attempts.map((attempt) => (held.has(String(attempt.testId))
+        ? toPendingResponse(attempt, held.get(String(attempt.testId)))
+        : toAttemptResponse(attempt, ranks.get(String(attempt._id))))),
+    });
   } catch (err) {
     next(err);
   }
@@ -293,6 +343,8 @@ async function getResult(req, res, next) {
       .select(includeReview ? `${ATTEMPT_SUMMARY_FIELDS} questionReview` : ATTEMPT_SUMMARY_FIELDS)
       .lean();
     if (!attempt) return res.status(404).json({ error: "Result not found" });
+    const held = await heldFor(req, attempt);
+    if (held) return res.json({ attempt: toPendingResponse(attempt, held) });
 
     const payload = { attempt: toAttemptResponse(attempt, await getRankFor(attempt)) };
     payload.attempt.maxScore = await maxScoreFor(attempt);
@@ -308,17 +360,60 @@ async function getResult(req, res, next) {
   }
 }
 
+/**
+ * Where the time went, from the attempt's own per-question snapshot: per section, the share of
+ * time spent on wrong answers, the slowest questions, and a strip of [seconds, status] per
+ * question in paper order (c = correct, w = wrong, s = skipped). Null without timing data.
+ */
+function buildTimeInsights(review) {
+  const items = (Array.isArray(review) ? review : []).map((q, i) => ({
+    number: i + 1,
+    section: q && q.section === "REAP" ? "REAP" : "SUPR",
+    topic: (q && q.topic) || "",
+    status: q && (q.status === "correct" || q.status === "wrong") ? q.status : "skipped",
+    seconds: Math.max(0, Math.round(Number(q && q.timeSpent) || 0)),
+  }));
+  if (!items.some((i) => i.seconds > 0)) return null;
+  const avg = (list) => (list.length ? Math.round(list.reduce((s, i) => s + i.seconds, 0) / list.length) : null);
+  const sections = {};
+  ["SUPR", "REAP"].forEach((key) => {
+    const list = items.filter((i) => i.section === key);
+    if (!list.length) return;
+    const total = list.reduce((s, i) => s + i.seconds, 0);
+    const onWrong = list.filter((i) => i.status === "wrong").reduce((s, i) => s + i.seconds, 0);
+    sections[key] = {
+      questions: list.length,
+      totalSeconds: total,
+      avgCorrectSeconds: avg(list.filter((i) => i.status === "correct")),
+      avgWrongSeconds: avg(list.filter((i) => i.status === "wrong")),
+      wrongTimePct: total ? Math.round((onWrong / total) * 100) : 0,
+    };
+  });
+  const total = items.reduce((s, i) => s + i.seconds, 0);
+  const onWrong = items.filter((i) => i.status === "wrong").reduce((s, i) => s + i.seconds, 0);
+  return {
+    totalSeconds: total,
+    wrongSeconds: onWrong,
+    wrongTimePct: total ? Math.round((onWrong / total) * 100) : 0,
+    sections,
+    slowest: items.filter((i) => i.seconds > 0).sort((a, b) => b.seconds - a.seconds).slice(0, 5),
+    strip: items.map((i) => [i.seconds, i.status.charAt(0), i.section === "REAP" ? 1 : 0]),
+  };
+}
+
 async function getAnalysisSummary(req, res, next) {
   try {
     if (!isValidObjectId(req.params.id)) {
       return res.status(400).json({ error: "Invalid analysis id" });
     }
     const attempt = await Attempt.findOne(ownedQuery(req))
-      .select(`${ATTEMPT_SUMMARY_FIELDS} userEmail sectionWise topicWise`)
+      .select(`${ATTEMPT_SUMMARY_FIELDS} userEmail sectionWise topicWise questionReview.section questionReview.topic questionReview.status questionReview.timeSpent`)
       .lean();
     if (!attempt) {
       return res.status(404).json({ error: "Analysis not found" });
     }
+    const held = await heldFor(req, attempt);
+    if (held) return res.status(403).json(RESULTS_HELD(held));
     const rankInfo = await getRankFor(attempt);
     return res.json({
       summary: {
@@ -339,6 +434,7 @@ async function getAnalysisSummary(req, res, next) {
         sectionWise: attempt.sectionWise || null,
         topicWise: attempt.topicWise || [],
         analysis: attempt.analysis || null,
+        timeInsights: buildTimeInsights(attempt.questionReview),
       },
     });
   } catch (err) {
@@ -356,6 +452,8 @@ async function getAnalysisQuestions(req, res, next) {
     if (!attempt) {
       return res.status(404).json({ error: "Analysis not found" });
     }
+    const held = await heldFor(req, attempt);
+    if (held) return res.status(403).json(RESULTS_HELD(held));
     if (!(await reviewAllowed(req, attempt))) return res.status(402).json(REVIEW_LOCKED);
     const { items, pagination } = paginate(Array.isArray(attempt.questionReview) ? attempt.questionReview : [], page, limit);
     return res.json({ questions: items, pagination });

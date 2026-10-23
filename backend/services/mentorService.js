@@ -10,6 +10,7 @@ const { getMentorSettings } = require("./mentorSettingsService");
 const { getRanksForAttempts } = require("./rankService");
 const { logger, errorSummary } = require("../utils/logger");
 const { canAccessPaperContent } = require("./entitlementService");
+const { heldTestIds } = require("./liveEventService");
 
 // ACEIIIT Mentor: a UGEE preparation coach on Gemini.
 //
@@ -47,6 +48,7 @@ const SYSTEM_INSTRUCTION = [
   "6. Be concise and practical: short paragraphs or bullets, under about 250 words unless the student asks for a detailed plan. End with one concrete next step.",
   "7. Don't diagnose feelings or mental health. If a student seems very stressed, be kind and suggest talking to a trusted adult.",
   "8. Reply in the language the student writes in.",
+  "9. If STUDENT DATA has focusAttempt.question, the conversation is about that one question: use its text, options, the student's choice, the correct option and the explanation given, and explain why the right answer is right and where the student's choice goes wrong.",
 ].join("\n");
 
 const PERSONAL_RE = /\b(my|me|i|i'm|i've|mine)\b|\b(mock|test|attempt|score|marks?|rank|percentile|accuracy|weak|strong|topic|section|mistake|wrong|time|timing|pace|improv|progress|compare|last|recent|latest|result|report|plan|revision|revise|supr|reap)\b/i;
@@ -63,11 +65,14 @@ function trimText(value, max) {
 
 /** The student's recent submitted mocks, newest first (practice excluded), with ranks on read. */
 async function recentMocks(userId, limit = 5) {
-  const attempts = await Attempt.find({ userId, isPractice: { $ne: true }, invalidatedAt: null })
+  const latest = await Attempt.find({ userId, isPractice: { $ne: true }, invalidatedAt: null })
     .sort({ submittedAt: -1 })
-    .limit(limit)
+    .limit(limit + 5)
     .select("testId attemptNumber score accuracy correctCount wrongCount skippedCount unattemptedCount timeTakenSeconds submittedAt sectionScores userRole isPractice invalidatedAt")
     .lean();
+  // A live event's results aren't out yet: the mentor can't see them either.
+  const held = await heldTestIds(latest.map((a) => a.testId));
+  const attempts = latest.filter((a) => !held.has(String(a.testId))).slice(0, limit);
   if (!attempts.length) return [];
   const [tests, ranks] = await Promise.all([
     Test.find({ _id: { $in: attempts.map((a) => a.testId) } }).select("title totalMarks durationMinutes").lean(),
@@ -118,6 +123,26 @@ function wrongQuestions(attempt) {
     }));
 }
 
+/** One question of the student's own attempt, for "Ask Mentor" on a review card (no ids). */
+function focusQuestion(attempt, questionId, label) {
+  const q = (attempt.questionReview || []).find((item) => item && String(item.questionId) === String(questionId));
+  if (!q) return null;
+  const letter = (n) => (Number.isInteger(Number(n)) && n !== null && n !== undefined ? String.fromCharCode(65 + Number(n)) : null);
+  return {
+    label,
+    section: q.section,
+    topic: q.topic,
+    passage: q.passage ? trimText(q.passage, 900) : undefined,
+    question: trimText(q.prompt, 800),
+    options: (q.options || []).map((o, i) => `${String.fromCharCode(65 + i)}. ${trimText(o, 200)}`),
+    chosen: letter(q.selectedOption),
+    correct: letter(q.correctOption),
+    result: q.status,
+    explanation: q.explanation ? trimText(q.explanation, 900) : undefined,
+    timeSpentSec: q.timeSpent || null,
+  };
+}
+
 /** The measured facts behind a personal answer, or null when the question isn't personal. */
 async function buildStudentData(user, conversation, message) {
   const userId = user._id;
@@ -126,7 +151,8 @@ async function buildStudentData(user, conversation, message) {
   let focus = null;
   const focusId = conversation.attemptId ? String(conversation.attemptId) : (mocks[0] && mocks[0].attemptRef);
   if (focusId) {
-    const attempt = await Attempt.findOne({ _id: focusId, userId }).lean();
+    const found = await Attempt.findOne({ _id: focusId, userId }).lean();
+    const attempt = found && !(await heldTestIds([found.testId])).size ? found : null;
     if (attempt) {
       const evidence = await buildEvidenceForAttempt(attempt);
       focus = {
@@ -136,10 +162,14 @@ async function buildStudentData(user, conversation, message) {
         evidence: evidence.payload,
       };
       // Question text goes to the model only while the student may still see that paper.
-      if (MISTAKES_RE.test(message)) {
+      if (MISTAKES_RE.test(message) || conversation.questionId) {
         const test = await Test.findById(attempt.testId).select("isFree isPractice seasonId status questionIds").lean();
-        if (!test || (await canAccessPaperContent(user, test))) focus.wrongQuestions = wrongQuestions(attempt);
-        else focus.questionsLocked = "Question details are locked: the student's Pro Test Series access has ended.";
+        if (!test || (await canAccessPaperContent(user, test))) {
+          if (conversation.questionId) focus.question = focusQuestion(attempt, conversation.questionId, conversation.questionLabel || "");
+          if (MISTAKES_RE.test(message)) focus.wrongQuestions = wrongQuestions(attempt);
+        } else {
+          focus.questionsLocked = "Question details are locked: the student's Pro Test Series access has ended.";
+        }
       }
     }
   }

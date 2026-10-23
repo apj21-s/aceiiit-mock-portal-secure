@@ -1,6 +1,7 @@
 const Attempt = require("../models/Attempt");
 const { getInterpretationForAttempt, breakerState } = require("../services/aiInterpretationService");
 const { buildPerformanceProfile } = require("../services/performanceProfileService");
+const { heldResults } = require("../services/liveEventService");
 
 // Read-only endpoints for Performance Intelligence. This is the only controller that
 // touches AI interpretations; scoring, ranking, payments and integrity code never do.
@@ -13,6 +14,10 @@ async function getInterpretation(req, res, next) {
     const query = req.auth.role === "admin" ? { _id: req.params.id } : { _id: req.params.id, userId: req.auth.userId };
     const attempt = await Attempt.findOne(query).lean();
     if (!attempt) return res.status(404).json({ error: "Analysis not found" });
+    if (req.auth.role !== "admin") {
+      const held = (await heldResults([attempt.testId])).get(String(attempt.testId));
+      if (held) return res.status(403).json({ error: "Results for this live mock come out at the announced time.", code: "RESULTS_HELD", resultsAt: new Date(held).toISOString() });
+    }
     const [doc, profile] = await Promise.all([getInterpretationForAttempt(attempt), buildPerformanceProfile(attempt)]);
     const pending = doc.status === "pending" || doc.status === "processing";
     return res.json({

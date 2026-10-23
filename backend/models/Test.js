@@ -13,6 +13,14 @@ const testSchema = new mongoose.Schema(
     // Scheduled tests are listed for students with a countdown and open by themselves at this
     // time (services/testScheduler.js); null for every other status.
     publishAt: { type: Date, default: null },
+    // Live mock event: everyone joins within a window after `startsAt` (each still gets the
+    // full duration from their own start) and results are held back until `resultsAt`.
+    event: {
+      enabled: { type: Boolean, default: false },
+      startsAt: { type: Date, default: null },
+      joinMinutes: { type: Number, default: 15, min: 5, max: 180 },
+      resultsAt: { type: Date, default: null },
+    },
     isPractice: { type: Boolean, default: false },
     // Untimed practice: the student sees no countdown; the server still closes the paper at
     // its (generous) time cap, so an abandoned session ends.

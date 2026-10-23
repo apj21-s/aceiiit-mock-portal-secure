@@ -140,6 +140,7 @@
     if (source.type !== undefined) mapped.type = source.type;
     if (source.status !== undefined) mapped.status = source.status;
     if (source.publishAt !== undefined) mapped.publishAt = source.publishAt || null;
+    if (source.event !== undefined) mapped.event = source.event || { enabled: false };
     if (source.isFree !== undefined) mapped.isFree = toBoolean(source.isFree, false);
     if (source.displayOrder !== undefined) mapped.displayOrder = toNumber(source.displayOrder, existing && existing.displayOrder !== undefined ? existing.displayOrder : 100);
 
@@ -262,6 +263,16 @@
   }
 
   function mapRemoteAttempt(remote, userId) {
+    if (remote && remote.resultsPending) {
+      var pending = mapRemoteAttemptBase(remote, userId);
+      pending.result = null;
+      pending.resultSnapshot = null;
+      return pending;
+    }
+    return mapRemoteAttemptBase(remote, userId);
+  }
+
+  function mapRemoteAttemptBase(remote, userId) {
     var result = {
       score: remote.score,
       accuracy: remote.accuracy,
@@ -308,6 +319,9 @@
       sessionId: remote.sessionId || null,
       isPractice: !!remote.isPractice,
       submittedReason: remote.submittedReason || "submitted",
+      // Live mock: submitted, results come out at resultsAt (no score yet, so stats skip it).
+      resultsPending: !!remote.resultsPending,
+      resultsAt: remote.resultsAt || null,
     };
   }
 
@@ -356,6 +370,7 @@
 
   function mergeAttemptData(existing, incoming) {
     if (!existing) return incoming;
+    if (incoming && incoming.resultsPending) return incoming; // nothing to keep until results are out
     var merged = Object.assign({}, incoming);
     var existingResult = existing.result || null;
     var incomingResult = incoming.result || null;
@@ -2049,8 +2064,10 @@
     return data && Array.isArray(data.conversations) ? data.conversations : [];
   }
 
-  async function createMentorConversation(attemptId) {
-    var data = await api("/api/mentor/conversations", { method: "POST", body: JSON.stringify(attemptId ? { attemptId: String(attemptId) } : {}) });
+  async function createMentorConversation(attemptId, questionId) {
+    var body = attemptId ? { attemptId: String(attemptId) } : {};
+    if (attemptId && questionId) body.questionId = String(questionId);
+    var data = await api("/api/mentor/conversations", { method: "POST", body: JSON.stringify(body) });
     return data && data.conversation ? data.conversation : null;
   }
 
@@ -2219,6 +2236,43 @@
     return api("/api/tests/practice/options" + query, { method: "GET" });
   }
 
+  /** How many of this student's questions are due for mistake practice. */
+  async function getMistakeOptions() {
+    return api("/api/tests/practice/mistakes", { method: "GET" });
+  }
+
+  /** A practice paper of the student's own wrong or skipped questions. */
+  async function generateMistakePractice(userId, count, section, timerMinutes) {
+    var data = await api("/api/tests/practice/mistakes", {
+      method: "POST",
+      body: JSON.stringify({ count: Number(count) || 10, section: section || "all", timerMinutes: Number(timerMinutes) || 0 }),
+    });
+    var test = Object.assign({}, data.test, { createdBy: userId });
+    state.db.tests = (state.db.tests || []).filter(function (t) { return t.id !== test.id; }).concat([test]);
+    saveState();
+    return test.id;
+  }
+
+  async function reportQuestion(questionId, attemptId, reason, note) {
+    return api("/api/questions/" + encodeURIComponent(questionId) + "/report", {
+      method: "POST",
+      body: JSON.stringify({ attemptId: String(attemptId), reason: reason, note: note || "" }),
+    });
+  }
+
+  async function listQuestionReports(status) {
+    return api("/api/admin/reports" + (status === "resolved" ? "?status=resolved" : ""), { method: "GET" });
+  }
+
+  async function getQuestionReportCounts() {
+    var data = await api("/api/admin/reports/counts", { method: "GET" });
+    return (data && data.counts) || {};
+  }
+
+  async function resolveQuestionReports(questionId, note) {
+    return api("/api/admin/reports/" + encodeURIComponent(questionId) + "/resolve", { method: "POST", body: JSON.stringify({ note: note || "" }) });
+  }
+
   /** Server-built practice paper drawn from questions this student can access. */
   async function generatePracticeTest(userId, subject, difficulty, count, timerMinutes) {
     var data = await api("/api/tests/practice", {
@@ -2321,6 +2375,12 @@
     attachQuestionsBulk: attachQuestionsBulk,
     previewQuestionImport: previewQuestionImport,
     getWhatsNew: getWhatsNew,
+    getMistakeOptions: getMistakeOptions,
+    generateMistakePractice: generateMistakePractice,
+    reportQuestion: reportQuestion,
+    listQuestionReports: listQuestionReports,
+    getQuestionReportCounts: getQuestionReportCounts,
+    resolveQuestionReports: resolveQuestionReports,
     markWhatsNewSeen: markWhatsNewSeen,
     listReleaseNotes: listReleaseNotes,
     saveReleaseNote: saveReleaseNote,

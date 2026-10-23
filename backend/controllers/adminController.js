@@ -277,7 +277,7 @@ async function snapshot(req, res, next) {
   try {
     const [tests, questions, attempts, users, userCount, appConfig] = await Promise.all([
       Test.find({ deletedAt: null, status: { $ne: "practice" } })
-        .select("title subtitle series type isFree status publishAt displayOrder durationMinutes sectionDurations instructions benchmarkScores questionIds shuffleQuestions shuffleOptions integrity seasonId createdAt updatedAt")
+        .select("title subtitle series type isFree status publishAt event displayOrder durationMinutes sectionDurations instructions benchmarkScores questionIds shuffleQuestions shuffleOptions integrity seasonId createdAt updatedAt")
         .sort({ displayOrder: 1, createdAt: 1 })
         .lean(),
       // Only questions attached to a test; the full bank is paginated via GET /admin/questions.
@@ -311,6 +311,12 @@ async function snapshot(req, res, next) {
         isFree: Boolean(t.isFree),
         status: t.status,
         publishAt: t.publishAt ? new Date(t.publishAt).toISOString() : null,
+        event: t.event && t.event.enabled ? {
+          enabled: true,
+          startsAt: t.event.startsAt ? new Date(t.event.startsAt).toISOString() : null,
+          joinMinutes: Number(t.event.joinMinutes || 15),
+          resultsAt: t.event.resultsAt ? new Date(t.event.resultsAt).toISOString() : null,
+        } : null,
         displayOrder: Number.isFinite(Number(t.displayOrder)) ? Number(t.displayOrder) : 100,
         durationMinutes: t.durationMinutes,
         sectionDurations: t.sectionDurations || { SUPR: 60, REAP: 120 },

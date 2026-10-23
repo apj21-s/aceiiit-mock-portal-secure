@@ -13,6 +13,7 @@ const { buildAttemptAnalysis } = require("./attemptAnalysisService");
 const { invalidateRankCache } = require("./rankService");
 const { domainEvents, EVENTS } = require("./domainEvents");
 const { openDueTests } = require("./testScheduler");
+const { joinClosesAt, resultsHeldUntil } = require("./liveEventService");
 
 // Requests within this window after a deadline are still accepted (network latency).
 const GRACE_MS = 60 * 1000;
@@ -250,6 +251,15 @@ async function startSession({ auth, testId, examToken, req }) {
     throw new ExamError(409, "EXAM_ACTIVE_ELSEWHERE", "This exam is already open in another tab or device.", {
       sessionId: String(existing._id),
     });
+  }
+
+  // Live event: new starts only within the join window (resuming above is always allowed). Once
+  // results are out, the test works like any other live mock.
+  if (auth.role !== "admin") {
+    const closesAt = joinClosesAt(test);
+    if (closesAt && closesAt.getTime() < Date.now() && resultsHeldUntil(test)) {
+      throw new ExamError(403, "EVENT_CLOSED", "Joining this live mock has closed.", { closedAt: closesAt.toISOString(), resultsAt: new Date(test.event.resultsAt).toISOString() });
+    }
   }
 
   const token = newExamToken();

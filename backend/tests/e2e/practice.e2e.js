@@ -35,6 +35,7 @@ const SHOTS = path.join(SHOTS_DIR, "practice");
   const Test = req("models/Test");
   const Season = req("models/Season");
   const Entitlement = req("models/Entitlement");
+  const Attempt = req("models/Attempt");
   const AppConfig = req("models/AppConfig");
   const season = await Season.create({ name: "UGEE 2026", year: 2026, status: "active", isDefaultActive: true });
   const hash = await bcrypt.hash("Passw0rd!long", 4);
@@ -102,7 +103,7 @@ const SHOTS = path.join(SHOTS_DIR, "practice");
       const eh = { ...h, "X-Exam-Token": s.examToken };
       const paper = await (await fetch(`/api/attempt/session/${s.session.id}/paper`, { headers: eh })).json();
       const supr = paper.questions.filter((q) => q.section === "SUPR"); // 8 of 15: not "ended early"
-      await fetch(`/api/attempt/session/${s.session.id}/answers`, { method: "PUT", headers: eh, body: JSON.stringify({ seq: 1, answers: Object.fromEntries(supr.map((q) => [q.id, 0])) }) });
+      await fetch(`/api/attempt/session/${s.session.id}/answers`, { method: "PUT", headers: eh, body: JSON.stringify({ seq: 1, answers: Object.fromEntries(supr.map((q) => [q.id, 0])), timeSpent: Object.fromEntries(supr.map((q, i) => [q.id, 20 + i * 5])) }) });
       const out = await (await fetch("/api/attempt", { method: "POST", headers: { ...eh, "Idempotency-Key": "practice-e2e-mock-1" }, body: JSON.stringify({ sessionId: s.session.id }) })).json();
       return out.attempt.id;
     }, String(mock._id));
@@ -225,8 +226,32 @@ const SHOTS = path.join(SHOTS_DIR, "practice");
       });
       return true;
     };
+    await mongoose.connect(uri);
+    await Attempt.create({
+      userId: student._id,
+      userEmail: student.email,
+      testId: mock._id,
+      attemptNumber: 0,
+      status: "submitted",
+      submittedAt: new Date(Date.now() - 7200000),
+      score: 2,
+      accuracy: 25,
+      correctCount: 2,
+      wrongCount: 6,
+      skippedCount: 7,
+      timeTakenSeconds: 300,
+      isPractice: false,
+      questionReview: [],
+    });
+    await mongoose.disconnect();
+    await page.evaluate(async () => { if (window.store && window.store.refreshFromRemote) await window.store.refreshFromRemote(); });
     await page.goto(`${BASE}/#/results/${mockAttemptId}`, { waitUntil: "networkidle2" });
     await page.waitForSelector(".rs-coach", { timeout: 15000 }).catch(() => null);
+    const pb = await page.evaluate(() => {
+      const el = document.querySelector(".rs-pb");
+      return el ? { text: el.innerText.replace(/\s+/g, " ").trim(), isFresh: el.classList.contains("is-fresh") } : null;
+    });
+    check(pb && /New personal best/i.test(pb.text) && pb.isFresh, `score reveal shows the personal-best badge with celebration glint (${pb ? pb.text : "none"})`);
     const coach = await page.evaluate(() => {
       const card = document.querySelector(".rs-coach");
       if (!card) return null;
@@ -245,6 +270,44 @@ const SHOTS = path.join(SHOTS_DIR, "practice");
       await page.screenshot({ path: path.join(SHOTS, "results-coach-1366.png") });
     }
     page.interceptHook = null;
+
+    // ---- Results: where the time went, Ask Mentor, Report a problem ----
+    await page.waitForSelector(".ti-card", { timeout: 10000 }).catch(() => null);
+    const timeCard = await page.evaluate(() => ({
+      bars: document.querySelectorAll(".ti-strip .ti-bar").length,
+      slowest: Array.from(document.querySelectorAll(".ti-slowest .ti-q")).map((e) => e.textContent),
+      headline: (document.querySelector(".ti-headline") || {}).textContent || "",
+    }));
+    check(timeCard.bars === 15 && timeCard.slowest[0] === "Q8" && /of your time went/.test(timeCard.headline), `"Where your time went" shows a bar per question and the slowest first (${timeCard.bars} bars, ${timeCard.slowest.join(" ")})`);
+    await page.evaluate(() => document.getElementById("load-question-review").click());
+    await page.waitForSelector(".js-report-question", { timeout: 10000 }).catch(() => null);
+    check((await page.$$(".js-ask-mentor-question")).length > 0 && (await page.$$(".js-report-question")).length > 0, "each reviewed question offers Ask Mentor and Report a problem");
+    await page.evaluate(() => document.querySelector(".js-report-question").click());
+    await page.waitForSelector(".report-form", { timeout: 5000 }).catch(() => null);
+    await page.evaluate(() => { document.querySelector('.report-form input[value="typo"]').click(); document.getElementById("report-note").value = "Option C has a typo"; });
+    await page.click('.report-form button[type="submit"]');
+    await page.waitForSelector(".report-thanks", { timeout: 8000 }).catch(() => null);
+    check(/Thanks/.test(await page.evaluate(() => (document.querySelector(".report-thanks") || {}).textContent || "")), "Report a problem sends the report and says thanks");
+    await page.keyboard.press("Escape");
+    await sleep(300);
+    check(/Reported/.test(await page.$eval(".js-report-question", (b) => b.textContent)), "the reported question's button says Reported");
+    await page.evaluate(() => document.querySelector(".js-ask-mentor-question").click());
+    await page.waitForSelector("#mentor-panel:not([hidden])", { timeout: 8000 }).catch(() => null);
+    await sleep(500);
+    const chip = await page.evaluate(() => (document.querySelector("#mentor-panel .mentor-context.is-question") || {}).textContent || "");
+    check(/About\s*Q1/.test(chip), `Ask Mentor opens the mentor about that question (${chip.trim()})`);
+    await page.keyboard.press("Escape");
+    await sleep(400);
+
+    // ---- Mistake practice from the Practice tab ----
+    await page.goto(`${BASE}/#/exams/practice`, { waitUntil: "networkidle2" });
+    await page.waitForFunction(() => /waiting/.test((document.querySelector("[data-mistakes-status]") || {}).textContent || ""), { timeout: 10000 }).catch(() => null);
+    const mistakes = await page.evaluate(() => ({ status: (document.querySelector("[data-mistakes-status]") || {}).textContent || "", sizes: Array.from(document.querySelectorAll("#mistakes-count option")).map((o) => o.value) }));
+    check(/questions? (is|are) waiting/.test(mistakes.status) && mistakes.sizes.length > 0, `the mistakes card counts what's due (${mistakes.status.slice(0, 60)})`);
+    await page.click("#start-mistakes-btn");
+    await page.waitForFunction(() => location.hash.indexOf("#/instructions/") === 0 || location.hash.indexOf("#instructions/") === 0, { timeout: 15000 }).catch(() => null);
+    await page.waitForFunction(() => /My mistakes/.test(document.body.innerText), { timeout: 10000 }).catch(() => null);
+    check(/My mistakes/.test(await text(page)), "Practise mistakes builds a paper of them and opens its instructions");
     check(pageErrors.length === 0, `no page errors (${pageErrors.length})`);
   } catch (err) {
     failures.push(`exception: ${err.message}`);

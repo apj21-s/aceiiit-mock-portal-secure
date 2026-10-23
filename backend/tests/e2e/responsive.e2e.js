@@ -204,6 +204,20 @@ async function measure(page) {
         await page.goto(`${BASE}/${hash}`, { waitUntil: "networkidle2" });
         await sleep(900);
         const m = await measure(page);
+        if (Number(vp.width) <= 780 && !LANDSCAPE(vp)) {
+          const tabbarCheck = await page.evaluate(() => {
+            const bar = document.querySelector(".bottom-tabbar");
+            const mentor = document.querySelector(".support-chat-button");
+            const barRect = bar ? bar.getBoundingClientRect() : null;
+            const mentorRect = mentor && getComputedStyle(mentor).display !== "none" ? mentor.getBoundingClientRect() : null;
+            const overlap = barRect && mentorRect ? mentorRect.bottom > barRect.top : false;
+            return {
+              barPresent: !!bar && getComputedStyle(bar).display !== "none",
+              overlap,
+            };
+          });
+          if (tabbarCheck.overlap) problems.push({ name: `${name}-mentor-overlap`, width, layout: ["mentor button overlaps bottom tabbar"] });
+        }
         await page.screenshot({ path: path.join(SHOTS, `${name}-${width}.png`), fullPage: FULL });
         if (m.offenders.length || m.doubleScroll.length || m.layout.length) problems.push({ name, width, ...m });
       }
@@ -216,6 +230,16 @@ async function measure(page) {
         await page.evaluate(() => document.getElementById("begin-test").click());
         await page.waitForFunction(() => location.hash.indexOf("#/test/") === 0, { timeout: 15000 });
         await sleep(1500);
+        const examBarCheck = await page.evaluate(() => {
+          const bar = document.querySelector(".bottom-tabbar");
+          const mentor = document.querySelector(".support-chat-button");
+          return {
+            tabbarPresent: !!bar && getComputedStyle(bar).display !== "none",
+            mentorPresent: !!mentor && getComputedStyle(mentor).display !== "none",
+          };
+        });
+        if (examBarCheck.tabbarPresent) problems.push({ name: "exam-bottom-tabbar", width, layout: ["bottom tabbar visible on exam"] });
+        if (examBarCheck.mentorPresent) problems.push({ name: "exam-mentor-button", width, layout: ["mentor button visible on exam"] });
         const m = await measure(page);
         await page.screenshot({ path: path.join(SHOTS, `exam-${width}.png`) });
         if (m.offenders.length || m.doubleScroll.length || m.layout.length) problems.push({ name: "exam", width, ...m });

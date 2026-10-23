@@ -79,6 +79,20 @@ async function flowDrawer(browser) {
   await shot(page, "dashboard-header-390");
   check(layout.headerAccountHidden, "phone: header shows only logo + menu (account controls moved to drawer)");
 
+  const tabbarInfo = await page.evaluate(() => {
+    const nav = document.querySelector(".bottom-tabbar");
+    const mentor = document.querySelector(".support-chat-button");
+    const r = nav ? nav.getBoundingClientRect() : null;
+    return {
+      shown: !!nav && getComputedStyle(nav).display !== "none",
+      items: nav ? nav.querySelectorAll(".tabbar-item").length : 0,
+      atBottom: r ? Math.round(window.innerHeight - r.bottom) : -1,
+      mentorAbove: mentor && r ? mentor.getBoundingClientRect().bottom <= r.top + 1 : true,
+    };
+  });
+  check(tabbarInfo.shown && tabbarInfo.items === 5 && tabbarInfo.atBottom === 0, "phone 390px: bottom tab bar is visible at bottom with 5 items");
+  check(tabbarInfo.mentorAbove, "phone 390px: mentor button sits above the tab bar with no overlap");
+
   let st = await drawerState(page);
   check(!st.open && st.visibility === "hidden" && st.drawerInert && st.expanded === "false", "closed drawer is hidden, inert and aria-expanded=false", st);
 
@@ -286,6 +300,15 @@ async function flowExamLayout(browser) {
     check(m.missing.length === 0, `${vp.name}: all 8 capabilities visible in the viewport`, m.missing);
     if (vp.touch) check(m.small.length === 0, `${vp.name}: capability tap targets ≥44px`, m.small);
     check(m.clearance !== null && m.clearance >= 0, `${vp.name}: last option clears the action bar (gap ${m.clearance}px)`);
+    const examControlsCheck = await page.evaluate(() => {
+      const bar = document.querySelector(".bottom-tabbar");
+      const mentor = document.querySelector(".support-chat-button");
+      return {
+        tabbarAbsent: !bar || getComputedStyle(bar).display === "none",
+        mentorAbsent: !mentor || getComputedStyle(mentor).display === "none",
+      };
+    });
+    check(examControlsCheck.tabbarAbsent && examControlsCheck.mentorAbsent, `${vp.name}: bottom tab bar and mentor button are absent on exam screen`);
     await shot(page, `exam-${vp.name}`);
   }
   await page.close();

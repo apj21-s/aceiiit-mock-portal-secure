@@ -6,6 +6,7 @@ const GoogleCalendarEvent = require("../models/GoogleCalendarEvent");
 const MentorConversation = require("../models/MentorConversation");
 const MentorMessage = require("../models/MentorMessage");
 const MentorUsage = require("../models/MentorUsage");
+const QuestionReport = require("../models/QuestionReport");
 const Reminder = require("../models/Reminder");
 const User = require("../models/User");
 const { logAuditEvent } = require("./auditLogService");
@@ -47,6 +48,7 @@ async function purgeUserCascade(user, actorUserId, { automatic = false } = {}) {
     MentorMessage.deleteMany({ userId }),
     MentorConversation.deleteMany({ userId }),
     MentorUsage.deleteMany({ userId }),
+    QuestionReport.deleteMany({ userId }),
   ]);
   await User.deleteOne({ _id: userId });
   await logAuditEvent({

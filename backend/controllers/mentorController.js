@@ -15,7 +15,11 @@ const { usagePeriod } = require("../services/mentorAccessService");
 // attempts are owner-checked on every request; tier and usage are computed on the server.
 
 const objectId = z.string().regex(/^[a-f0-9]{24}$/i, "Invalid id");
-const createSchema = z.object({ attemptId: objectId.optional().nullable() }).strict();
+const createSchema = z.object({
+  attemptId: objectId.optional().nullable(),
+  // A question of that attempt (needs attemptId).
+  questionId: objectId.optional().nullable(),
+}).strict().refine((v) => !v.questionId || v.attemptId, { message: "A question needs its attempt", path: ["questionId"] });
 const messageSchema = z.object({
   content: z.string().max(20000),
   clientMessageId: z.string().regex(/^[A-Za-z0-9_-]{8,64}$/, "Invalid message id"),
@@ -55,6 +59,7 @@ function conversationView(c, attempts) {
     id: String(c._id),
     title: c.title,
     attempt: c.attemptId ? attempts.get(String(c.attemptId)) || null : null,
+    question: c.questionId ? { label: c.questionLabel || "This question" } : null,
     messageCount: c.messageCount || 0,
     lastMessageAt: c.lastMessageAt,
     createdAt: c.createdAt,
@@ -83,12 +88,21 @@ async function createConversation(req, res, next) {
   try {
     const input = createSchema.parse(req.body || {});
     let attemptId = null;
+    let questionId = null;
+    let questionLabel = "";
     if (input.attemptId) {
-      const attempt = await Attempt.findOne({ _id: input.attemptId, userId: req.auth.userId }).select("_id").lean();
+      const attempt = await Attempt.findOne({ _id: input.attemptId, userId: req.auth.userId }).select("_id questionReview.questionId questionReview.topic").lean();
       if (!attempt) return res.status(404).json({ error: "Attempt not found", code: "MENTOR_NOT_FOUND" });
       attemptId = attempt._id;
-      // Opening the mentor twice from the same result reuses its empty conversation.
-      const empty = await MentorConversation.findOne({ userId: req.auth.userId, attemptId, messageCount: 0 }).lean();
+      if (input.questionId) {
+        const items = attempt.questionReview || [];
+        const index = items.findIndex((q) => q && String(q.questionId) === String(input.questionId));
+        if (index === -1) return res.status(404).json({ error: "That question isn't in this attempt", code: "MENTOR_NOT_FOUND" });
+        questionId = items[index].questionId;
+        questionLabel = `Q${index + 1}${items[index].topic ? ` · ${items[index].topic}` : ""}`.slice(0, 80);
+      }
+      // Opening the mentor twice from the same result (or question) reuses its empty conversation.
+      const empty = await MentorConversation.findOne({ userId: req.auth.userId, attemptId, questionId, messageCount: 0 }).lean();
       if (empty) {
         const attempts = await attemptSummaries([attemptId]);
         return res.json({ conversation: conversationView(empty, attempts) });
@@ -99,7 +113,9 @@ async function createConversation(req, res, next) {
     const conversation = await MentorConversation.create({
       userId: req.auth.userId,
       attemptId,
-      title: linked ? `About ${linked.test}`.slice(0, 120) : "New conversation",
+      questionId,
+      questionLabel,
+      title: questionLabel && linked ? `${questionLabel} (${linked.test})`.slice(0, 120) : linked ? `About ${linked.test}`.slice(0, 120) : "New conversation",
     });
     return res.status(201).json({ conversation: conversationView(conversation.toObject(), attempts) });
   } catch (err) {

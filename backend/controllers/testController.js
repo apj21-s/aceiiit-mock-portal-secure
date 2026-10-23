@@ -4,8 +4,10 @@ const AppConfig = require("../models/AppConfig");
 const Test = require("../models/Test");
 const User = require("../models/User");
 const Question = require("../models/Question");
-const { canAccessTest, getEntitledSeasonIds, isTestAccessible } = require("../services/entitlementService");
+const Attempt = require("../models/Attempt");
+const { canAccessTest, getEntitledSeasonIds, isTestAccessible, lockedQuestionIds } = require("../services/entitlementService");
 const { getActiveSeason } = require("../services/seasonService");
+const { heldTestIds } = require("../services/liveEventService");
 const {
   getCatalogPayload,
   getPublicQuestionsForTest,
@@ -133,7 +135,44 @@ const testInputSchema = z.object({
       autoSubmitThreshold: z.number().int().min(1).max(100).optional(),
     })
     .optional(),
+  // Live mock event (needs Scheduled publishing): join window and results time.
+  event: z
+    .object({
+      enabled: z.boolean(),
+      joinMinutes: z.number().int().min(5).max(180).optional(),
+      resultsAt: z.union([z.string().datetime({ offset: true }), z.null()]).optional(),
+    })
+    .strict()
+    .optional(),
 });
+
+const eventError = (message, code) => Object.assign(new Error(message), { status: 400, expose: true, code });
+
+/**
+ * Live-event rules shared by create and update. An event starts when the test opens (its
+ * scheduled time, or now when it's published early), lets students join for `joinMinutes`, and
+ * holds results until `resultsAt`, which must leave time for the last joiner to finish.
+ * Returns the event to store, or undefined to leave it as it is.
+ */
+function resolveEvent(input, current, schedule, totalMinutes) {
+  const previous = (current && current.event) || {};
+  const wanted = input.event !== undefined ? input.event : (previous.enabled ? { enabled: true } : undefined);
+  if (wanted === undefined) return undefined;
+  if (!wanted.enabled) return { enabled: false, startsAt: null, joinMinutes: previous.joinMinutes || 15, resultsAt: null };
+  let startsAt;
+  if (schedule.status === "scheduled") startsAt = schedule.publishAt;
+  else if (schedule.status === "live") startsAt = previous.enabled && previous.startsAt ? new Date(previous.startsAt) : new Date();
+  else throw eventError("A live event needs Scheduled publishing (or an event that's already running).", "EVENT_NEEDS_SCHEDULE");
+  const joinMinutes = wanted.joinMinutes !== undefined ? wanted.joinMinutes : previous.joinMinutes || 15;
+  const rawResults = wanted.resultsAt !== undefined ? wanted.resultsAt : previous.resultsAt;
+  const resultsAt = rawResults ? new Date(rawResults) : null;
+  if (!resultsAt || Number.isNaN(resultsAt.getTime())) throw eventError("Pick when the results come out.", "EVENT_RESULTS_REQUIRED");
+  const earliest = new Date(startsAt).getTime() + (joinMinutes + totalMinutes) * 60000;
+  if (resultsAt.getTime() < earliest) {
+    throw eventError(`Results must come out after the last student can finish (${joinMinutes} min to join + ${totalMinutes} min paper).`, "EVENT_RESULTS_TOO_EARLY");
+  }
+  return { enabled: true, startsAt, joinMinutes, resultsAt };
+}
 
 /**
  * Scheduling rules shared by create and update: "scheduled" needs a future publishAt; any other
@@ -154,6 +193,7 @@ async function createTest(req, res, next) {
     const input = testInputSchema.parse(req.body || {});
     const sectionDurations = input.sectionDurations || { SUPR: 60, REAP: 120 };
     const schedule = resolveSchedule(input);
+    const event = resolveEvent(input, null, schedule, sectionDurations.SUPR + sectionDurations.REAP);
     const test = await Test.create({
       title: input.title,
       subtitle: input.subtitle || "",
@@ -162,6 +202,7 @@ async function createTest(req, res, next) {
       isFree: Boolean(input.isFree),
       status: schedule.status,
       publishAt: schedule.publishAt,
+      ...(event ? { event } : {}),
       displayOrder: input.displayOrder !== undefined ? input.displayOrder : 100,
       sectionDurations,
       durationMinutes: sectionDurations.SUPR + sectionDurations.REAP,
@@ -191,6 +232,7 @@ async function updateTest(req, res, next) {
     if (input.series !== undefined) test.series = input.series || "UGEE 2026";
     if (input.type !== undefined) test.type = input.type;
     if (input.isFree !== undefined) test.isFree = Boolean(input.isFree);
+    const before = { status: test.status, publishAt: test.publishAt, event: test.event ? test.event.toObject() : {} };
     if (input.status !== undefined || input.publishAt !== undefined) {
       const schedule = resolveSchedule(input, { status: test.status, publishAt: test.publishAt });
       test.status = schedule.status;
@@ -200,6 +242,12 @@ async function updateTest(req, res, next) {
     if (input.sectionDurations) {
       test.sectionDurations = input.sectionDurations;
       test.durationMinutes = input.sectionDurations.SUPR + input.sectionDurations.REAP;
+    }
+    if (input.event !== undefined || input.status !== undefined || input.publishAt !== undefined || input.sectionDurations) {
+      // A schedule moved, a draft, or "Publish now" all re-check the event's times.
+      const keepRunning = before.status === "live" && test.status === "live";
+      const event = resolveEvent(input, { event: keepRunning ? before.event : { ...before.event, startsAt: null } }, { status: test.status, publishAt: test.publishAt }, test.durationMinutes);
+      if (event) test.event = event;
     }
     if (input.instructions) test.instructions = input.instructions;
     if (input.benchmarkScores) test.benchmarkScores = input.benchmarkScores;
@@ -454,17 +502,109 @@ async function getPracticeOptions(req, res, next) {
   }
 }
 
+/** Saves a private practice paper: SUPR first, then REAP, minutes split by question count. */
+async function createPracticePaper(ownerUserId, selected, label, timerMinutes) {
+  selected.sort((a, b) => (sectionOf(a) === sectionOf(b) ? 0 : sectionOf(a) === "SUPR" ? -1 : 1));
+  const counts = { SUPR: 0, REAP: 0 };
+  selected.forEach((q) => { counts[sectionOf(q)] += 1; });
+  const untimed = timerMinutes === 0;
+  const totalMinutes = untimed ? UNTIMED_PRACTICE_MINUTES : timerMinutes;
+  const sectionDurations = splitPracticeMinutes(totalMinutes, counts);
+  const questionWord = selected.length === 1 ? "Question" : "Questions";
+  return Test.create({
+    title: `Practice: ${label}`.slice(0, 120),
+    subtitle: `${selected.length} ${questionWord} • ${untimed ? "Untimed" : `${totalMinutes} Mins`}`,
+    series: "Practice",
+    type: "practice",
+    isFree: true,
+    isPractice: true,
+    status: "practice",
+    untimed,
+    ownerUserId,
+    sectionDurations,
+    durationMinutes: sectionDurations.SUPR + sectionDurations.REAP,
+    questionIds: selected.map((q) => q._id),
+  });
+}
+
+async function freePracticeLimitReached(req, isAdmin, entitledSeasonIds) {
+  if (isAdmin || entitledSeasonIds.size > 0) return false;
+  const used = await Test.countDocuments({ ownerUserId: req.auth.userId, status: "practice" });
+  return used >= FREE_PRACTICE_LIMIT;
+}
+
+const PRACTICE_LIMIT_ERROR = { error: "Free accounts include one custom practice session. Buy the test series for unlimited practice.", code: "PRACTICE_LIMIT" };
+
+// ---------------------------------------------------------------------------
+// Mistake practice: questions whose latest answer (in any mock or practice paper) was wrong
+// or skipped. Getting one right later takes it off the list. Questions the student can no
+// longer open (paid access ended) and deleted questions are left out.
+// ---------------------------------------------------------------------------
+const mistakesSchema = z.object({
+  count: z.coerce.number().int().min(1).max(30).default(10),
+  section: z.enum(["all", "SUPR", "REAP"]).default("all"),
+  timerMinutes: z.coerce.number().int().min(0).max(300).default(0),
+}).strict();
+
+async function dueMistakes(req) {
+  const attempts = await Attempt.find({ userId: req.auth.userId, invalidatedAt: null })
+    .select("testId submittedAt questionReview.questionId questionReview.status")
+    .sort({ submittedAt: 1 })
+    .lean();
+  // Results of a live event aren't out yet: their answers can't count until then.
+  const held = await heldTestIds(attempts.map((a) => a.testId));
+  const latest = new Map();
+  attempts.forEach((attempt) => {
+    if (held.has(String(attempt.testId))) return;
+    (attempt.questionReview || []).forEach((item) => {
+      if (item && item.questionId) latest.set(String(item.questionId), item.status);
+    });
+  });
+  const dueIds = Array.from(latest.entries()).filter(([, status]) => status === "wrong" || status === "skipped").map(([id]) => id);
+  if (!dueIds.length) return [];
+  const [questions, locked] = await Promise.all([
+    Question.find({ _id: { $in: dueIds }, deletedAt: null }).select("_id section topic").lean(),
+    lockedQuestionIds(req.auth),
+  ]);
+  return questions.filter((q) => !locked.has(String(q._id)));
+}
+
+async function getMistakeOptions(req, res, next) {
+  try {
+    const due = await dueMistakes(req);
+    const bySection = { SUPR: 0, REAP: 0 };
+    due.forEach((q) => { bySection[sectionOf(q)] += 1; });
+    res.json({ available: due.length, bySection, sizes: PRACTICE_SIZES });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function createMistakePractice(req, res, next) {
+  try {
+    const input = mistakesSchema.parse(req.body || {});
+    const isAdmin = req.auth.role === "admin";
+    const entitledSeasonIds = await getEntitledSeasonIds(req.auth);
+    if (await freePracticeLimitReached(req, isAdmin, entitledSeasonIds)) return res.status(402).json(PRACTICE_LIMIT_ERROR);
+    const due = (await dueMistakes(req)).filter((q) => input.section === "all" || sectionOf(q) === input.section);
+    if (!due.length) {
+      return res.status(400).json({ error: "No mistakes to practise right now. Every question you got wrong or skipped has since been answered correctly.", code: "MISTAKES_NONE" });
+    }
+    const selected = shuffleInPlace(due.slice()).slice(0, Math.min(input.count, due.length));
+    const label = input.section === "all" ? "My mistakes" : `My ${input.section} mistakes`;
+    const test = await createPracticePaper(req.auth.userId, selected, label, input.timerMinutes);
+    return res.status(201).json({ test: practiceTestView(test) });
+  } catch (err) {
+    next(err);
+  }
+}
+
 async function createPracticeTest(req, res, next) {
   try {
     const input = practiceSchema.parse(req.body || {});
     const { pool, isAdmin, entitledSeasonIds } = await practicePool(req, input.difficulty);
 
-    if (!isAdmin && entitledSeasonIds.size === 0) {
-      const used = await Test.countDocuments({ ownerUserId: req.auth.userId, status: "practice" });
-      if (used >= FREE_PRACTICE_LIMIT) {
-        return res.status(402).json({ error: "Free accounts include one custom practice session. Buy the test series for unlimited practice.", code: "PRACTICE_LIMIT" });
-      }
-    }
+    if (await freePracticeLimitReached(req, isAdmin, entitledSeasonIds)) return res.status(402).json(PRACTICE_LIMIT_ERROR);
 
     const subjectPool = filterBySubject(pool, input.subject);
     if (!isAdmin) {
@@ -483,38 +623,15 @@ async function createPracticeTest(req, res, next) {
       return res.status(400).json({ error: "No questions match these practice filters yet. Try another subject or difficulty.", code: "PRACTICE_EMPTY" });
     }
 
-    // SUPR questions first, then REAP, as in the real paper.
-    selected.sort((a, b) => (sectionOf(a) === sectionOf(b) ? 0 : sectionOf(a) === "SUPR" ? -1 : 1));
-    const counts = { SUPR: 0, REAP: 0 };
-    selected.forEach((q) => { counts[sectionOf(q)] += 1; });
-    const untimed = input.timerMinutes === 0;
-    const totalMinutes = untimed ? UNTIMED_PRACTICE_MINUTES : input.timerMinutes;
-    const sectionDurations = splitPracticeMinutes(totalMinutes, counts);
-
     const topicMatch = /^topic:(SUPR|REAP):(.+)$/.exec(input.subject);
     const subjectLabel = input.subject === "all"
       ? "Mixed Subjects"
       : (topicMatch ? topicMatch[2].trim() : input.subject);
-    const questionWord = selected.length === 1 ? "Question" : "Questions";
-    const test = await Test.create({
-      title: `Practice: ${subjectLabel}`.slice(0, 120),
-      subtitle: `${selected.length} ${questionWord} • ${untimed ? "Untimed" : `${totalMinutes} Mins`}`,
-      series: "Practice",
-      type: "practice",
-      isFree: true,
-      isPractice: true,
-      status: "practice",
-      untimed,
-      ownerUserId: req.auth.userId,
-      sectionDurations,
-      durationMinutes: sectionDurations.SUPR + sectionDurations.REAP,
-      questionIds: selected.map((q) => q._id),
-    });
-
+    const test = await createPracticePaper(req.auth.userId, selected, subjectLabel, input.timerMinutes);
     return res.status(201).json({ test: practiceTestView(test) });
   } catch (err) {
     next(err);
   }
 }
 
-module.exports = { PRACTICE_SIZES, createPracticeTest, getPracticeOptions, listOwnPracticeTests, splitPracticeMinutes, listTests, getTestById, getTestQuestions, createTest, updateTest, deleteTest, submitQotdAttempt };
+module.exports = { PRACTICE_SIZES, createPracticeTest, getPracticeOptions, getMistakeOptions, createMistakePractice, listOwnPracticeTests, splitPracticeMinutes, listTests, getTestById, getTestQuestions, createTest, updateTest, deleteTest, submitQotdAttempt };

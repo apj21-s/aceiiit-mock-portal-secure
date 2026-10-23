@@ -66,6 +66,7 @@
   var syncPollId = null;
   var syncInFlight = false;
   var syncQueued = false;
+  var syncQueuedSettings = null;
   var KEEP_ALIVE_INTERVAL_MS = 60 * 1000;
 
   // -------------------------------------------------------------------------
@@ -180,6 +181,11 @@
     console.log("[Google Auth] Sending credential to /api/auth/google");
     if (response && response.credential) {
       renderOrbLoadingScreen();
+      var authTimeout = window.setTimeout(function () {
+        hideOverlayLoader();
+        renderRoute();
+        safeShowFeedback("Sign-in is taking longer than expected. Please check your connection and try again.", true);
+      }, 15000);
       try {
         console.log("[Google Auth] POST /api/auth/google started");
         var resData = await auth.googleAuth({ credential: response.credential });
@@ -189,18 +195,24 @@
             store.setCurrentUser(resData.user);
           }
           console.log("[Google Auth] navigate dashboard");
+          hideOverlayLoader();
           navigate("dashboard");
         } else {
+          hideOverlayLoader();
           renderRoute();
           setTimeout(function () {
             safeShowFeedback("Google authentication failed. Please try again.", true);
           }, 0);
         }
       } catch (err) {
+        hideOverlayLoader();
         renderRoute();
         setTimeout(function () {
           safeShowFeedback(safeFriendlyFetchFailure(err && err.message ? err.message : "Google authentication failed. Please try again."), true);
         }, 0);
+      } finally {
+        window.clearTimeout(authTimeout);
+        hideOverlayLoader();
       }
     } else {
       safeShowFeedback("Google sign-in was cancelled or returned no credentials.", true);
@@ -1152,26 +1164,42 @@
     } catch (_err) { }
   }
 
-  function animateNumber(el, end) {
+  /** Counts a number up with an ease-out (about 0.7 s); instant on revisits and with reduced motion. */
+  function animateNumber(el, end, options) {
     if (!el) return;
     var target = Number(end || 0);
     var prefix = el.getAttribute("data-prefix") || "";
     var suffix = el.getAttribute("data-suffix") || "";
     var decimals = Number(el.getAttribute("data-decimals") || 0);
-    var start = 0;
-    var step = target / 50;
-    if (!Number.isFinite(step) || step === 0) {
-      el.textContent = prefix + target.toFixed(decimals) + suffix;
+    var show = function (value) { el.textContent = prefix + Number(value).toFixed(decimals) + suffix; };
+    if (!Number.isFinite(target) || target === 0 || (options && options.instant) || prefersReducedMotion()) {
+      show(Number.isFinite(target) ? target : 0);
       return;
     }
-    var interval = window.setInterval(function () {
-      start += step;
-      if ((step >= 0 && start >= target) || (step < 0 && start <= target)) {
-        start = target;
-        window.clearInterval(interval);
-      }
-      el.textContent = prefix + Number(start).toFixed(decimals) + suffix;
-    }, 16);
+    var duration = 700;
+    var startedAt = null;
+    function frame(now) {
+      if (startedAt === null) startedAt = now;
+      var t = Math.min(1, (now - startedAt) / duration);
+      var eased = 1 - Math.pow(1 - t, 3);
+      show(t === 1 ? target : target * eased);
+      if (t < 1 && el.isConnected) window.requestAnimationFrame(frame);
+    }
+    show(0);
+    window.requestAnimationFrame(frame);
+  }
+
+  // Results the student has already opened: the score reveal and celebration play once.
+  function hasSeenResultReveal(attemptId) {
+    try { return (JSON.parse(localStorage.getItem("aceiiit_seen_results") || "[]") || []).indexOf(String(attemptId)) !== -1; } catch (_e) { return false; }
+  }
+
+  function markResultRevealSeen(attemptId) {
+    try {
+      var seen = JSON.parse(localStorage.getItem("aceiiit_seen_results") || "[]") || [];
+      if (seen.indexOf(String(attemptId)) === -1) seen.push(String(attemptId));
+      localStorage.setItem("aceiiit_seen_results", JSON.stringify(seen.slice(-200)));
+    } catch (_e) { }
   }
 
   // The exam students are preparing for. The admin-set UGEE date applies through the end of
@@ -1433,7 +1461,7 @@
     return tips.map(function (tip) { return hello + escapeHtml(tip); });
   }
 
-  function activateAnalysisAnimations(root) {
+  function activateAnalysisAnimations(root, options) {
     if (!root) return;
     root.querySelectorAll("[data-width]").forEach(function (el) {
       window.requestAnimationFrame(function () {
@@ -1441,7 +1469,7 @@
       });
     });
     root.querySelectorAll("[data-animate-number]").forEach(function (el) {
-      animateNumber(el, Number(el.getAttribute("data-animate-number") || 0));
+      animateNumber(el, Number(el.getAttribute("data-animate-number") || 0), options);
     });
   }
 
@@ -1886,6 +1914,151 @@
     return overlay;
   }
 
+  /** A live mock's result before its results time: submitted, with a countdown to the release. */
+  function renderPendingResults(user, attempt) {
+    var test = store.getTestById(attempt.testId);
+    var when = new Date(attempt.resultsAt || 0);
+    app.innerHTML = buildShell(
+      renderPrimaryNav("progress", user) +
+      '<section class="rs-page rs-pending">' +
+      '<div class="rs-pending-card" role="status">' +
+      '<span class="rs-pending-check" aria-hidden="true">✓</span>' +
+      '<p class="section-label">Live mock · submitted</p>' +
+      '<h1>' + escapeHtml(test && test.title ? test.title : "Live mock") + '</h1>' +
+      '<p>Your answers are in. Scores and ranks come out for everyone at the same time:</p>' +
+      '<p class="rs-pending-when"><strong>' + escapeHtml(formatOpensAt(when)) + '</strong>' +
+      '<span class="test-opens" data-opens-at="' + escapeAttribute(when.toISOString()) + '"> · <span data-countdown>' + escapeHtml(formatCountdown(when.getTime() - serverNowMs())) + '</span></span></p>' +
+      '<p class="helper-text">This page shows your result by itself when the time comes.</p>' +
+      '<div class="button-row"><a class="button button-secondary" href="#dashboard">Back to dashboard</a></div>' +
+      '</div>' +
+      '</section>'
+    );
+  }
+
+  /**
+   * "Where your time went": a strip with one bar per question (height = seconds, colour = how
+   * it went), section tiles and the slowest questions. From the attempt's own timing data.
+   */
+  function mountTimeInsights(root, insights) {
+    if (!root || !insights || !Array.isArray(insights.strip) || !insights.strip.length) return;
+    var max = Math.max.apply(null, insights.strip.map(function (s) { return s[0]; }).concat([1]));
+    var statusWord = { c: "correct", w: "wrong", s: "skipped" };
+    var bars = insights.strip.map(function (s, i) {
+      var pct = Math.max(2, Math.round((s[0] / max) * 100));
+      var prev = insights.strip[i - 1];
+      return '<span class="ti-bar is-' + statusWord[s[1]] + (prev && prev[2] !== s[2] ? ' is-section-start' : '') + '" style="--h:' + pct + '%" data-donut-tip="' +
+        escapeAttribute("Q" + (i + 1) + " · " + formatTime(s[0]) + " · " + statusWord[s[1]]) + '"></span>';
+    }).join("");
+    var tiles = ["SUPR", "REAP"].filter(function (k) { return insights.sections && insights.sections[k]; }).map(function (k) {
+      var sec = insights.sections[k];
+      return '<div class="ti-tile"><p class="section-label">' + k + '</p>' +
+        '<p class="ti-big">' + escapeHtml(formatDurationShort(sec.totalSeconds)) + '</p>' +
+        '<p class="ti-sub">' + (sec.avgCorrectSeconds !== null ? 'right answers ' + escapeHtml(formatTime(sec.avgCorrectSeconds)) + ' each' : 'no right answers') +
+        (sec.avgWrongSeconds !== null ? ' · wrong ' + escapeHtml(formatTime(sec.avgWrongSeconds)) + ' each' : '') + '</p>' +
+        '<p class="ti-sub">' + sec.wrongTimePct + '% of the time went on wrong answers</p></div>';
+    }).join("");
+    var slowest = (insights.slowest || []).map(function (q) {
+      return '<li><button type="button" class="ti-jump" data-ti-question="' + q.number + '"><span class="ti-q">Q' + q.number + '</span>' +
+        '<span class="ti-topic">' + escapeHtml(q.topic || q.section) + '</span>' +
+        '<span class="ti-time">' + escapeHtml(formatTime(q.seconds)) + '</span>' +
+        '<span class="ti-status is-' + q.status + '">' + escapeHtml(q.status) + '</span></button></li>';
+    }).join("");
+    root.innerHTML =
+      '<section class="rs-card ti-card" aria-labelledby="ti-title">' +
+      '<div class="ti-head"><p class="section-label" id="ti-title">Where your time went</p>' +
+      '<p class="ti-headline"><strong>' + insights.wrongTimePct + '%</strong> of your time went on answers that turned out wrong.</p></div>' +
+      '<div class="ti-strip" role="img" aria-label="' + escapeAttribute("Time per question, in paper order. Longest: Q" + ((insights.slowest[0] || {}).number || "") + ".") + '">' + bars + '</div>' +
+      '<ul class="ti-legend" aria-hidden="true"><li><i class="is-correct"></i>Correct</li><li><i class="is-wrong"></i>Wrong</li><li><i class="is-skipped"></i>Skipped</li><li class="ti-legend-note">Bar height = time spent</li></ul>' +
+      '<div class="ti-grid">' + tiles +
+      (slowest ? '<div class="ti-slowest"><p class="section-label">Slowest questions</p><ol>' + slowest + '</ol></div>' : '') +
+      '</div>' +
+      '</section>';
+    root.querySelectorAll("[data-ti-question]").forEach(function (button) {
+      button.addEventListener("click", function () { jumpToReviewQuestion(Number(button.getAttribute("data-ti-question"))); });
+    });
+  }
+
+  /** Scrolls the answer review to question n (loading the review pages if needed). */
+  function jumpToReviewQuestion(n) {
+    var tries = 0;
+    function find() {
+      var cards = document.querySelectorAll(".analysis-review-card");
+      var card = cards[n - 1];
+      if (card) {
+        card.scrollIntoView({ block: "start", behavior: prefersReducedMotion() ? "auto" : "smooth" });
+        card.classList.add("is-flash");
+        window.setTimeout(function () { card.classList.remove("is-flash"); }, 1400);
+        return;
+      }
+      var load = document.getElementById("load-question-review");
+      var more = document.getElementById("load-more-review");
+      if (tries > 8) return;
+      tries += 1;
+      if (load && !load.hidden && !cards.length) load.click();
+      else if (more && !more.hidden) more.click();
+      window.setTimeout(find, 500);
+    }
+    find();
+  }
+
+  /** "Report a problem" on a reviewed question: reason chips, an optional note, then thanks. */
+  function openReportQuestionDialog(attemptId, questionId, number, trigger) {
+    var reasons = [["wrong_answer", "The answer key looks wrong"], ["typo", "Typo or unclear wording"], ["maths", "Maths doesn't display"], ["image", "Image missing or broken"], ["other", "Something else"]];
+    var body =
+      '<form class="report-form" data-report-form novalidate>' +
+      '<fieldset><legend>What\'s wrong with question ' + number + '?</legend>' +
+      reasons.map(function (r, i) {
+        return '<label class="report-reason"><input type="radio" name="report-reason" value="' + r[0] + '"' + (i === 0 ? ' checked' : '') + '> <span>' + escapeHtml(r[1]) + '</span></label>';
+      }).join("") +
+      '</fieldset>' +
+      '<div class="field"><label for="report-note">Details (optional)</label><textarea id="report-note" rows="3" maxlength="500" placeholder="e.g. Option B is correct because…"></textarea></div>' +
+      '<p class="import-message is-error" role="alert" data-report-error></p>' +
+      '<div class="button-row"><button type="submit" class="button button-primary">Send report</button></div>' +
+      '</form>';
+    var overlay = showAdminModal("Report a problem", body, false);
+    if (!overlay) return;
+    var form = overlay.querySelector("[data-report-form]");
+    form.addEventListener("submit", function (event) {
+      event.preventDefault();
+      var reason = (form.querySelector("input[name='report-reason']:checked") || {}).value || "other";
+      var note = form.querySelector("#report-note").value.trim();
+      var submit = form.querySelector("button[type=submit]");
+      submit.disabled = true;
+      submit.textContent = "Sending…";
+      Promise.resolve(store.reportQuestion(questionId, attemptId, reason, note)).then(function () {
+        form.innerHTML = '<p class="report-thanks" role="status" tabindex="-1"><span aria-hidden="true">✓</span> Thanks. The AceIIIT team will check question ' + number + '.</p>';
+        form.querySelector(".report-thanks").focus();
+        if (trigger) {
+          trigger.textContent = "Reported ✓";
+          trigger.disabled = true;
+        }
+      }).catch(function (error) {
+        submit.disabled = false;
+        submit.textContent = "Send report";
+        form.querySelector("[data-report-error]").textContent = (error && error.message) || "Couldn't send the report. Try again.";
+      });
+    });
+  }
+
+  /** Builds a practice paper of the student's own mistakes and opens its instructions. */
+  function startMistakePractice(user, count, section) {
+    if (!store.generateMistakePractice) return;
+    showOverlayLoader("Building your mistakes paper.");
+    Promise.resolve(store.generateMistakePractice(user.id, count, section || "all", 0))
+      .then(function (testId) {
+        hideOverlayLoader();
+        navigate("instructions/" + testId);
+      })
+      .catch(function (error) {
+        hideOverlayLoader();
+        if (error && error.code === "PRACTICE_LIMIT") {
+          if (window.confirm(error.message + "\n\nOpen the test series page now?")) openBuySeries();
+          return;
+        }
+        window.alert(error && error.message ? error.message : "Could not build a practice paper.");
+      });
+  }
+
   // ---- "What's new" pop-up --------------------------------------------------------------------
   // The newest published note a student hasn't seen opens once, shortly after the portal opens.
   // Never over an exam, the login screen, Studio, another dialog or the mentor.
@@ -1987,6 +2160,101 @@
         }
       });
     }
+  }
+
+  // ---- Studio → Reports: what students flagged, grouped by question ---------------------------
+  var REPORT_REASON_LABELS = { wrong_answer: "Answer key", typo: "Typo / wording", maths: "Maths display", image: "Image", other: "Other" };
+  var reportsAdmin = { status: "open", data: null, message: "" };
+
+  function buildAdminReportsHtml() {
+    return '<div class="reports-studio" id="reports-admin-root"><div class="admin-card"><p class="helper-text" aria-busy="true">Loading reports…</p></div></div>';
+  }
+
+  function mountAdminReports(onFix) {
+    var root = document.getElementById("reports-admin-root");
+    if (!root || !store.listQuestionReports) return;
+    Promise.resolve(store.listQuestionReports(reportsAdmin.status)).then(function (data) {
+      reportsAdmin.data = data || { items: [], openTotal: 0 };
+      var current = document.getElementById("reports-admin-root");
+      if (current) renderAdminReports(current, onFix);
+    }).catch(function (error) {
+      var current = document.getElementById("reports-admin-root");
+      if (current) current.innerHTML = '<div class="admin-card"><p class="helper-text">Couldn\'t load reports: ' + escapeHtml((error && error.message) || "network error") + '</p></div>';
+    });
+  }
+
+  function renderAdminReports(root, onFix) {
+    var data = reportsAdmin.data || { items: [], openTotal: 0 };
+    var open = reportsAdmin.status === "open";
+    var cards = data.items.map(function (item) {
+      var q = item.question;
+      var reasons = Object.keys(item.reasons).map(function (r) {
+        return '<span class="meta-chip report-reason-chip is-' + r + '">' + escapeHtml(REPORT_REASON_LABELS[r] || r) + ' × ' + item.reasons[r] + '</span>';
+      }).join("");
+      var notes = item.reports.map(function (r) {
+        return '<li><span class="report-who">' + escapeHtml(r.student) + '</span> · ' + escapeHtml(REPORT_REASON_LABELS[r.reason] || r.reason) + ' · <time>' + escapeHtml(formatDateOnly(r.createdAt)) + '</time>' +
+          (r.note ? '<p>“' + escapeHtml(r.note) + '”</p>' : '') +
+          (!open && r.resolutionNote ? '<p class="report-resolution">Resolved: ' + escapeHtml(r.resolutionNote) + '</p>' : '') + '</li>';
+      }).join("");
+      var options = q ? (q.options || []).map(function (o, i) {
+        return '<li class="' + (i === q.correctOption ? 'is-correct' : '') + '"><span class="rich-text">' + formatRichText(o) + '</span>' + (i === q.correctOption ? ' <span class="import-correct">answer key</span>' : '') + '</li>';
+      }).join("") : "";
+      return '<article class="admin-card report-card" data-report-question="' + escapeAttribute(item.questionId) + '">' +
+        '<div class="report-head">' +
+        '<div><p class="section-label">' + (q ? escapeHtml(q.section + " · " + (q.topic || "")) : "Deleted question") + '</p>' +
+        '<div class="report-tests">' + (q && q.tests.length ? q.tests.map(function (t) { return '<span class="meta-chip">' + escapeHtml(t.title) + '</span>'; }).join("") : '<span class="helper-text">Not in any test</span>') + '</div></div>' +
+        '<p class="report-count"><strong>' + item.count + '</strong> ' + (item.count === 1 ? "report" : "reports") + '</p>' +
+        '</div>' +
+        '<div class="report-reasons">' + reasons + '</div>' +
+        (q ? '<div class="rich-text report-prompt">' + formatRichText(q.prompt || "") + '</div><ol class="import-options" type="A">' + options + '</ol>' : '') +
+        '<ul class="report-notes">' + notes + '</ul>' +
+        (open
+          ? '<div class="report-actions">' +
+            (q && !q.deleted && q.tests.length ? '<button type="button" class="button button-secondary button-compact" data-report-fix="' + escapeAttribute(item.questionId) + '" data-test="' + escapeAttribute(q.tests[0].id) + '">Fix question</button>' : '') +
+            '<label class="sr-only" for="resolve-note-' + escapeAttribute(item.questionId) + '">Resolution note</label>' +
+            '<input id="resolve-note-' + escapeAttribute(item.questionId) + '" class="report-resolve-note" maxlength="300" placeholder="What did you do? (optional)">' +
+            '<button type="button" class="button button-primary button-compact" data-report-resolve="' + escapeAttribute(item.questionId) + '">Resolve</button>' +
+            '</div>'
+          : '') +
+        '</article>';
+    }).join("");
+    root.innerHTML =
+      '<div class="admin-card reports-head">' +
+      '<div><p class="section-label" style="margin:0;">12. Student reports</p>' +
+      '<p class="helper-text" style="margin:4px 0 0;">Problems students flagged from their answer review, grouped by question. Fix the question, then resolve.</p></div>' +
+      '<div class="reports-toggle" role="group" aria-label="Show">' +
+      '<button type="button" class="button button-compact ' + (open ? 'button-primary' : 'button-secondary') + '" data-reports-status="open" aria-pressed="' + open + '">Open (' + data.openTotal + ')</button>' +
+      '<button type="button" class="button button-compact ' + (!open ? 'button-primary' : 'button-secondary') + '" data-reports-status="resolved" aria-pressed="' + !open + '">Resolved</button>' +
+      '</div></div>' +
+      '<p class="import-message is-success" role="status" tabindex="-1" data-reports-message>' + escapeHtml(reportsAdmin.message) + '</p>' +
+      (cards || '<div class="admin-card"><p class="helper-text">' + (open ? "No open reports. Students can report a problem from any question in their answer review." : "Nothing resolved yet.") + '</p></div>');
+    renderLatexInElement(root);
+    reportsAdmin.message = "";
+    root.querySelectorAll("[data-reports-status]").forEach(function (button) {
+      button.addEventListener("click", function () {
+        reportsAdmin.status = button.getAttribute("data-reports-status");
+        mountAdminReports(onFix);
+      });
+    });
+    root.querySelectorAll("[data-report-fix]").forEach(function (button) {
+      button.addEventListener("click", function () { onFix(button.getAttribute("data-report-fix"), button.getAttribute("data-test")); });
+    });
+    root.querySelectorAll("[data-report-resolve]").forEach(function (button) {
+      button.addEventListener("click", function () {
+        var id = button.getAttribute("data-report-resolve");
+        var note = (root.querySelector("#resolve-note-" + id) || {}).value || "";
+        button.disabled = true;
+        Promise.resolve(store.resolveQuestionReports(id, note)).then(function (res) {
+          reportsAdmin.message = (res && res.resolved) + " report" + (res && res.resolved === 1 ? "" : "s") + " resolved.";
+          runtime.reportCountsAt = 0; // refresh the counts behind the tab label and Paper Health
+          mountAdminReports(onFix);
+          window.setTimeout(function () { var m = document.querySelector("[data-reports-message]"); if (m) m.focus(); }, 300);
+        }).catch(function (error) {
+          button.disabled = false;
+          window.alert((error && error.message) || "Couldn't resolve.");
+        });
+      });
+    });
   }
 
   // ---- Studio → What's New: write, preview live, publish ------------------------------------
@@ -3721,7 +3989,41 @@
     return (locked
       ? '<button class="button button-primary is-pseudo-disabled js-buy-series" data-id="' + escapeAttribute(test.id) + '" aria-describedby="' + noteId + '">Locked 🔒</button>'
       : '<button class="button button-primary" type="button" disabled aria-describedby="' + noteId + '">Opens soon</button>') +
-      '<span class="test-opens" id="' + noteId + '" data-opens-at="' + escapeAttribute(when.toISOString()) + '">Opens ' + escapeHtml(formatOpensAt(when)) + ' · <span data-countdown>' + escapeHtml(formatCountdown(when.getTime() - serverNowMs())) + '</span></span>';
+      '<span class="test-opens" id="' + noteId + '" data-opens-at="' + escapeAttribute(when.toISOString()) + '">Opens ' + escapeHtml(formatOpensAt(when)) + ' · <span data-countdown>' + escapeHtml(formatCountdown(when.getTime() - serverNowMs())) + '</span></span>' +
+      eventNoteHtml(test);
+  }
+
+  /** For a scheduled live event: the join window and results time under the countdown. */
+  function eventNoteHtml(test) {
+    var ev = test && test.event;
+    if (!ev) return "";
+    return '<span class="test-event-note"><span class="test-event-badge">Live event</span> join within ' + escapeHtml(String(ev.joinMinutes)) + ' min' +
+      (ev.resultsAt ? ' · results ' + escapeHtml(formatOpensAt(new Date(ev.resultsAt))) : '') + '</span>';
+  }
+
+  /**
+   * A live event that has opened: "Join" while the window is open, then "Joining closed" (or
+   * your submitted status) until results are out. Null when the test isn't in that phase.
+   */
+  function eventCtaHtml(test, locked) {
+    var ev = test && test.event;
+    if (!ev || test.status !== "live" || !ev.joinClosesAt) return null;
+    var now = serverNowMs();
+    var closes = new Date(ev.joinClosesAt).getTime();
+    var results = ev.resultsAt ? new Date(ev.resultsAt).getTime() : 0;
+    if (results && results <= now) return null;
+    var noteId = "event-" + String(test.id).replace(/[^\w-]/g, "");
+    if (now < closes) {
+      if (locked) return null;
+      return '<button class="button button-primary js-open-instructions" data-id="' + escapeAttribute(test.id) + '" aria-describedby="' + noteId + '">Join live mock →</button>' +
+        '<span class="test-opens is-live-event" id="' + noteId + '" data-opens-at="' + escapeAttribute(new Date(closes).toISOString()) + '"><span class="test-event-badge">Live now</span> joining closes in <span data-countdown>' + escapeHtml(formatCountdown(closes - now)) + '</span></span>';
+    }
+    var user = auth.getCurrentUser ? auth.getCurrentUser() : null;
+    var mine = user ? store.listUserAttempts(user.id).filter(function (a) { return a.testId === test.id && a.status === "submitted"; })[0] : null;
+    var resultsNote = '<span class="test-opens" id="' + noteId + '"' + (results ? ' data-opens-at="' + escapeAttribute(new Date(results).toISOString()) + '"' : '') + '>Results ' + (results ? escapeHtml(formatOpensAt(new Date(results))) + ' · <span data-countdown>' + escapeHtml(formatCountdown(results - now)) + '</span>' : 'soon') + '</span>';
+    return mine
+      ? '<button class="button button-secondary js-open-result" data-id="' + escapeAttribute(mine.id) + '" aria-describedby="' + noteId + '">Submitted ✓</button>' + resultsNote
+      : '<button class="button button-primary" type="button" disabled aria-describedby="' + noteId + '">Joining closed</button>' + resultsNote;
   }
 
   // One shared ticker, running only while a countdown is on screen. At zero the page refreshes
@@ -3853,7 +4155,12 @@
   }
 
   function navigate(path) {
-    window.location.hash = "#/" + path;
+    var target = "#/" + path;
+    if (window.location.hash === target) {
+      syncAndRenderCurrentRoute({ navigation: true });
+    } else {
+      window.location.hash = target;
+    }
   }
 
   // Starts or resumes the server exam session for a test. An exam open in another
@@ -5036,6 +5343,7 @@
       '<div class="button-row" style="align-items: center;">' +
       (user ? '<span class="meta-chip user-chip header-account-control" style="margin-right: 4px;">' + escapeHtml(name) + '</span>' : '') +
       (user && auth.isAdmin(user) ? '<button class="button button-secondary button-compact header-account-control" id="admin-link">Builder Mode</button>' : '') +
+      (user ? '<button type="button" class="header-search js-quick-search" aria-label="Search the portal" aria-keyshortcuts="Control+K Meta+K">' + QUICK_SEARCH_ICON + '<span class="header-search-label">Search</span><kbd class="header-search-kbd">' + (isMacLike() ? '⌘' : 'Ctrl') + ' K</kbd></button>' : '') +
       '<span class="header-account-control">' + getThemeToggleMarkup() + '</span>' +
       (user ? '<button class="button button-secondary button-compact header-account-control" id="logout-button">Logout</button>' : '') +
       '<button class="mobile-drawer-toggle js-toggle-mobile-drawer" type="button" aria-label="Open navigation menu" aria-controls="mobile-nav-drawer" aria-expanded="false">☰</button>' +
@@ -5058,9 +5366,183 @@
           '<button class="button button-secondary button-compact js-logout-btn" type="button">Logout</button>' +
           '</div>'
         : '') +
-      '</div>'
+      '</div>' +
+      (user ? buildBottomTabbar(activeView) : '')
     );
   }
+
+  // Phones: the four main sections at thumb reach, plus More (the full menu). The active marker
+  // slides from the previous tab to the new one.
+  var lastTabbarIndex = -1;
+  function buildBottomTabbar(activeView) {
+    var tabs = [
+      { id: "dashboard", label: "Home", hash: "#dashboard", icon: '<path d="M3 11 12 4l9 7"/><path d="M5 10v10h14V10"/>' },
+      { id: "exams", label: "Exams", hash: "#exams", icon: '<rect x="5" y="3" width="14" height="18" rx="2"/><path d="M9 8h6M9 12h6M9 16h4"/>' },
+      { id: "progress", label: "Progress", hash: "#progress", icon: '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>' },
+      { id: "resources", label: "Resources", hash: "#resources", icon: '<path d="M4 5a2 2 0 0 1 2-2h14v16H6a2 2 0 0 0-2 2z"/><path d="M4 19V5"/>' }
+    ];
+    var index = tabs.map(function (t) { return t.id; }).indexOf(activeView);
+    var from = lastTabbarIndex >= 0 && index >= 0 ? lastTabbarIndex : index;
+    lastTabbarIndex = index;
+    window.requestAnimationFrame(function () {
+      document.body.classList.toggle("has-tabbar", Boolean(document.querySelector(".bottom-tabbar")));
+      var marker = document.querySelector(".bottom-tabbar .tabbar-marker");
+      if (marker && index >= 0) window.requestAnimationFrame(function () { marker.style.setProperty("--i", String(index)); });
+    });
+    return '<nav class="bottom-tabbar" aria-label="Sections">' +
+      '<span class="tabbar-marker" aria-hidden="true" style="--i:' + Math.max(0, from) + ';' + (index < 0 ? 'opacity:0;' : '') + '"></span>' +
+      tabs.map(function (t) {
+        var active = t.id === activeView;
+        return '<a class="tabbar-item' + (active ? ' is-active' : '') + '" href="' + t.hash + '"' + (active ? ' aria-current="page"' : '') + '>' +
+          '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">' + t.icon + '</svg>' +
+          '<span>' + t.label + '</span></a>';
+      }).join("") +
+      '<button type="button" class="tabbar-item js-toggle-mobile-drawer" aria-label="More: open the full menu" aria-controls="mobile-nav-drawer" aria-expanded="false">' +
+      '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true" focusable="false"><path d="M4 7h16M4 12h16M4 17h16"/></svg><span>More</span></button>' +
+      '</nav>';
+  }
+
+  // ---- Quick search (Ctrl/⌘ K) ------------------------------------------------------------------
+  // Jumps to any page, test, result, study area or (for admins) Studio tab. Opened by keyboard
+  // hundreds of times a day, so it appears instantly: no open or close animation.
+  var QUICK_SEARCH_ICON = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true" focusable="false"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>';
+
+  function isMacLike() {
+    return /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent || "");
+  }
+
+  function quickSearchItems(user) {
+    var items = [];
+    var page = function (label, hint, hash, keywords) { items.push({ group: "Pages", label: label, hint: hint, keywords: keywords || "", run: function () { navigate(hash.replace(/^#/, "")); } }); };
+    page("Dashboard", "Home", "#dashboard", "home next up");
+    page("Mock tests", "Exams", "#exams/mock-tests", "mocks catalogue start");
+    page("Practice", "Exams", "#exams/practice", "custom practice mistakes builder");
+    page("Live tests", "Exams", "#exams/live-tests", "scheduled live event");
+    page("Performance", "Progress", "#progress/performance", "stats accuracy donut score trend");
+    page("Reports", "Progress", "#progress/reports", "results history compare");
+    page("Bookmarks", "Resources", "#resources/bookmarks", "saved questions revise");
+    page("Study material", "Resources", "#resources/materials", "notes pdf drive formula");
+    page("Notices", "Updates", "#updates/notices", "announcements");
+    page("Events and planner", "Updates", "#updates/events", "calendar reminders plan");
+    page("Profile", "Account", "#account/profile", "name phone");
+    page("Package", "Account", "#account/package", "plan payment buy series");
+    page("Security", "Account", "#account/security", "password sessions delete");
+    (store.getTests ? store.getTests() : []).filter(function (t) {
+      return t && !t.isPractice && (t.status === "live" || t.status === "scheduled" || auth.isAdmin(user));
+    }).forEach(function (t) {
+      items.push({ group: "Tests", label: t.title, hint: t.status === "scheduled" ? "Opens " + formatOpensAt(new Date(t.publishAt || t.opensAt || 0)) : (t.isFree ? "Free mock" : "Paid mock"), keywords: t.subtitle || "", run: function () { navigate("instructions/" + t.id); } });
+    });
+    (store.listUserAttempts && user ? store.listUserAttempts(user.id) : []).filter(function (a) { return a.status === "submitted"; }).slice(0, 12).forEach(function (a) {
+      var test = store.getTestById(a.testId);
+      items.push({ group: "Your results", label: (test && test.title) || "Mock test", hint: (a.resultsPending ? "results pending" : a.result ? "score " + formatMarks(Number(a.result.score || 0)) : "") + " · " + formatDateOnly(a.submittedAt), keywords: "result report attempt", run: function () { navigate("results/" + a.id); } });
+    });
+    if (user && auth.isAdmin(user)) {
+      [["setup", "Setup & basic info"], ["questions", "Questions Studio"], ["bank", "Question bank"], ["review", "Review & validate"], ["tests", "Existing tests"], ["payments", "User payments"], ["seasons", "Seasons"], ["audit", "Audit logs"], ["materials", "Study materials"], ["mentor", "ACEIIIT Mentor"], ["whatsnew", "What's new"], ["reports", "Student reports"]].forEach(function (tab) {
+        items.push({ group: "Studio", label: tab[1], hint: "Studio", keywords: "admin " + tab[0], run: function () { runtime.adminStudioTab = tab[0]; navigate("admin"); if ((routeParts()[0] || "") === "admin") renderRoute(); } });
+      });
+    }
+    return items;
+  }
+
+  /** Scores an item for the query (0 = no match): word starts beat substrings beat letters in order. */
+  function quickSearchScore(item, query) {
+    var q = query.trim().toLowerCase();
+    if (!q) return 1;
+    var label = item.label.toLowerCase();
+    var hay = label + " " + String(item.hint || "").toLowerCase() + " " + String(item.keywords || "").toLowerCase();
+    var words = q.split(/\s+/);
+    if (words.every(function (w) { return hay.indexOf(w) !== -1; })) {
+      if (label.indexOf(q) === 0) return 100;
+      if (new RegExp("(^|\\s)" + q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).test(label)) return 80;
+      return label.indexOf(words[0]) !== -1 ? 60 : 40;
+    }
+    var i = 0;
+    for (var c = 0; c < label.length && i < q.length; c += 1) if (label[c] === q[i]) i += 1;
+    return i === q.length ? 10 : 0;
+  }
+
+  var quickSearchCleanup = null;
+  function openQuickSearch(trigger) {
+    var user = auth.getCurrentUser ? auth.getCurrentUser() : null;
+    if (!user || document.querySelector("[data-quick-search]")) return;
+    if (isExamLikeRoute(routeParts()[0] || "")) return;
+    var all = quickSearchItems(user);
+    var overlay = document.createElement("div");
+    overlay.className = "qs-overlay";
+    overlay.setAttribute("data-quick-search", "true");
+    overlay.innerHTML =
+      '<div class="qs-panel" role="dialog" aria-modal="true" aria-label="Quick search">' +
+      '<div class="qs-input-row">' + QUICK_SEARCH_ICON +
+      '<input class="qs-input" type="text" role="combobox" aria-expanded="true" aria-controls="qs-list" aria-autocomplete="list" autocomplete="off" spellcheck="false" placeholder="Search pages, tests, results…" aria-label="Search">' +
+      '<kbd class="qs-esc">Esc</kbd></div>' +
+      '<ul class="qs-list" id="qs-list" role="listbox" aria-label="Results"></ul>' +
+      '<p class="qs-foot" aria-hidden="true"><kbd>↑</kbd><kbd>↓</kbd> move · <kbd>Enter</kbd> open · <kbd>Esc</kbd> close</p>' +
+      '</div>';
+    document.body.appendChild(overlay);
+    var panel = overlay.querySelector(".qs-panel");
+    var input = overlay.querySelector(".qs-input");
+    var list = overlay.querySelector(".qs-list");
+    var shown = [];
+    var active = 0;
+
+    function close() {
+      if (quickSearchCleanup) { quickSearchCleanup(); quickSearchCleanup = null; }
+      overlay.remove();
+    }
+    function choose(item) {
+      close();
+      if (item) item.run();
+    }
+    function paint() {
+      var q = input.value;
+      shown = all.map(function (item) { return { item: item, score: quickSearchScore(item, q) }; })
+        .filter(function (x) { return x.score > 0; })
+        .sort(function (a, b) { return b.score - a.score; })
+        .slice(0, q.trim() ? 12 : 40)
+        .map(function (x) { return x.item; });
+      if (!q.trim()) shown.sort(function (a, b) { return ["Pages", "Tests", "Your results", "Studio"].indexOf(a.group) - ["Pages", "Tests", "Your results", "Studio"].indexOf(b.group); });
+      active = Math.min(active, Math.max(0, shown.length - 1));
+      var lastGroup = "";
+      list.innerHTML = shown.length ? shown.map(function (item, i) {
+        var header = item.group !== lastGroup ? '<li class="qs-group" role="presentation">' + escapeHtml(item.group) + '</li>' : '';
+        lastGroup = item.group;
+        return header + '<li class="qs-option' + (i === active ? ' is-active' : '') + '" role="option" id="qs-opt-' + i + '" data-qs-index="' + i + '" aria-selected="' + (i === active) + '">' +
+          '<span class="qs-label">' + escapeHtml(item.label) + '</span><span class="qs-hint">' + escapeHtml(item.hint || "") + '</span></li>';
+      }).join("") : '<li class="qs-empty" role="presentation">No matches. Try a test name, “practice” or “reports”.</li>';
+      input.setAttribute("aria-activedescendant", shown.length ? "qs-opt-" + active : "");
+      var current = list.querySelector(".qs-option.is-active");
+      if (current) current.scrollIntoView({ block: "nearest" });
+    }
+    input.addEventListener("input", function () { active = 0; paint(); });
+    input.addEventListener("keydown", function (event) {
+      if (event.key === "ArrowDown") { event.preventDefault(); active = Math.min(shown.length - 1, active + 1); paint(); }
+      else if (event.key === "ArrowUp") { event.preventDefault(); active = Math.max(0, active - 1); paint(); }
+      else if (event.key === "Enter") { event.preventDefault(); choose(shown[active]); }
+    });
+    list.addEventListener("mousemove", function (event) {
+      var option = event.target.closest && event.target.closest("[data-qs-index]");
+      if (option && Number(option.getAttribute("data-qs-index")) !== active) { active = Number(option.getAttribute("data-qs-index")); paint(); }
+    });
+    list.addEventListener("click", function (event) {
+      var option = event.target.closest && event.target.closest("[data-qs-index]");
+      if (option) choose(shown[Number(option.getAttribute("data-qs-index"))]);
+    });
+    overlay.addEventListener("mousedown", function (event) { if (event.target === overlay) close(); });
+    quickSearchCleanup = activateModalFocus(panel, { onEscape: close, initialFocusEl: input, returnFocusEl: trigger || document.activeElement });
+    paint();
+  }
+
+  document.addEventListener("keydown", function (event) {
+    if ((event.key === "k" || event.key === "K") && (event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey) {
+      if (isExamLikeRoute(routeParts()[0] || "")) return;
+      event.preventDefault();
+      if (!document.querySelector("[data-quick-search]")) openQuickSearch();
+    }
+  });
+  document.addEventListener("click", function (event) {
+    var trigger = event.target && event.target.closest ? event.target.closest(".js-quick-search") : null;
+    if (trigger) openQuickSearch(trigger);
+  });
 
   function buildEditorialCalendarHtml(plannerEvents, activeDate, currentMonthKey, appConfig) {
     var reminderMonthCells = buildCalendarCells(currentMonthKey);
@@ -5136,11 +5618,11 @@
     function renderCatalogRow(t, idx) {
       var numTag = (idx + 1 < 10 ? '0' + (idx + 1) : (idx + 1));
       var isLocked = isTestLocked(t, user);
-      var cta = isTestNotOpenYet(t)
+      var cta = eventCtaHtml(t, isLocked) || (isTestNotOpenYet(t)
         ? scheduledCtaHtml(t, isLocked)
         : isLocked
         ? '<button class="button button-primary is-pseudo-disabled js-buy-series" data-id="' + t.id + '" aria-label="Test locked. Purchase or upgrade account to unlock ' + escapeAttribute(t.title) + '">Locked 🔒</button>'
-        : '<button class="button button-primary js-open-instructions" data-id="' + t.id + '" aria-label="Start test ' + escapeAttribute(t.title) + '">Start Test →</button>';
+        : '<button class="button button-primary js-open-instructions" data-id="' + t.id + '" aria-label="Start test ' + escapeAttribute(t.title) + '">Start Test →</button>');
 
       return (
         '<div class="dashboard-test-row exam-catalog-row">' +
@@ -5197,6 +5679,16 @@
 
     // Generator and session list side by side under the full-width header, equal height.
     var practiceHtml = (
+      '<section class="generator-card mistakes-card" data-mistakes-card aria-labelledby="mistakes-title">' +
+      '<div class="mistakes-copy"><span class="section-label">PRACTISE YOUR MISTAKES</span>' +
+      '<h3 id="mistakes-title">Questions you got wrong or skipped</h3>' +
+      '<p class="helper-text" data-mistakes-status aria-live="polite">Checking your mocks…</p></div>' +
+      '<div class="mistakes-controls" data-mistakes-controls hidden>' +
+      '<div class="field"><label for="mistakes-section">Section</label><select id="mistakes-section"><option value="all">Both sections</option><option value="SUPR">SUPR only</option><option value="REAP">REAP only</option></select></div>' +
+      '<div class="field"><label for="mistakes-count">Questions</label><select id="mistakes-count"></select></div>' +
+      '<button type="button" class="button button-primary" id="start-mistakes-btn">Practise mistakes →</button>' +
+      '</div>' +
+      '</section>' +
       '<div class="practice-layout">' +
       '<div class="generator-card">' +
       '<span class="section-label">CUSTOM PRACTICE SESSION</span>' +
@@ -5330,6 +5822,40 @@
       subjectEl.addEventListener("change", updateAvailability);
       difficultyEl.addEventListener("change", load);
       load();
+    })();
+
+    // Mistake practice: the count of due questions, then a paper of them.
+    (function () {
+      var card = app.querySelector("[data-mistakes-card]");
+      if (!card || !store.getMistakeOptions) return;
+      var status = card.querySelector("[data-mistakes-status]");
+      var controls = card.querySelector("[data-mistakes-controls]");
+      var sectionEl = card.querySelector("#mistakes-section");
+      var countEl = card.querySelector("#mistakes-count");
+      var info = null;
+      function fillSizes() {
+        var due = !info ? 0 : sectionEl.value === "all" ? info.available : (info.bySection[sectionEl.value] || 0);
+        var sizes = [5, 10, 15, 20, 25, 30].filter(function (n) { return n < due; }).concat(due <= 30 ? [due] : [30]);
+        sizes = sizes.filter(function (n, i) { return n > 0 && sizes.indexOf(n) === i; });
+        countEl.innerHTML = sizes.map(function (n) { return '<option value="' + n + '"' + (n === Math.min(10, due) ? ' selected' : '') + '>' + n + (n === due ? " (all)" : "") + '</option>'; }).join("");
+        card.querySelector("#start-mistakes-btn").disabled = !due;
+      }
+      Promise.resolve(store.getMistakeOptions()).then(function (data) {
+        info = data || { available: 0, bySection: {} };
+        if (!card.isConnected) return;
+        if (!info.available) {
+          status.textContent = "Nothing to practise: every question you got wrong or skipped has since been answered correctly. Take a mock and come back.";
+          card.classList.add("is-clear");
+          return;
+        }
+        status.textContent = info.available + (info.available === 1 ? " question is" : " questions are") + " waiting (SUPR " + (info.bySection.SUPR || 0) + ", REAP " + (info.bySection.REAP || 0) + "). Get one right and it leaves the list.";
+        controls.hidden = false;
+        fillSizes();
+      }).catch(function () { status.textContent = "Couldn't check your mistakes right now."; });
+      sectionEl.addEventListener("change", fillSizes);
+      card.querySelector("#start-mistakes-btn").addEventListener("click", function () {
+        startMistakePractice(user, Number(countEl.value) || 10, sectionEl.value);
+      });
     })();
 
     var pracBtn = document.getElementById("start-practice-btn");
@@ -5993,8 +6519,8 @@
         ? (isNextUpExpired
           ? '<button class="button button-primary js-restart-attempt" data-id="' + nextUpTest.id + '" data-attempt="' + nextUpInProgress.id + '">Restart Test</button>'
           : '<button class="button button-primary js-resume-test" data-id="' + nextUpTest.id + '" data-attempt="' + nextUpInProgress.id + '">Resume Test</button>')
-        : (isTestNotOpenYet(nextUpTest)
-          ? scheduledCtaHtml(nextUpTest, isNextUpLocked)
+        : (eventCtaHtml(nextUpTest, isNextUpLocked) || isTestNotOpenYet(nextUpTest)
+          ? (eventCtaHtml(nextUpTest, isNextUpLocked) || scheduledCtaHtml(nextUpTest, isNextUpLocked))
           : isNextUpLocked
           ? '<button class="button button-primary is-pseudo-disabled js-buy-series" data-id="' + nextUpTest.id + '">Locked 🔒</button>'
           : '<button class="button button-primary js-open-instructions" data-id="' + nextUpTest.id + '">Start Test</button>');
@@ -6078,9 +6604,9 @@
         ? (isExpiredInProgress
           ? '<button class="button button-primary js-restart-attempt" data-id="' + test.id + '" data-attempt="' + inProgress.id + '">Restart Test &rarr;</button>'
           : '<button class="button button-primary js-resume-test" data-id="' + test.id + '" data-attempt="' + inProgress.id + '">Resume Test &rarr;</button>')
-        : isTestNotOpenYet(test)
+        : eventCtaHtml(test, locked) || (isTestNotOpenYet(test)
         ? scheduledCtaHtml(test, locked)
-        : '<button class="button button-primary js-open-instructions" data-id="' + test.id + '">Start Test &rarr;</button>';
+        : '<button class="button button-primary js-open-instructions" data-id="' + test.id + '">Start Test &rarr;</button>');
 
       var reportHtml = latestSubmitted
         ? '<button class="button button-secondary js-open-result" data-id="' + latestSubmitted.id + '">Last Report</button>'
@@ -6975,6 +7501,7 @@
 
     if (syncInFlight) {
       syncQueued = true;
+      syncQueuedSettings = Object.assign({}, syncQueuedSettings || {}, settings);
       return;
     }
     syncInFlight = true;
@@ -7000,15 +7527,17 @@
     }).finally(function () {
       syncInFlight = false;
       if (navigation) finishRouteProgress();
-      if (shouldShowOverlay) {
+      if (shouldShowOverlay || navigation) {
         window.requestAnimationFrame(function () {
           window.setTimeout(hideOverlayLoader, 180);
         });
       }
       if (syncQueued) {
         syncQueued = false;
+        var nextSettings = syncQueuedSettings || settings;
+        syncQueuedSettings = null;
         window.setTimeout(function () {
-          syncAndRenderCurrentRoute(settings);
+          syncAndRenderCurrentRoute(nextSettings);
         }, 0);
       }
     });
@@ -8097,9 +8626,12 @@
   function renderResults(user, attemptId, skipRefresh, prefetchedAttempt, prefetchedSummary) {
     if (!skipRefresh && store.getAttemptResult) {
       renderLoadingScreen("Loading your latest evaluated result.");
-      Promise.resolve(store.getAttemptResult(attemptId))
-        .then(function (freshAttempt) {
-          renderResults(user, attemptId, true, freshAttempt || null, null);
+      Promise.all([
+        Promise.resolve(store.getAttemptResult(attemptId)),
+        Promise.resolve(store.refreshFromRemote ? store.refreshFromRemote() : null).catch(function () {}),
+      ])
+        .then(function (results) {
+          renderResults(user, attemptId, true, results[0] || null, null);
         })
         .catch(function () {
           renderResults(user, attemptId, true);
@@ -8107,6 +8639,10 @@
       return;
     }
     var attempt = prefetchedAttempt || store.getAttemptById(attemptId);
+    if (attempt && attempt.resultsPending) {
+      renderPendingResults(user, attempt);
+      return;
+    }
     if (!attempt || attempt.status !== "submitted" || !attempt.result) {
       navigate("dashboard");
       return;
@@ -8733,6 +9269,12 @@
           '</ol>' +
           responseSummaryHtml +
           explanationHtml +
+          (reviewQuestionId && !String(attempt.id).match(/^local-/)
+            ? '<div class="analysis-review-actions">' +
+              '<button type="button" class="button button-secondary button-compact js-ask-mentor-question" data-qid="' + escapeAttribute(reviewQuestionId) + '" data-label="' + escapeAttribute("Q" + (offset + index + 1) + (review.topic ? " · " + review.topic : "")) + '">Ask Mentor about this</button>' +
+              '<button type="button" class="analysis-report-link js-report-question" data-qid="' + escapeAttribute(reviewQuestionId) + '" data-number="' + (offset + index + 1) + '">Report a problem</button>' +
+              '</div>'
+            : '') +
           '</article>'
         );
       }).join("");
@@ -8772,6 +9314,18 @@
         );
       }
 
+      // A new best score across mocks (practice papers don't count); the reveal plays once.
+      var personalBest = (function () {
+        if (practiceAttempt) return null;
+        var earlier = store.listUserAttempts(user.id).filter(function (a) {
+          return a.id !== attempt.id && a.status === "submitted" && a.result && !a.isPractice && !a.resultsPending &&
+            new Date(a.submittedAt || 0).getTime() < new Date(attempt.submittedAt || 0).getTime();
+        });
+        if (!earlier.length) return null;
+        var best = Math.max.apply(null, earlier.map(function (a) { return Number(a.result.score || 0); }));
+        return Number(scoreValue) > best ? { previous: best } : null;
+      })();
+      var revealSeen = hasSeenResultReveal(attempt.id);
       var kpisHtml =
         '<div class="rs-kpis analysis-stage' + (practiceAttempt ? ' is-four' : '') + '"' + stageStyle(0) + '>' +
         kpi("Score",
@@ -8811,9 +9365,11 @@
         '<p class="section-label">' + (practiceAttempt ? 'Practice session' : 'Result · Attempt ' + escapeHtml(String(attemptNumber))) + ' · ' + escapeHtml(formatDateOnly(attempt.submittedAt)) + '</p>' +
         '<h1>' + escapeHtml(test && test.title ? test.title : "UGEE Mock Test") + '</h1>' +
         '<p class="rs-hero-sub" id="rs-hero-sub">' + buildHeroSentence(analysis) + '</p>' +
+        (personalBest ? '<p class="rs-pb' + (revealSeen ? '' : ' is-fresh') + '" role="status"><span class="rs-pb-star" aria-hidden="true">★</span> New personal best' + (personalBest.previous !== null ? ' <span class="rs-pb-prev">(was ' + escapeHtml(formatMarks(personalBest.previous)) + ')</span>' : '') + '</p>' : '') +
         '</div>' +
         '<div class="rs-hero-actions">' +
         (analysis ? '<button type="button" class="button button-secondary js-jump-review">Review answers</button>' : '') +
+        (wrongCount + skippedCount > 0 && store.generateMistakePractice ? '<button type="button" class="button button-secondary js-practise-mistakes">Practise mistakes</button>' : '') +
         '<button type="button" class="button button-primary" id="retake-test">Retake test</button>' +
         '</div>' +
         '</header>' +
@@ -8824,6 +9380,7 @@
         buildPlanSection(analysis) +
         '<div class="rs-row rs-top' + (analysis && analysis.timeAnalysis ? '' : ' is-solo') + '" id="analysis-summary-root">' + buildTopRow(analysis) + '</div>' +
         '<div class="' + detailRowClass(analysis) + '" id="analysis-detail-root">' + buildDetailRow(analysis) + '</div>' +
+        '<div id="rs-time-insights-root"></div>' +
         '<div id="analysis-review-root">' + buildQuestionReviewShell() + '</div>' +
         '</section>'
       );
@@ -8891,6 +9448,18 @@
     bindDetailInteractions(app);
 
     function bindReviewButtons() {
+      app.querySelectorAll(".js-ask-mentor-question:not(.bound)").forEach(function (button) {
+        button.classList.add("bound");
+        button.addEventListener("click", function () {
+          askMentorAboutQuestion(attempt.id, button.dataset.qid, button.dataset.label, button);
+        });
+      });
+      app.querySelectorAll(".js-report-question:not(.bound)").forEach(function (button) {
+        button.classList.add("bound");
+        button.addEventListener("click", function () {
+          openReportQuestionDialog(attempt.id, button.dataset.qid, Number(button.dataset.number), button);
+        });
+      });
       app.querySelectorAll(".js-open-image-lightbox").forEach(function (button) {
         button.addEventListener("click", function () {
           openImageLightbox(button.getAttribute("data-url") || "");
@@ -8990,12 +9559,19 @@
       }
     }
 
-    activateAnalysisAnimations(app);
+    activateAnalysisAnimations(app, { instant: revealSeen });
+    markResultRevealSeen(attempt.id);
     mountQuestionReviewLoader();
+    app.querySelectorAll(".js-practise-mistakes").forEach(function (button) {
+      button.addEventListener("click", function () { startMistakePractice(user, 10, "all"); });
+    });
 
-    if (!analysis && !prefetchedSummary && store.getAttemptAnalysis) {
+    if (store.getAttemptAnalysis) {
+      var needsAnalysis = !analysis && !prefetchedSummary;
       store.getAttemptAnalysis(attempt.id).then(function (summary) {
         if (!summary) return;
+        mountTimeInsights(document.getElementById("rs-time-insights-root"), summary.timeInsights);
+        if (!needsAnalysis) return;
         if (summary.analysis) {
           analysis = summary.analysis;
         }
@@ -9801,6 +10377,13 @@
     check: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m5 12 5 5 9-10"/></svg>',
     quote: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 12h12M4 6h16M4 18h8"/></svg>'
   };
+  // For a conversation about one question (Ask Mentor on a review card).
+  var MENTOR_QUESTION_SUGGESTIONS = [
+    "Why is my answer wrong?",
+    "Explain the solution step by step.",
+    "Give me a similar question to try.",
+    "What concept does this question test?"
+  ];
   // Shown under the newest reply: the obvious next questions, one tap away.
   var MENTOR_FOLLOWUPS = [
     "Explain that more simply.",
@@ -10256,8 +10839,20 @@
     return true;
   }
 
-  function startMentorConversation(attemptId) {
+  /** Results → "Ask Mentor": a new conversation about one question of this attempt. */
+  function askMentorAboutQuestion(attemptId, questionId, label, trigger) {
+    var user = mentorUser();
+    if (!user) return;
+    if (mentorState.userId !== mentorUserKey(user)) resetMentor(mentorUserKey(user));
+    mentorState.autoLinkedAttemptId = attemptId; // don't let the result-page link replace it
+    openMentor(trigger);
+    startMentorConversation(attemptId, { id: questionId, label: label });
+    focusMentorComposer();
+  }
+
+  function startMentorConversation(attemptId, question) {
     var s = mentorState;
+    s.linkQuestion = attemptId && question ? question : null;
     s.view = "chat";
     s.conversationId = null;
     s.conversation = null;
@@ -10438,7 +11033,8 @@
     var conversationId = s.conversationId;
     try {
       if (!conversationId) {
-        var created = await store.createMentorConversation(s.linkAttemptId);
+        var created = await store.createMentorConversation(s.linkAttemptId, s.linkQuestion && s.linkQuestion.id);
+        s.linkQuestion = null;
         if (mentorState !== s) return;
         conversationId = created.id;
         s.conversationId = created.id;
@@ -10549,7 +11145,11 @@
     var s = mentorState;
     var linked = s.conversation && s.conversation.attempt;
     var chip = "";
-    if (linked) {
+    var question = (s.conversation && s.conversation.question) || (!s.conversationId && s.linkQuestion) || null;
+    if (question) {
+      chip = '<p class="mentor-context is-question"><span class="mentor-context-label">About</span> ' + escapeHtml(question.label || "this question") +
+        (linked && linked.test ? ' <span class="mentor-context-test">· ' + escapeHtml(linked.test) + '</span>' : '') + '</p>';
+    } else if (linked) {
       chip = '<p class="mentor-context"><span class="mentor-context-label">About</span> ' + escapeHtml(linked.test || "this attempt") +
         (linked.attemptNumber > 1 ? ' · attempt ' + escapeHtml(String(linked.attemptNumber)) : '') + '</p>';
     } else if (!s.conversationId && s.linkAttemptId) {
@@ -10581,7 +11181,7 @@
         '<h3>Hi ' + escapeHtml(firstName(user && user.name)) + ', what should we look at?</h3>' +
         '<p>I read your AceIIIT mock results to explain where marks go and what to practise next. I can help with doubts too.</p>' +
         '<ul class="mentor-suggestions" aria-label="Suggested questions">' +
-        MENTOR_SUGGESTIONS.map(function (text, i) {
+        ((s.linkQuestion && !s.conversationId) || (s.conversation && s.conversation.question) ? MENTOR_QUESTION_SUGGESTIONS : MENTOR_SUGGESTIONS).map(function (text, i) {
           return '<li style="--i:' + i + '"><button type="button" class="mentor-suggestion" data-mentor-suggest="' + escapeAttribute(text) + '">' + escapeHtml(text) + '</button></li>';
         }).join("") +
         '</ul>' +
@@ -12317,7 +12917,7 @@
    * 0–100 health score and the paper's blueprint. `imageFailures` is the set of image links that
    * failed to load (checked in the background).
    */
-  function reviewPaper(test, allQuestions, allTests, attempts, imageFailures) {
+  function reviewPaper(test, allQuestions, allTests, attempts, imageFailures, reportCounts) {
     var errors = [];
     var warnings = [];
     var passed = [];
@@ -12437,6 +13037,10 @@
     });
     if (skewNotes.length) add(warnings, "answer-key", "The answer key has a pattern students can guess", skewNotes.join(" · ") + ".", [], 6);
     else if (order.length) passed.push({ id: "answer-key", title: "Answers are spread out" });
+    if (reportCounts) {
+      var reported = order.filter(function (q) { return reportCounts[q.id]; });
+      check("reports", "No open student reports", reported, warnings, "{n} question(s) have open student reports", reported.length ? "See Studio → Reports for what students said." : "", 10);
+    }
     check("http-images", "Every image link is https", order.filter(function (q) { return (q.imageUrls || []).some(function (u) { return /^http:\/\//i.test(String(u)); }); }), warnings, "{n} question(s) use an http:// image", "Browsers may block it on the https site.", 4);
     var failedImages = imageFailures || {};
     var brokenImages = order.filter(function (q) { return (q.imageUrls || []).some(function (u) { return failedImages[u]; }); });
@@ -12825,7 +13429,7 @@
       runtime.adminCheckedBankQuestionIds = runtime.adminCheckedBankQuestionIds || [];
       runtime.adminCheckedTestQuestionIds = runtime.adminCheckedTestQuestionIds || [];
 
-      var paperReview = reviewPaper(selectedTest, questions, tests, (adminSnapshot && adminSnapshot.attempts) || [], runtime.paperImageFailures);
+      var paperReview = reviewPaper(selectedTest, questions, tests, (adminSnapshot && adminSnapshot.attempts) || [], runtime.paperImageFailures, runtime.reportCounts);
       var validation = { errors: paperReview.errors, warnings: paperReview.warnings };
 
       var activePaperSummaryHtml = selectedTest
@@ -13100,7 +13704,24 @@
               }).join("") + '</select></div>' +
               '<div class="field test-publish-at"' + (status === "scheduled" ? '' : ' hidden') + '><label for="test-publish-at">Goes live at (your local time)</label>' +
               '<input id="test-publish-at" name="publishAt" type="datetime-local" value="' + escapeAttribute(localValue) + '" aria-describedby="test-publish-help">' +
-              '<p class="helper-text" id="test-publish-help">Students see it with a countdown and can start it from this time.</p></div>';
+              '<p class="helper-text" id="test-publish-help">Students see it with a countdown and can start it from this time.</p></div>' +
+              (function () {
+                // Live event: everyone joins within a window; results come out together.
+                var ev = (formTest && formTest.event && formTest.event.enabled) ? formTest.event : null;
+                var toLocal = function (iso) {
+                  var d = iso ? new Date(iso) : null;
+                  return d && !Number.isNaN(d.getTime()) ? new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16) : "";
+                };
+                var showBox = status === "scheduled" || status === "live" || Boolean(ev);
+                return '<fieldset class="field test-event"' + (showBox ? '' : ' hidden') + '>' +
+                  '<legend>Live event</legend>' +
+                  '<label class="test-event-toggle"><input type="checkbox" id="test-event-enabled" name="eventEnabled"' + (ev ? ' checked' : '') + '> Everyone takes it together</label>' +
+                  '<div class="test-event-fields"' + (ev ? '' : ' hidden') + '>' +
+                  '<div class="field"><label for="test-event-join">Students can join for (minutes after it opens)</label><input id="test-event-join" name="eventJoinMinutes" type="number" inputmode="numeric" min="5" max="180" value="' + escapeAttribute(String(ev ? ev.joinMinutes : 15)) + '"></div>' +
+                  '<div class="field"><label for="test-event-results">Results and ranks come out at (your local time)</label><input id="test-event-results" name="eventResultsAt" type="datetime-local" value="' + escapeAttribute(toLocal(ev && ev.resultsAt)) + '" aria-describedby="test-event-help"></div>' +
+                  '<p class="helper-text" id="test-event-help">Each student still gets the full time from their own start. Results must come out after the join window plus the paper\'s length.</p>' +
+                  '</div></fieldset>';
+              })();
           })() +
           '<div class="field"><label for="supr-duration">SUPR Duration (mins)</label><input id="supr-duration" name="suprDurationMinutes" type="number" inputmode="numeric" value="' + (formDurations.SUPR !== undefined ? formDurations.SUPR : 60) + '" required></div>' +
           '<div class="field"><label for="reap-duration">REAP Duration (mins)</label><input id="reap-duration" name="reapDurationMinutes" type="number" inputmode="numeric" value="' + (formDurations.REAP !== undefined ? formDurations.REAP : 120) + '" required></div>' +
@@ -13425,6 +14046,8 @@
         activeTabContent = buildAdminMentorHtml();
       } else if (activeTab === "whatsnew") {
         activeTabContent = buildAdminWhatsNewHtml();
+      } else if (activeTab === "reports") {
+        activeTabContent = buildAdminReportsHtml();
       }
 
       app.innerHTML = buildShell(
@@ -13466,6 +14089,7 @@
         '<button type="button" class="studio-step-btn js-studio-tab ' + (activeTab === "materials" ? 'is-active' : '') + '" data-tab="materials"><span class="studio-step-num">9</span> Study Materials</button>' +
         '<button type="button" class="studio-step-btn js-studio-tab ' + (activeTab === "mentor" ? 'is-active' : '') + '" data-tab="mentor"><span class="studio-step-num">10</span> ACEIIIT Mentor</button>' +
         '<button type="button" class="studio-step-btn js-studio-tab ' + (activeTab === "whatsnew" ? 'is-active' : '') + '" data-tab="whatsnew"><span class="studio-step-num">11</span> What\'s New</button>' +
+        '<button type="button" class="studio-step-btn js-studio-tab ' + (activeTab === "reports" ? 'is-active' : '') + '" data-tab="reports"><span class="studio-step-num">12</span> Reports' + (runtime.reportOpenTotal ? ' <span class="studio-step-badge" aria-label="' + runtime.reportOpenTotal + ' open">' + runtime.reportOpenTotal + '</span>' : '') + '</button>' +
         '</div>' +
 
         '<div class="studio-body">' +
@@ -14127,6 +14751,19 @@
             }
             payload.publishAt = whenDate.toISOString();
           }
+          var eventOn = form.get("eventEnabled") === "on";
+          var hadEvent = Boolean(formTest && formTest.event && formTest.event.enabled);
+          if (eventOn) {
+            var resultsLocal = String(form.get("eventResultsAt") || "");
+            var resultsDate = resultsLocal ? new Date(resultsLocal) : null;
+            if (!resultsDate || Number.isNaN(resultsDate.getTime())) {
+              window.alert("Pick when the live event's results come out.");
+              return;
+            }
+            payload.event = { enabled: true, joinMinutes: Math.max(5, Math.min(180, Number(form.get("eventJoinMinutes") || 15))), resultsAt: resultsDate.toISOString() };
+          } else if (hadEvent) {
+            payload.event = { enabled: false };
+          }
           var editTargetId = runtime.adminCreatingTest ? null : (runtime.adminEditingTestId || selectedTestId || null);
           if (!editTargetId) {
             payload.displayOrder = Math.min(9999, nextDefaultDisplayOrder);
@@ -14162,6 +14799,19 @@
           if (publishingSelect.value === "scheduled") {
             var input = document.getElementById("test-publish-at");
             if (input) input.focus();
+          }
+          var eventBox = document.querySelector(".test-event");
+          if (eventBox) eventBox.hidden = publishingSelect.value !== "scheduled" && publishingSelect.value !== "live" && !(document.getElementById("test-event-enabled") || {}).checked;
+        });
+      }
+      var eventToggle = document.getElementById("test-event-enabled");
+      if (eventToggle) {
+        eventToggle.addEventListener("change", function () {
+          var fields = document.querySelector(".test-event-fields");
+          if (fields) fields.hidden = !eventToggle.checked;
+          if (eventToggle.checked) {
+            var results = document.getElementById("test-event-results");
+            if (results) results.focus();
           }
         });
       }
@@ -14699,7 +15349,7 @@
           var publishing = test.status !== "live";
           // Publishing runs the same health check as Review & Validate; blocking issues open it.
           if (publishing) {
-            var check = reviewPaper(test, questions, tests, (adminSnapshot && adminSnapshot.attempts) || [], runtime.paperImageFailures);
+            var check = reviewPaper(test, questions, tests, (adminSnapshot && adminSnapshot.attempts) || [], runtime.paperImageFailures, runtime.reportCounts);
             if (check.errors.length) {
               runtime.adminSelectedTestId = test.id;
               runtime.adminStudioTab = "review";
@@ -15435,6 +16085,32 @@
       bindAdminMaterials(user, selectedTestId);
       if (runtime.adminStudioTab === "mentor") mountAdminMentor();
       if (runtime.adminStudioTab === "whatsnew") mountAdminWhatsNew();
+      if (runtime.adminStudioTab === "reports") {
+        mountAdminReports(function (questionId, testId) {
+          runtime.adminSelectedTestId = testId;
+          runtime.adminStudioTab = "questions";
+          runtime.adminEditingQuestionId = questionId;
+          runtime.adminQuestionEditorOpen = false;
+          rerenderAdminPreserveScroll(user, testId);
+          window.requestAnimationFrame(function () {
+            var form = document.getElementById("question-form");
+            if (form) form.scrollIntoView({ block: "start", behavior: prefersReducedMotion() ? "auto" : "smooth" });
+          });
+        });
+      }
+      // Open report counts feed the Reports tab badge and Paper Health (refreshed each minute).
+      if (store.getQuestionReportCounts && (!runtime.reportCountsAt || Date.now() - runtime.reportCountsAt > 60000)) {
+        runtime.reportCountsAt = Date.now();
+        Promise.resolve(store.getQuestionReportCounts()).then(function (counts) {
+          var before = JSON.stringify(runtime.reportCounts || null);
+          runtime.reportCounts = counts || {};
+          runtime.reportOpenTotal = Object.keys(runtime.reportCounts).reduce(function (sum, k) { return sum + runtime.reportCounts[k]; }, 0);
+          var changed = before === "null" ? runtime.reportOpenTotal > 0 : before !== JSON.stringify(runtime.reportCounts);
+          if (changed && location.hash.indexOf("admin") !== -1 && !document.querySelector("[data-admin-modal='true']")) {
+            rerenderAdminPreserveScroll(user, selectedTestId);
+          }
+        }).catch(function () { });
+      }
 
       var userSearchInput = document.getElementById("admin-user-search");
       if (userSearchInput) {
@@ -15938,6 +16614,8 @@
     applyTheme();
     syncMentorWithRoute(view, parts, user);
     scheduleWhatsNew(view, user);
+    // Pages with the main nav put the phone tab bar back (renderPrimaryNav); others have none.
+    document.body.classList.remove("has-tabbar");
 
     if (view !== "test") {
       stopRuntime(true);

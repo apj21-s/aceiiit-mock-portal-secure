@@ -189,6 +189,8 @@ function fakeDrive() {
     check(inside.ellipsis === "ellipsis" && !inside.overflow, "long names truncate; no sideways scroll");
     await page.screenshot({ path: path.join(SHOTS, "student-list-1366.png") });
 
+    await page.waitForSelector(".drive-folder .drive-folder-link", { timeout: 10000 });
+    await sleep(200);
     await page.click(".drive-folder .drive-folder-link");
     await until(page, () => /Kinematics formula sheet/.test(document.body.innerText));
     check((await page.evaluate(() => Array.from(document.querySelectorAll(".drive-crumbs li")).map((li) => li.innerText.trim()).join(" > "))) === "Study material > Physics > Mechanics", "subfolders open inside folders (any depth)");

@@ -14,6 +14,7 @@ const { readLimiter } = require("../middleware/rateLimit");
 const multer = require("multer");
 const questionImport = require("../controllers/questionImportController");
 const whatsNew = require("../controllers/whatsNewController");
+const questionReports = require("../controllers/questionReportController");
 
 const router = express.Router();
 
@@ -139,6 +140,11 @@ router.post("/attach-bulk", requireAuth, requireAdmin, audit("TEST_QUESTIONS_ATT
 router.post("/detach-bulk", requireAuth, requireAdmin, audit("TEST_QUESTIONS_DETACHED", "Test"), admin.detachQuestionsBulk);
 router.post("/reorder-questions", requireAuth, requireAdmin, audit("TEST_QUESTIONS_REORDERED", "Test"), admin.reorderTestQuestions);
 router.post("/tests/reorder", requireAuth, requireAdmin, audit("TESTS_REORDERED", "Test"), admin.reorderTests);
+
+// Student reports on questions (Studio → Reports).
+router.get("/reports", requireAuth, requireAdmin, readLimiter(), questionReports.adminListReports);
+router.get("/reports/counts", requireAuth, requireAdmin, readLimiter(), questionReports.adminOpenReportCounts);
+router.post("/reports/:id/resolve", requireAuth, requireAdmin, audit("QUESTION_REPORTS_RESOLVED", "Question"), questionReports.adminResolveReports);
 
 // "What's new" notes (Studio → What's New).
 router.get("/whats-new", requireAuth, requireAdmin, readLimiter(), whatsNew.adminList);

@@ -95,8 +95,9 @@ node scripts/migrations/2026-10-sync-indexes.js --apply                 # must r
 ```
 
 After a release that adds an index (for example the scheduled-tests index on `tests`
-`{status, publishAt}`, or the Google Drive connection), run `2026-10-sync-indexes.js` again
-(dry run, then `--apply`).
+`{status, publishAt}`, the Google Drive connection, or the new `questionreports` collection
+with `{status: 1, questionId: 1, createdAt: -1}` and unique `{userId: 1, questionId: 1}`),
+run `2026-10-sync-indexes.js` again (dry run, then `--apply`).
 
 Other one-off scripts:
 - `scripts/seed-ugee-2026.js` (`npm run seed`): sample data for **empty development** databases. It replaces all questions and tests, so it refuses to run when any exist (or with `NODE_ENV=production`). Never run it against production.
