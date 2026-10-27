@@ -25,7 +25,10 @@ const UI_PUBLIC = process.env.UI_PUBLIC ? path.resolve(process.env.UI_PUBLIC) : 
 const SWEEP_PARTS = String(process.env.SWEEP || "").split(",").map((p) => p.trim()).filter(Boolean);
 const SWEEP = SWEEP_PARTS.length > 0;
 const sweeping = (part) => SWEEP_PARTS.includes(part) || SWEEP_PARTS.includes("all") || SWEEP_PARTS.includes("1");
-const SWEEP_VIEWPORTS = [[1366, 657], [1440, 900], [390, 800]];
+// SWEEP_SIZES=390x800,360x780,320x640 overrides the sweep's viewports (e.g. a phone-only pass).
+const SWEEP_VIEWPORTS = process.env.SWEEP_SIZES
+  ? process.env.SWEEP_SIZES.split(",").map((v) => v.trim().split("x").map(Number)).filter((v) => v[0] > 0 && v[1] > 0)
+  : [[1366, 657], [1440, 900], [390, 800]];
 const STUDENT_ROUTES = [
   "dashboard", "exams/practice", "exams/mock-tests", "exams/live-tests", "progress/performance", "progress/reports",
   "resources/bookmarks", "resources/materials", "updates/notices", "updates/events", "account/profile", "account/package", "account/security",
@@ -187,12 +190,12 @@ async function shoot(page, file) {
       await page.waitForSelector(".js-bookmark-toggle", { timeout: 15000 }).catch(() => null);
       await page.evaluate(() => [...document.querySelectorAll(".js-bookmark-toggle")].slice(0, 3).forEach((b) => b.click()));
       await sleep(300);
-      for (const route of STUDENT_ROUTES) {
+      for (const route of STUDENT_ROUTES.concat([`results/${attemptId}`])) {
         for (const [w, h] of SWEEP_VIEWPORTS) {
           await page.setViewport({ width: w, height: h });
           await visit(page, route);
-          await settle(page, 300);
-          await shoot(page, path.join(OUT, `sweep-${route.replace(/\//g, "-")}-${w}x${h}.png`));
+          await settle(page, route.indexOf("results/") === 0 ? 1500 : 300);
+          await shoot(page, path.join(OUT, `sweep-${route.replace(attemptId, "latest").replace(/\//g, "-")}-${w}x${h}.png`));
         }
       }
       await page.setViewport({ width: 1366, height: 657 });
@@ -217,10 +220,14 @@ async function shoot(page, file) {
       await dpage.click("#login-submit-btn");
       await dpage.waitForFunction(() => /dashboard/.test(location.hash), { timeout: 15000 });
       await dpage.evaluate(() => { const t = document.querySelector("[data-theme-toggle='true']"); if (t) t.click(); });
-      for (const route of ["dashboard", "results/" + attemptId, "account/security", "progress/performance"]) {
-        await visit(dpage, route);
-        await settle(dpage, 600);
-        await shoot(dpage, path.join(OUT, `sweep-dark-${route.replace(attemptId, "latest").replace(/\//g, "-")}-1366x657.png`));
+      const darkSizes = process.env.SWEEP_SIZES ? SWEEP_VIEWPORTS : [[1366, 657]];
+      for (const route of ["dashboard", "results/" + attemptId, "account/security", "progress/performance", "progress/reports", "exams/practice"]) {
+        for (const [w, h] of darkSizes) {
+          await dpage.setViewport({ width: w, height: h });
+          await visit(dpage, route);
+          await settle(dpage, 600);
+          await shoot(dpage, path.join(OUT, `sweep-dark-${route.replace(attemptId, "latest").replace(/\//g, "-")}-${w}x${h}.png`));
+        }
       }
       await dctx.close();
     }

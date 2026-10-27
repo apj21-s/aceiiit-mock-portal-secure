@@ -58,7 +58,7 @@ Uses `puppeteer-core` with a locally installed Chrome (`CHROME_PATH`, default
   reload recovery; second tab → 409 → takeover (old token revoked); REAP advance; server
   score and rank; the results page's plan for the next mock (1–3 steps; the AI coach card
   appears only when an AI interpretation is ready, so never on this AI-off server).
-- **`practice.e2e.js`** (25 checks): Progress shows section accuracy as one donut per section, with the accuracy in the middle (a dash when nothing was answered), a numbered legend and an attempted count, inside the page; the dashboard eyebrow names the next UGEE once the set exam date
+- **`practice.e2e.js`** (32 checks): Progress shows section accuracy as one donut per section, with the accuracy in the middle (a dash when nothing was answered), a numbered legend and an attempted count, inside the page; the dashboard eyebrow names the next UGEE once the set exam date
   has passed, and the greeting capitalises the name; the practice builder lists real subjects
   with counts and disables Start when nothing matches; a REAP-only paper opens in REAP (it used
   to submit the moment it opened) with only REAP in the section bar; a SUPR-only untimed paper
@@ -79,7 +79,7 @@ Uses `puppeteer-core` with a locally installed Chrome (`CHROME_PATH`, default
   when opened from results, dark mode, reduced motion, the phone sheet (modal, inert page, Back
   closes it) and sign-out removing the panel.
 - **`materials.e2e.js`** (32 checks, `/api/materials` faked): students get folder tiles with counts and Drive colours, breadcrumbs, subfolders and Back, a dense list of 60 files (52px rows, truncated names, no sideways scroll; on phones two-line names, no date column, 44px targets), a remembered list/grid toggle, search with paths, open/download through the portal and no admin controls; admins connect Google Drive (and come back to the tab with a notice), make folders, upload into the open folder through the background panel, and rename, move, recolour and delete from the row menu (Escape returns focus).
-- **`admin.e2e.js`** (89 checks): all 12 Studio tabs render without errors; the ACEIIIT Mentor tab reports a missing key without showing one, saves allowances and programme codes, and refuses a non-https programme link; question bank
+- **`admin.e2e.js`** (100 checks): the What's New card deck (opens on feature 1 of N with focus on Next; → and Next advance and fill the story segment with a spoken position; the last card recaps every feature and Next becomes Got it; dragging the top card left flies it away; ← goes back; a feature's Try it link closes the pop-up and opens its page); the dashboard mascot stands beside the title at 390 and 320 px (at least 110 px tall, on screen, no sideways scroll); all 12 Studio tabs render without errors; the ACEIIIT Mentor tab reports a missing key without showing one, saves allowances and programme codes, and refuses a non-https programme link; question bank
   pagination, server search with focus kept, drawer excludes attached questions and
   attaches; the question image manager adds, sizes, replaces (a failed replace keeps the old
   image), reorders and removes images and Save stores exactly that (uploads answered by an
@@ -100,7 +100,7 @@ Uses `puppeteer-core` with a locally installed Chrome (`CHROME_PATH`, default
   `FULL=1` takes full-page screenshots for manual review; `UI_PUBLIC=<dir>` serves the frontend
   from another directory (e.g. a `git archive HEAD backend/public` export) for a before/after
   comparison. The current result is 0 issues.
-- **`mobile-flows.e2e.js`** (~170 checks, 390×844 touch emulation unless stated; run one flow
+- **`mobile-flows.e2e.js`** (185 checks, 390×844 touch emulation unless stated; run one flow
   with `node tests/e2e/mobile-flows.e2e.js <flow>[,<flow>]`, `SHOTS=1` for screenshots):
   - `drawer`: ☰ opens a modal drawer (aria-expanded, inert background, scroll lock, focus
     trap); ESC, outside tap, link tap and route change close it; focus and scroll restored.
@@ -127,6 +127,9 @@ Uses `puppeteer-core` with a locally installed Chrome (`CHROME_PATH`, default
   `UI_PUBLIC=<dir>` serves another frontend copy against the same server and data, for a
   before/after comparison:
   `git archive HEAD backend/public | tar -x -C /tmp/head && UI_PUBLIC=/tmp/head/backend/public node tests/e2e/ui-shots.e2e.js /tmp/before`.
+  For a phone-only pass of every student page (and the latest result), set the sizes:
+  `SWEEP=student SWEEP_SIZES=390x800,360x780,320x640 node tests/e2e/ui-shots.e2e.js /tmp/phone`;
+  with `SWEEP=dark` the same sizes also apply to the dark-theme pages.
 
 ## Load test (`backend/scripts/load-test.js`)
 

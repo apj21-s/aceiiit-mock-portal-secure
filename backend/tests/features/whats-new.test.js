@@ -96,6 +96,11 @@ test("validation: https images, safe button links, 1–6 items, both label and l
   await bad({ items: Array.from({ length: 7 }, (_, i) => ({ title: `Item ${i}` })) }, "items");
   await bad({ title: "" }, "title");
   await bad({ extra: true });
+  await bad({ items: [{ title: "Bad link", href: "javascript:alert(1)" }] }, "items.0.href");
+  await bad({ items: [{ title: "Plain http", href: "http://example.com" }] }, "items.0.href");
+  const linked = await admin.post("/api/admin/whats-new", note({ items: [{ icon: "🎯", title: "Practice", href: "#exams/practice" }, { title: "Site", href: "https://aceiiit.in" }] }));
+  expect(linked.status).toBe(201);
+  expect(linked.body.note.items.map((i) => i.href)).toEqual(["#exams/practice", "https://aceiiit.in"]);
   const ok = await admin.post("/api/admin/whats-new", note({ imageUrl: "https://example.com/a.png", ctaHref: "https://aceiiit.in/#packages" }));
   expect(ok.status).toBe(201);
   // Text is stored as typed (the client renders it as text, never HTML).

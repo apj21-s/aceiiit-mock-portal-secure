@@ -10,10 +10,14 @@ const { hasAnyActiveEntitlement } = require("../services/entitlementService");
 const HTTPS_URL = /^https:\/\/[^\s<>"'`]+$/i;
 const PORTAL_ROUTE = /^#\/?[a-z0-9/_-]*$/i;
 
+const safeLink = (message) => z.string().trim().max(300).optional().default("")
+  .refine((v) => !v || PORTAL_ROUTE.test(v) || HTTPS_URL.test(v), message);
+
 const itemSchema = z.object({
   icon: z.string().trim().max(16).optional().default(""),
   title: z.string().trim().min(1, "Each item needs a title").max(60),
   body: z.string().trim().max(240).optional().default(""),
+  href: safeLink("An item's Try it link must be a portal page like #exams/practice or an https:// address"),
 }).strict();
 
 const noteSchema = z.object({
@@ -33,7 +37,7 @@ function publicNote(note) {
     id: String(note._id),
     title: note.title,
     summary: note.summary || "",
-    items: (note.items || []).map((i) => ({ icon: i.icon || "", title: i.title, body: i.body || "" })),
+    items: (note.items || []).map((i) => ({ icon: i.icon || "", title: i.title, body: i.body || "", href: i.href || "" })),
     imageUrl: note.imageUrl || "",
     cta: note.ctaLabel && note.ctaHref ? { label: note.ctaLabel, href: note.ctaHref } : null,
     publishedAt: note.publishedAt ? new Date(note.publishedAt).toISOString() : null,

@@ -17594,57 +17594,13 @@ body[data-theme="dark"] .progress-donuts {
   background: var(--surface-soft);
 }
 
-.wn-items {
-  display: grid;
-  gap: 4px;
-  margin: 16px 0 0;
-  padding: 0;
-  list-style: none;
-}
 
-.wn-items li {
-  display: grid;
-  grid-template-columns: 40px minmax(0, 1fr);
-  align-items: start;
-  gap: 12px;
-  padding: 10px 8px;
-  border-radius: 12px;
-  opacity: 0;
-  transform: translateY(6px);
-  transition: opacity 260ms var(--ease-out), transform 260ms var(--ease-out);
-  transition-delay: calc(120ms + var(--i, 0) * 50ms);
-}
 
-.wn-overlay[data-state="open"] .wn-items li { opacity: 1; transform: none; }
 
-.wn-icon {
-  display: grid;
-  place-items: center;
-  width: 40px;
-  height: 40px;
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--gold) 16%, transparent);
-  font-size: 1.15rem;
-  line-height: 1;
-}
 
-.wn-items strong { display: block; margin-top: 2px; }
 
-.wn-items p {
-  margin: 2px 0 0;
-  font-size: 0.9rem;
-  color: var(--ink-soft);
-  text-wrap: pretty;
-}
 
-.wn-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 10px;
-  margin-top: 18px;
-}
 
-.wn-actions .button { min-height: 44px; }
 
 body[data-theme="dark"] .wn-card {
   border-color: rgba(255, 255, 255, 0.08);
@@ -17665,14 +17621,11 @@ body[data-theme="dark"] .wn-overlay { background: rgba(0, 0, 0, 0.55); }
     transition: opacity 200ms var(--ease-out), transform 320ms var(--ease-drawer);
   }
   .wn-overlay[data-state="closing"] .wn-card { transform: translateY(100%); transition-duration: 200ms; }
-  .wn-actions { flex-direction: column-reverse; }
-  .wn-actions .button { width: 100%; }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .wn-card,
   .wn-overlay[data-state="closing"] .wn-card,
-  .wn-items li,
   .wn-spark { transform: none !important; transition-property: opacity; }
 }
 
@@ -17750,7 +17703,6 @@ body[data-theme="dark"] .wn-overlay { background: rgba(0, 0, 0, 0.55); }
   box-shadow: 0 18px 50px rgba(20, 17, 15, 0.18);
 }
 
-.wn-preview-frame .wn-items li { opacity: 1; transform: none; }
 .wn-preview-frame .wn-spark { transform: none; }
 
 @media (max-width: 960px) {
@@ -18547,4 +18499,398 @@ body[data-theme="dark"] .bottom-tabbar { background: rgba(24, 24, 24, 0.92); bor
 
 @media (prefers-reduced-motion: reduce) {
   .tabbar-marker, .tabbar-item svg { transition: none; }
+}
+
+/* ===================== Dashboard mascot on phones: as tall as the greeting ===================== */
+@media (max-width: 768px) {
+  .dashboard-greeting-hero {
+    align-items: end;
+  }
+
+  .dashboard-greeting-mascot {
+    width: clamp(120px, 38vw, 180px);
+    align-self: end;
+    margin-bottom: -2px;
+  }
+
+  .dashboard-greeting-mascot img {
+    width: 100%;
+    height: auto;
+    max-height: 200px;
+  }
+}
+
+@media (max-width: 480px) {
+  .dashboard-greeting-hero {
+    column-gap: 10px;
+  }
+
+  .dashboard-greeting-mascot {
+    width: clamp(118px, 38vw, 160px);
+  }
+
+  /* The tip opens above the mascot so it never runs off the left edge. */
+  .mascot-bubble {
+    right: 0;
+    bottom: calc(100% - 6px);
+    max-width: min(260px, calc(100vw - 32px));
+    border-radius: 14px 14px 4px 14px;
+  }
+}
+
+/* ===================== What's New: the card deck ===================== */
+.wn-segments {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 14px;
+}
+
+.wn-seg {
+  flex: 1;
+  height: 3px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--ink) 12%, transparent);
+}
+
+.wn-seg i {
+  display: block;
+  height: 100%;
+  background: var(--gold);
+  transform: scaleX(0);
+  transform-origin: left center;
+  transition: transform 300ms var(--ease-out);
+}
+
+.wn-seg.is-done i { transform: scaleX(1); }
+
+.wn-deck {
+  position: relative;
+  display: grid;
+  margin-top: 16px;
+  padding-bottom: 24px; /* room for the cards peeking behind */
+}
+
+.wn-slide {
+  grid-area: 1 / 1;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  min-height: 210px;
+  padding: 20px 20px 18px;
+  border: 1px solid color-mix(in srgb, var(--gold) 30%, transparent);
+  border-radius: 18px;
+  background:
+    radial-gradient(circle at 100% 0%, color-mix(in srgb, var(--gold) 14%, transparent), transparent 55%),
+    var(--surface);
+  box-shadow: 0 10px 26px rgba(20, 17, 15, 0.1);
+  touch-action: pan-y;
+  user-select: none;
+  -webkit-user-select: none;
+  transform-origin: 50% 100%;
+  transition: transform 300ms var(--ease-drawer), opacity 240ms ease;
+  will-change: auto;
+}
+
+.wn-slide[data-pos="top"] { z-index: 4; cursor: grab; }
+.wn-slide[data-pos="1"] { z-index: 3; transform: translateY(12px) scale(0.95); }
+.wn-slide[data-pos="2"] { z-index: 2; transform: translateY(24px) scale(0.9); }
+.wn-slide[data-pos="back"] { z-index: 1; transform: translateY(24px) scale(0.9); opacity: 0; }
+.wn-slide[data-pos="gone"] { z-index: 5; transform: translateX(-118%) rotate(-7deg); opacity: 0; pointer-events: none; }
+.wn-slide.is-dragging { transition: none; cursor: grabbing; }
+
+/* Only the top card shows its content; the ones behind are just edges of the deck. */
+.wn-slide > * { transition: opacity 160ms ease 60ms; }
+.wn-slide:not(.is-top) > * { opacity: 0; transition-delay: 0s; }
+
+.wn-slide-icon {
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  margin-bottom: 14px;
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--gold) 18%, transparent);
+  font-size: 1.7rem;
+  line-height: 1;
+}
+
+.wn-slide-icon.is-check { background: color-mix(in srgb, var(--green) 16%, transparent); color: var(--green); font-weight: 800; }
+
+/* The icon pops in each time its card comes to the top. */
+.wn-slide.is-top .wn-slide-icon { animation: wn-pop 460ms cubic-bezier(0.34, 1.56, 0.64, 1) 80ms both; }
+
+@keyframes wn-pop {
+  from { opacity: 0; transform: scale(0.6) rotate(-8deg); }
+}
+
+.wn-slide-title {
+  margin: 0 0 6px;
+  font-family: var(--font-display);
+  font-size: 1.2rem;
+  line-height: 1.25;
+  text-wrap: balance;
+}
+
+.wn-slide-body {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.94rem;
+  line-height: 1.55;
+  text-wrap: pretty;
+}
+
+.wn-try {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 40px;
+  margin-top: auto;
+  padding: 8px 2px 0;
+  color: var(--ink);
+  font-weight: 800;
+  text-decoration: underline;
+  text-decoration-color: var(--gold);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 4px;
+}
+
+.wn-try span { transition: transform 160ms var(--ease-out); }
+
+@media (hover: hover) and (pointer: fine) {
+  .wn-try:hover span { transform: translateX(3px); }
+}
+
+.wn-try:focus-visible, .wn-nav-btn:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; border-radius: 6px; }
+
+.wn-recap {
+  display: grid;
+  gap: 6px;
+  margin: 2px 0 14px;
+  padding: 0;
+  list-style: none;
+  font-weight: 600;
+}
+
+.wn-recap span { color: var(--green); font-weight: 800; margin-right: 4px; }
+.wn-slide.is-final.is-top .wn-recap li { animation: wn-tick 300ms var(--ease-out) both; animation-delay: calc(140ms + var(--i, 0) * 70ms); }
+
+@keyframes wn-tick {
+  from { opacity: 0; transform: translateX(-6px); }
+}
+
+.wn-final-cta { margin-top: auto; }
+
+.wn-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 6px;
+}
+
+.wn-nav-btn {
+  min-height: 44px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 10px;
+  background: none;
+  color: var(--ink-soft);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.wn-nav-btn:disabled { opacity: 0.35; cursor: default; }
+.wn-count { font-size: 0.82rem; font-weight: 700; color: var(--ink-soft); font-variant-numeric: tabular-nums; }
+.wn-next { min-width: 120px; min-height: 44px; }
+
+body[data-theme="dark"] .wn-slide {
+  border-color: color-mix(in srgb, var(--gold) 26%, transparent);
+  background:
+    radial-gradient(circle at 100% 0%, color-mix(in srgb, var(--gold) 12%, transparent), transparent 55%),
+    #262626;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.35);
+}
+
+body[data-theme="dark"] .wn-seg { background: rgba(255, 255, 255, 0.12); }
+
+@media (max-width: 560px) {
+  .wn-slide { min-height: 220px; padding: 18px 16px 16px; }
+  .wn-next { min-width: 108px; }
+}
+
+/* Reduced motion: the cards crossfade in place; no flying, tilting or popping. */
+@media (prefers-reduced-motion: reduce) {
+  .wn-slide[data-pos],
+  .wn-slide.is-dragging { transform: none !important; }
+  .wn-slide:not([data-pos="top"]) { opacity: 0; }
+  .wn-slide.is-top .wn-slide-icon,
+  .wn-slide.is-final.is-top .wn-recap li { animation: none; }
+  .wn-seg i { transition: none; }
+}
+
+/* ===================== Phone audit fixes (Oct 2026) ===================== */
+
+/* Bookmarks: long passages start folded behind a fade. */
+.bookmark-passage.is-folded {
+  max-height: 8.5em;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(#000 60%, transparent);
+  mask-image: linear-gradient(#000 60%, transparent);
+}
+
+.bookmark-passage-toggle {
+  align-self: flex-start;
+  min-height: 36px;
+  margin: -4px 0 4px;
+  padding: 0 2px;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.84rem;
+  font-weight: 800;
+  text-decoration: underline;
+  text-decoration-color: var(--gold);
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.bookmark-passage-toggle:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; border-radius: 4px; }
+
+@media (max-width: 640px) {
+  /* Progress → Reports: each attempt is a compact card (number and date on top, the test,
+     then score / accuracy / percentile side by side, then the button). */
+  .reports-table.has-cell-labels tr {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-areas:
+      "num date date"
+      "test test test"
+      "score acc pct"
+      "act act act";
+    gap: 8px 12px;
+    margin-bottom: 12px;
+    padding: 14px;
+    border: 1px solid color-mix(in srgb, var(--ink) 8%, transparent);
+    border-radius: 14px;
+    background: var(--surface);
+  }
+
+  .reports-table.has-cell-labels td:nth-child(1) { grid-area: num; font-size: 0.8rem; color: var(--ink-soft); }
+  .reports-table.has-cell-labels td:nth-child(2) { grid-area: test; font-family: var(--font-display); font-size: 1.05rem; font-weight: 800; color: var(--ink); }
+  .reports-table.has-cell-labels td:nth-child(3) { grid-area: date; justify-self: end; font-size: 0.8rem; color: var(--ink-soft); }
+  .reports-table.has-cell-labels td:nth-child(4) { grid-area: score; }
+  .reports-table.has-cell-labels td:nth-child(5) { grid-area: acc; }
+  .reports-table.has-cell-labels td:nth-child(6) { grid-area: pct; }
+  .reports-table.has-cell-labels td:nth-child(7) { grid-area: act; }
+  .reports-table.has-cell-labels td:nth-child(2)::before,
+  .reports-table.has-cell-labels td:nth-child(3)::before { content: none !important; }
+  .reports-table.has-cell-labels td:nth-child(n + 4):nth-child(-n + 6) { font-weight: 800; font-variant-numeric: tabular-nums; }
+
+  /* Results: the two secondary actions share a row; Retake stays full width. */
+  .rs-hero-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .rs-hero-actions .button { width: 100%; min-width: 0; padding-left: 8px; padding-right: 8px; }
+  .rs-hero-actions #retake-test,
+  .rs-hero-actions .button:only-of-type { grid-column: 1 / -1; }
+
+  /* Results → Time & pace: three compact tiles in one row. */
+  .rs-time .rs-stat-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+  .rs-time .rs-stat { padding: 8px; }
+  .rs-time .rs-stat strong { font-size: 1.05rem; }
+
+  /* Results → Topics: one compact row per topic, labels inline. */
+  .rs-topic-row {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+    grid-template-areas:
+      "name name net"
+      "ans cw acc";
+    gap: 4px 10px;
+    padding: 10px 2px;
+    font-size: 0.82rem;
+  }
+
+  .rs-topic-row .rs-topic-name { grid-area: name; grid-column: auto; }
+  .rs-topic-row > [data-label="Answered"] { grid-area: ans; }
+  .rs-topic-row > [data-label="Correct / wrong"] { grid-area: cw; }
+  .rs-topic-row > .rs-acc { grid-area: acc; justify-self: end; }
+  .rs-topic-row > .rs-net { grid-area: net; justify-self: end; align-self: center; font-weight: 800; font-size: 0.95rem; }
+
+  .rs-topic-row > [data-label]::before {
+    display: inline;
+    margin-right: 4px;
+    font-size: 0.68rem;
+    font-weight: 700;
+  }
+
+  .rs-topic-row > .rs-net::before,
+  .rs-topic-row > .rs-acc::before { content: none; }
+  .rs-topic-row > [data-label="Correct / wrong"]::before { content: "Right / wrong"; }
+}
+
+@media (max-width: 560px) {
+  /* Progress: the two section donuts side by side. */
+  .progress-donuts {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+  }
+
+  .progress-donut-ring { --donut-size: clamp(92px, 28vw, 120px); }
+  .progress-donut-legend { font-size: 0.8rem; gap: 2px; }
+  .progress-donut-legend li { gap: 6px; }
+  .progress-donut-note { font-size: 0.72rem; text-align: center; }
+
+  /* Practice: section and size side by side, the button under them. */
+  .mistakes-controls {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+  }
+
+  .mistakes-controls .field { min-width: 0; }
+  .mistakes-controls .field select { width: 100%; }
+  .mistakes-controls .button { grid-column: 1 / -1; width: 100%; }
+}
+
+/* Phones: the date line spans the full width; the mascot stands beside the title and subtitle. */
+@media (max-width: 768px) {
+  .dashboard-greeting-hero {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "eyebrow eyebrow"
+      "title mascot"
+      "sub mascot"
+      "progress progress";
+    row-gap: 0;
+  }
+
+  .dashboard-greeting-hero-content { display: contents; }
+  .dashboard-greeting-hero .hero-eyebrow-row { grid-area: eyebrow; }
+  .dashboard-greeting-hero .hero-title { grid-area: title; align-self: end; }
+  .dashboard-greeting-hero .hero-subtitle { grid-area: sub; align-self: start; margin-bottom: 14px; }
+  .dashboard-greeting-mascot { grid-area: mascot; }
+}
+
+@media (max-width: 640px) {
+  /* Topic rows read as "2 of 4 answered · 0 / 2 right / wrong", quieter than block labels. */
+  .rs-topic-row > [data-label="Answered"]::before,
+  .rs-topic-row > [data-label="Correct / wrong"]::before { content: none; }
+  .rs-topic-row > [data-label="Answered"]::after { content: " answered"; }
+  .rs-topic-row > [data-label="Correct / wrong"]::after { content: " right / wrong"; }
+  .rs-topic-row > [data-label="Answered"]::after,
+  .rs-topic-row > [data-label="Correct / wrong"]::after {
+    color: var(--ink-soft);
+    font-size: 0.74rem;
+  }
+}
+
+@media (max-width: 400px) {
+  .rs-hero-actions .button { font-size: 0.78rem; letter-spacing: 0.02em; }
+  .rs-time .rs-stat > span { font-size: 0.6rem; letter-spacing: 0.03em; overflow-wrap: anywhere; }
+  .rs-time .rs-stat strong { font-size: 0.98rem; }
 }

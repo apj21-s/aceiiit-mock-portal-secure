@@ -510,6 +510,7 @@ fs.mkdirSync(SHOTS, { recursive: true });
     await page.type("#wn-title", "Paper health checks");
     await page.type("#wn-summary", "Studio now checks every paper before it goes live.");
     await page.type("#wn-item-title-0", "Broken maths is caught");
+    await page.type("#wn-item-href-0", "#exams/practice");
     await page.click("[data-wn-add]");
     await page.type("#wn-item-title-1", "One-click fixes");
     const previewText = await page.$eval("[data-wn-preview]", (el) => el.innerText);
@@ -535,6 +536,39 @@ fs.mkdirSync(SHOTS, { recursive: true });
     });
     check(popup && /Paper health checks/.test(popup.text) && /Broken maths is caught/.test(popup.text), "a student sees the new note as a pop-up when they open the portal");
     check(popup && popup.focusInside && popup.dialog === "dialog" && popup.labelled, "the pop-up is a labelled dialog with focus inside");
+    // The card deck: keys, Next, a swipe, Back, and the recap card.
+    const deckState = () => reader.evaluate(() => ({
+      count: (document.querySelector("[data-wn-count]") || {}).textContent || "",
+      top: (document.querySelector(".wn-slide.is-top .wn-slide-title") || {}).textContent || "",
+      next: (document.querySelector("[data-wn-next]") || {}).textContent || "",
+      done: document.querySelectorAll(".wn-seg.is-done").length,
+      focusNext: document.activeElement && document.activeElement.hasAttribute("data-wn-next"),
+      live: (document.querySelector("[data-wn-live]") || {}).textContent || "",
+    }));
+    let deck = await deckState();
+    check(deck.count === "1 of 2" && deck.top === "Broken maths is caught" && deck.done === 1 && deck.focusNext, `the deck opens on feature 1 of 2 with focus on Next (${deck.count})`);
+    await reader.keyboard.press("ArrowRight");
+    await sleep(400);
+    deck = await deckState();
+    check(deck.count === "2 of 2" && deck.top === "One-click fixes" && deck.done === 2 && /Feature 2 of 2/.test(deck.live), "→ moves to the next feature, fills its segment and announces it");
+    await reader.click("[data-wn-next]");
+    await sleep(400);
+    deck = await deckState();
+    const recap = await reader.evaluate(() => Array.from(document.querySelectorAll(".wn-slide.is-top .wn-recap li")).map((li) => li.textContent.trim()));
+    check(deck.top === "You're all caught up" && /Got it/.test(deck.next) && recap.length === 2 && /Broken maths/.test(recap[0]), "the last card recaps every feature and Next becomes Got it");
+    await reader.click("[data-wn-prev]");
+    await sleep(400);
+    const box = await reader.evaluate(() => { const r = document.querySelector(".wn-slide.is-top").getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2, w: r.width }; });
+    await reader.mouse.move(box.x, box.y);
+    await reader.mouse.down();
+    for (let i = 1; i <= 8; i += 1) await reader.mouse.move(box.x - (box.w * 0.6 * i) / 8, box.y + i);
+    await reader.mouse.up();
+    await sleep(450);
+    check((await deckState()).top === "You're all caught up", "dragging the top card to the left flies it away to the next one");
+    await reader.keyboard.press("ArrowLeft");
+    await reader.keyboard.press("ArrowLeft");
+    await sleep(400);
+    check((await deckState()).top === "Broken maths is caught", "← goes back through the deck");
     const seenSaved = reader.waitForResponse((r) => /\/api\/whats-new\/seen$/.test(r.url()), { timeout: 8000 }).catch(() => null);
     await reader.keyboard.press("Escape");
     await reader.waitForFunction(() => !document.querySelector("[data-whats-new]"), { timeout: 3000 }).catch(() => null);
@@ -547,6 +581,9 @@ fs.mkdirSync(SHOTS, { recursive: true });
     check(/Paper health checks/.test(await reader.evaluate(() => (document.querySelector("[data-whats-new]") || {}).innerText || "")), "the footer's What's new link reopens it");
     await sleep(500);
     await reader.screenshot({ path: path.join(SHOTS, "whats-new-popup-1280.png") });
+    await reader.click(".wn-slide.is-top [data-wn-link]");
+    await reader.waitForFunction(() => /exams\/practice/.test(location.hash) && !document.querySelector("[data-whats-new]"), { timeout: 8000 }).catch(() => null);
+    check(/exams\/practice/.test(await reader.evaluate(() => location.hash)) && !(await reader.$("[data-whats-new]")), "a feature's Try it link closes the pop-up and opens that page");
     // Switching to phone emulation reloads the page, so reopen it from the footer there.
     await reader.setViewport({ width: 390, height: 844, isMobile: true, hasTouch: true });
     await reader.waitForSelector(".js-whats-new", { timeout: 15000 }).catch(() => null);
@@ -666,6 +703,20 @@ fs.mkdirSync(SHOTS, { recursive: true });
     check(bar.shown && bar.items === 5 && bar.active === "Progress" && bar.atBottom === 0, `phones get a bottom tab bar with the current section marked (${bar.active})`);
     check(bar.mentorAbove && !bar.overflow, "the mentor button sits above the bar and nothing scrolls sideways");
     await pupil.screenshot({ path: path.join(SHOTS, "tabbar-390.png") });
+    // The dashboard mascot stands as tall as the greeting on a phone, beside the title.
+    for (const width of [390, 320]) {
+      await pupil.setViewport({ width, height: 800 });
+      await pupil.evaluate(() => { location.hash = "#/dashboard"; });
+      await pupil.waitForSelector(".dashboard-greeting-mascot img", { timeout: 10000 }).catch(() => null);
+      await sleep(900);
+      const mascot = await pupil.evaluate(() => {
+        const img = document.querySelector(".dashboard-greeting-mascot img").getBoundingClientRect();
+        const title = document.querySelector(".dashboard-greeting-hero .hero-title").getBoundingClientRect();
+        return { height: Math.round(img.height), overlap: img.left < title.right - 1 && img.top < title.bottom, right: Math.round(img.right), vw: window.innerWidth, overflow: document.documentElement.scrollWidth > window.innerWidth };
+      });
+      check(mascot.height >= 110 && !mascot.overlap && mascot.right <= mascot.vw && !mascot.overflow, `at ${width}px the mascot is ${mascot.height}px tall, beside the title, on screen`);
+      if (width === 390) await pupil.screenshot({ path: path.join(SHOTS, "dashboard-mascot-390.png") });
+    }
     await evCtx.close();
   } catch (err) {
     failures.push(`exception: ${err.message}`);

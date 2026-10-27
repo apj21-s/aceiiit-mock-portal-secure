@@ -7,6 +7,8 @@ const itemSchema = new mongoose.Schema(
     icon: { type: String, trim: true, maxlength: 16, default: "" },
     title: { type: String, trim: true, required: true, maxlength: 60 },
     body: { type: String, trim: true, maxlength: 240, default: "" },
+    // Optional "Try it" link: a portal page (#exams/practice) or an https address.
+    href: { type: String, trim: true, maxlength: 300, default: "" },
   },
   { _id: false }
 );

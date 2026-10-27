@@ -2091,29 +2091,153 @@
     return d.toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric", timeZone: "Asia/Kolkata" });
   }
 
-  /** The pop-up card's inner HTML (also used by the live preview in Studio). */
+  /**
+   * The What's New card deck (pop-up and Studio preview): story-style segments, the note's
+   * title, then one card per feature stacked like a deck, ending with an "all caught up" recap.
+   */
   function buildWhatsNewCardHtml(note, titleId) {
     var cta = note.cta || (note.ctaLabel && note.ctaHref ? { label: note.ctaLabel, href: note.ctaHref } : null);
-    var external = cta && /^https:\/\//i.test(cta.href);
     var date = formatNoteDate(note.publishedAt);
+    var items = (note.items || []).filter(function (item) { return item && item.title; });
+    var total = items.length;
+    var link = function (href, label, cls, attr) {
+      var external = /^https:\/\//i.test(href);
+      return '<a class="' + cls + '" href="' + escapeAttribute(href) + '"' + (external ? ' target="_blank" rel="noopener noreferrer"' : '') + ' ' + attr + '>' + label + '</a>';
+    };
+    var slides = items.map(function (item, i) {
+      return '<article class="wn-slide" data-wn-slide="' + i + '" role="group" aria-roledescription="slide" aria-label="Feature ' + (i + 1) + ' of ' + total + '">' +
+        '<span class="wn-slide-icon" aria-hidden="true">' + escapeHtml(item.icon || "✦") + '</span>' +
+        '<h3 class="wn-slide-title">' + escapeHtml(item.title) + '</h3>' +
+        (item.body ? '<p class="wn-slide-body">' + escapeHtml(item.body) + '</p>' : '') +
+        (item.href && (/^#/.test(item.href) || /^https:\/\//i.test(item.href)) ? link(item.href, "Try it <span aria-hidden=\"true\">→</span>", "wn-try", "data-wn-link") : '') +
+        '</article>';
+    }).join("") +
+      '<article class="wn-slide is-final" data-wn-slide="' + total + '" role="group" aria-roledescription="slide" aria-label="Summary">' +
+      '<span class="wn-slide-icon is-check" aria-hidden="true">✓</span>' +
+      '<h3 class="wn-slide-title">You\'re all caught up</h3>' +
+      '<ul class="wn-recap">' + items.map(function (item, i) {
+        return '<li style="--i:' + i + '"><span aria-hidden="true">✓</span> ' + escapeHtml(item.title) + '</li>';
+      }).join("") + '</ul>' +
+      (cta ? link(cta.href, escapeHtml(cta.label), "button button-secondary wn-final-cta", "data-wn-link") : '') +
+      '</article>';
     return '<div class="wn-head">' +
+      '<div class="wn-segments" aria-hidden="true">' + Array.from({ length: total + 1 }, function (_v, i) { return '<span class="wn-seg" data-wn-seg="' + i + '"><i></i></span>'; }).join("") + '</div>' +
       '<p class="wn-eyebrow"><span class="wn-spark" aria-hidden="true"></span>What\'s new' + (date ? '<span class="wn-date"> · ' + escapeHtml(date) + '</span>' : '') + '</p>' +
       '<h2 class="wn-title" id="' + titleId + '">' + escapeHtml(note.title || "Untitled") + '</h2>' +
       (note.summary ? '<p class="wn-summary">' + escapeHtml(note.summary) + '</p>' : '') +
       '</div>' +
       (note.imageUrl && /^https:\/\//i.test(note.imageUrl) ? '<img class="wn-image" src="' + escapeAttribute(note.imageUrl) + '" alt="" loading="lazy" decoding="async">' : '') +
-      '<ul class="wn-items">' + (note.items || []).map(function (item, i) {
-        return '<li style="--i:' + i + '">' +
-          '<span class="wn-icon" aria-hidden="true">' + escapeHtml(item.icon || "✦") + '</span>' +
-          '<div><strong>' + escapeHtml(item.title || "") + '</strong>' + (item.body ? '<p>' + escapeHtml(item.body) + '</p>' : '') + '</div>' +
-          '</li>';
-      }).join("") + '</ul>' +
-      '<div class="wn-actions">' +
-      (cta ? (external
-        ? '<a class="button button-secondary" href="' + escapeAttribute(cta.href) + '" target="_blank" rel="noopener noreferrer" data-wn-cta>' + escapeHtml(cta.label) + '</a>'
-        : '<a class="button button-secondary" href="' + escapeAttribute(cta.href) + '" data-wn-cta>' + escapeHtml(cta.label) + '</a>') : '') +
-      '<button type="button" class="button button-primary" data-wn-close>Got it</button>' +
+      '<div class="wn-deck" role="region" aria-roledescription="carousel" aria-label="New features" data-wn-deck>' + slides + '</div>' +
+      '<p class="sr-only" aria-live="polite" data-wn-live></p>' +
+      '<div class="wn-nav">' +
+      '<button type="button" class="wn-nav-btn" data-wn-prev aria-label="Previous feature"><span aria-hidden="true">‹</span> Back</button>' +
+      '<span class="wn-count" data-wn-count aria-hidden="true">1 of ' + total + '</span>' +
+      '<button type="button" class="button button-primary wn-next" data-wn-next>Next <span aria-hidden="true">›</span></button>' +
       '</div>';
+  }
+
+  /**
+   * Makes a deck interactive: Next/Back, ← and → keys, and dragging or swiping the top card
+   * (it follows the finger; past ~30% of its width or a quick flick it flies off, otherwise it
+   * springs back). options: { onDone, onLink, start, onIndex }.
+   */
+  function bindWhatsNewDeck(card, options) {
+    options = options || {};
+    var deck = card.querySelector("[data-wn-deck]");
+    if (!deck) return null;
+    var slides = Array.prototype.slice.call(deck.querySelectorAll("[data-wn-slide]"));
+    var last = slides.length - 1;
+    var prev = card.querySelector("[data-wn-prev]");
+    var next = card.querySelector("[data-wn-next]");
+    var count = card.querySelector("[data-wn-count]");
+    var live = card.querySelector("[data-wn-live]");
+    var index = Math.max(0, Math.min(last, Number(options.start) || 0));
+
+    function layout(announce) {
+      slides.forEach(function (slide, i) {
+        var d = i - index;
+        slide.style.transform = "";
+        slide.setAttribute("data-pos", d < 0 ? "gone" : d === 0 ? "top" : d === 1 ? "1" : d === 2 ? "2" : "back");
+        slide.classList.toggle("is-top", d === 0);
+        slide.setAttribute("aria-hidden", d === 0 ? "false" : "true");
+        slide.inert = d !== 0;
+      });
+      card.querySelectorAll("[data-wn-seg]").forEach(function (seg, i) { seg.classList.toggle("is-done", i <= index); });
+      prev.disabled = index === 0;
+      var onFinal = index === last;
+      next.innerHTML = onFinal ? "Got it" : 'Next <span aria-hidden="true">›</span>';
+      next.classList.toggle("is-final", onFinal);
+      count.textContent = onFinal ? "All done" : (index + 1) + " of " + last;
+      if (announce && live) {
+        var title = slides[index].querySelector(".wn-slide-title");
+        live.textContent = (onFinal ? "Summary. " : "Feature " + (index + 1) + " of " + last + ": ") + (title ? title.textContent : "");
+      }
+      if (options.onIndex) options.onIndex(index);
+    }
+    function go(to) {
+      if (to < 0 || to > last || to === index) return;
+      index = to;
+      layout(true);
+    }
+    prev.addEventListener("click", function () { go(index - 1); });
+    next.addEventListener("click", function () {
+      if (index === last) { if (options.onDone) options.onDone(); }
+      else go(index + 1);
+    });
+    // Arrow keys: inside the card, or anywhere while the pop-up is open (a mouse drag can
+    // leave focus on the page).
+    var keyTarget = options.globalKeys ? document : card;
+    function onKey(event) {
+      if (!card.isConnected) { keyTarget.removeEventListener("keydown", onKey); return; }
+      if (event.target && /INPUT|TEXTAREA|SELECT/.test(event.target.tagName)) return;
+      if (event.key === "ArrowRight") { event.preventDefault(); go(index + 1); }
+      else if (event.key === "ArrowLeft") { event.preventDefault(); go(index - 1); }
+    }
+    keyTarget.addEventListener("keydown", onKey);
+    card.querySelectorAll("[data-wn-link]").forEach(function (a) {
+      a.addEventListener("click", function (event) { if (options.onLink) options.onLink(a, event); });
+    });
+
+    // Drag / swipe the top card.
+    var drag = null;
+    deck.addEventListener("pointerdown", function (event) {
+      var slide = event.target.closest && event.target.closest(".wn-slide.is-top");
+      if (!slide || event.target.closest("a, button") || (event.pointerType === "mouse" && event.button !== 0)) return;
+      drag = { slide: slide, x: event.clientX, y: event.clientY, t: performance.now(), dx: 0, moved: false, id: event.pointerId };
+    });
+    deck.addEventListener("pointermove", function (event) {
+      if (!drag || event.pointerId !== drag.id) return;
+      var dx = event.clientX - drag.x;
+      var dy = event.clientY - drag.y;
+      if (!drag.moved) {
+        if (Math.abs(dx) < 6 || Math.abs(dy) > Math.abs(dx)) return; // let vertical scrolls through
+        drag.moved = true;
+        drag.slide.classList.add("is-dragging");
+        try { drag.slide.setPointerCapture(event.pointerId); } catch (_e) { }
+      }
+      // Resist at the ends: no card before the first, nothing after the summary.
+      var edge = (dx > 0 && index === 0) || (dx < 0 && index === last);
+      drag.dx = edge ? dx * 0.25 : dx;
+      drag.slide.style.transform = "translateX(" + drag.dx.toFixed(1) + "px) rotate(" + (prefersReducedMotion() ? 0 : drag.dx / 28).toFixed(2) + "deg)";
+    });
+    function endDrag(event) {
+      if (!drag || (event && event.pointerId !== drag.id)) return;
+      var d = drag;
+      drag = null;
+      d.slide.classList.remove("is-dragging");
+      if (!d.moved) return;
+      var width = d.slide.offsetWidth || 300;
+      var speed = Math.abs(d.dx) / Math.max(1, performance.now() - d.t);
+      var commit = Math.abs(d.dx) > width * 0.3 || speed > 0.6;
+      if (commit && d.dx < 0 && index < last) go(index + 1);
+      else if (commit && d.dx > 0 && index > 0) go(index - 1);
+      else d.slide.style.transform = ""; // springs back through the CSS transition
+      if (!card.contains(document.activeElement)) next.focus({ preventScroll: true });
+    }
+    deck.addEventListener("pointerup", endDrag);
+    deck.addEventListener("pointercancel", endDrag);
+    layout(false);
+    return { go: go, index: function () { return index; } };
   }
 
   function showWhatsNew(note, options) {
@@ -2144,22 +2268,22 @@
     window.requestAnimationFrame(function () {
       window.requestAnimationFrame(function () { overlay.setAttribute("data-state", "open"); });
     });
-    whatsNewCleanup = activateModalFocus(card, { onEscape: close, titleId: titleId, initialFocusEl: overlay.querySelector("[data-wn-close]") });
-    overlay.addEventListener("click", function (event) {
-      if (event.target === overlay) close();
-    });
-    overlay.querySelector("[data-wn-close]").addEventListener("click", close);
-    var cta = overlay.querySelector("[data-wn-cta]");
-    if (cta) {
-      cta.addEventListener("click", function (event) {
-        var href = cta.getAttribute("href") || "";
+    bindWhatsNewDeck(card, {
+      globalKeys: true,
+      onDone: close,
+      onLink: function (a, event) {
+        var href = a.getAttribute("href") || "";
         close();
         if (href.charAt(0) === "#") {
           event.preventDefault();
           window.location.hash = href;
         }
-      });
-    }
+      },
+    });
+    whatsNewCleanup = activateModalFocus(card, { onEscape: close, titleId: titleId, initialFocusEl: overlay.querySelector("[data-wn-next]") });
+    overlay.addEventListener("click", function (event) {
+      if (event.target === overlay) close();
+    });
   }
 
   // ---- Studio → Reports: what students flagged, grouped by question ---------------------------
@@ -2261,7 +2385,7 @@
   var wnAdmin = { notes: [], editingId: "", draft: null, message: "", error: "" };
 
   function blankReleaseNote() {
-    return { title: "", summary: "", items: [{ icon: "✨", title: "", body: "" }], imageUrl: "", ctaLabel: "", ctaHref: "", audience: "all" };
+    return { title: "", summary: "", items: [{ icon: "✨", title: "", body: "", href: "" }], imageUrl: "", ctaLabel: "", ctaHref: "", audience: "all" };
   }
 
   function buildAdminWhatsNewHtml() {
@@ -2297,6 +2421,7 @@
         '<button type="button" class="button button-secondary button-compact" data-wn-remove aria-label="Remove item ' + n + '"' + (items.length === 1 ? ' disabled' : '') + '>✕</button>' +
         '</div>' +
         '<div class="field wn-item-body"><label for="wn-item-body-' + i + '">Item ' + n + ' text (optional)</label><textarea id="wn-item-body-' + i + '" data-wn-field="body" rows="2" maxlength="240">' + escapeHtml(item.body || "") + '</textarea></div>' +
+        '<div class="field wn-item-body"><label for="wn-item-href-' + i + '">Try it link (optional)</label><input id="wn-item-href-' + i + '" data-wn-field="href" maxlength="300" value="' + escapeAttribute(item.href || "") + '" placeholder="#exams/practice or https://…"></div>' +
         '</div>';
     }).join("");
   }
@@ -2353,7 +2478,7 @@
       '</section>' +
       '<section class="admin-card" aria-labelledby="wn-preview-title">' +
       '<p class="section-label" id="wn-preview-title">Live preview</p>' +
-      '<div class="wn-preview-frame" aria-hidden="true"><section class="wn-card" data-wn-preview>' + buildWhatsNewCardHtml(wnPreviewNote(), "wn-preview-heading") + '</section></div>' +
+      '<div class="wn-preview-frame"><section class="wn-card" data-wn-preview aria-label="Pop-up preview">' + buildWhatsNewCardHtml(wnPreviewNote(), "wn-preview-heading") + '</section></div>' +
       '</section>';
     bindAdminWhatsNew(root);
   }
@@ -2363,7 +2488,7 @@
     return {
       title: d.title || "Your title",
       summary: d.summary,
-      items: d.items.map(function (i) { return { icon: i.icon, title: i.title || "Item title", body: i.body }; }),
+      items: d.items.map(function (i) { return { icon: i.icon, title: i.title || "Item title", body: i.body, href: i.href }; }),
       imageUrl: d.imageUrl,
       cta: d.ctaLabel && d.ctaHref ? { label: d.ctaLabel, href: d.ctaHref } : null,
       publishedAt: new Date().toISOString(),
@@ -2376,8 +2501,13 @@
     var refreshPreview = function () {
       if (preview) {
         preview.innerHTML = buildWhatsNewCardHtml(wnPreviewNote(), "wn-preview-heading");
-        // The preview is a picture, not a second set of controls.
-        Array.prototype.forEach.call(preview.querySelectorAll("a, button"), function (el) { el.setAttribute("tabindex", "-1"); });
+        // A working copy of the deck: Next/Back and swiping work, links stay put.
+        bindWhatsNewDeck(preview, {
+          start: wnAdmin.previewIndex || 0,
+          onIndex: function (i) { wnAdmin.previewIndex = i; },
+          onDone: function () { wnAdmin.previewIndex = 0; refreshPreview(); },
+          onLink: function (_a, event) { event.preventDefault(); },
+        });
       }
     };
     refreshPreview();
@@ -2407,7 +2537,7 @@
     });
     root.querySelector("[data-wn-add]").addEventListener("click", function () {
       if (wnAdmin.draft.items.length >= 6) return;
-      wnAdmin.draft.items.push({ icon: "", title: "", body: "" });
+      wnAdmin.draft.items.push({ icon: "", title: "", body: "", href: "" });
       rerender("#wn-item-title-" + (wnAdmin.draft.items.length - 1));
     });
     Array.prototype.forEach.call(root.querySelectorAll("[data-wn-move], [data-wn-remove]"), function (button) {
@@ -2431,7 +2561,7 @@
         var note = wnAdmin.notes.filter(function (n) { return n.id === button.getAttribute("data-wn-edit"); })[0];
         if (!note) return;
         wnAdmin.editingId = note.id;
-        wnAdmin.draft = { title: note.title, summary: note.summary, items: note.items.map(function (i) { return { icon: i.icon, title: i.title, body: i.body }; }), imageUrl: note.imageUrl, ctaLabel: note.ctaLabel, ctaHref: note.ctaHref, audience: note.audience };
+        wnAdmin.draft = { title: note.title, summary: note.summary, items: note.items.map(function (i) { return { icon: i.icon, title: i.title, body: i.body, href: i.href || "" }; }), imageUrl: note.imageUrl, ctaLabel: note.ctaLabel, ctaHref: note.ctaHref, audience: note.audience };
         wnAdmin.message = "";
         wnAdmin.error = "";
         rerender("#wn-title");
@@ -2476,7 +2606,7 @@
       var body = {
         title: d.title.trim(), summary: d.summary.trim(), audience: d.audience,
         imageUrl: d.imageUrl.trim(), ctaLabel: d.ctaLabel.trim(), ctaHref: d.ctaHref.trim(),
-        items: d.items.map(function (i) { return { icon: (i.icon || "").trim(), title: (i.title || "").trim(), body: (i.body || "").trim() }; }),
+        items: d.items.map(function (i) { return { icon: (i.icon || "").trim(), title: (i.title || "").trim(), body: (i.body || "").trim(), href: (i.href || "").trim() }; }),
       };
       try {
         var saved = await store.saveReleaseNote(wnAdmin.editingId, body);
@@ -2496,6 +2626,16 @@
     var publishBtn = root.querySelector('[data-wn-save="publish"]');
     if (publishBtn) publishBtn.addEventListener("click", function () { save(true); });
   }
+
+  document.addEventListener("click", function (event) {
+    var toggle = event.target && event.target.closest ? event.target.closest(".js-passage-toggle") : null;
+    if (!toggle) return;
+    var passage = document.getElementById(toggle.getAttribute("aria-controls"));
+    if (!passage) return;
+    var open = passage.classList.toggle("is-folded") === false;
+    toggle.setAttribute("aria-expanded", String(open));
+    toggle.textContent = open ? "Show less" : "Show the full passage";
+  });
 
   // Footer → "What's new": reopens the latest note at any time.
   document.addEventListener("click", function (event) {
@@ -6005,7 +6145,7 @@
 
     var reportsHtml = !stats.count ? emptyHtml : (
       '<div class="comparison-table-wrap">' +
-      '<table class="comparison-table">' +
+      '<table class="comparison-table reports-table">' +
       '<thead><tr><th>#</th><th>TEST</th><th>DATE</th><th>SCORE</th><th>ACCURACY</th><th>PERCENTILE</th><th><span class="sr-only">Action</span></th></tr></thead>' +
       '<tbody>' + newestFirst.map(function (a, idx) {
         return '<tr>' +
@@ -6098,7 +6238,13 @@
         (sourceBits.length ? '<span class="bookmark-source">' + sourceBits.join(" · ") + '</span>' : '') +
         (savedOn ? '<span class="bookmark-saved">' + savedOn + '</span>' : '') +
         '</header>' +
-        (b.passage ? '<div class="rich-text bookmark-passage">' + formatRichText(b.passage) + '</div>' : '') +
+        // Long reading passages start folded so one bookmark doesn't fill the screen.
+        (b.passage
+          ? (String(b.passage).length > 360
+            ? '<div class="rich-text bookmark-passage is-folded" id="bm-passage-' + escapeAttribute(String(b.id || "")) + '">' + formatRichText(b.passage) + '</div>' +
+              '<button type="button" class="bookmark-passage-toggle js-passage-toggle" aria-expanded="false" aria-controls="bm-passage-' + escapeAttribute(String(b.id || "")) + '">Show the full passage</button>'
+            : '<div class="rich-text bookmark-passage">' + formatRichText(b.passage) + '</div>')
+          : '') +
         '<div class="rich-text bookmark-prompt">' + formatRichText(b.prompt || "Question prompt") + '</div>' +
         imagesHtml +
         optionsHtml +
@@ -6650,11 +6796,13 @@
       ? '<div class="attempt-list compact-timeline">' + snapshot.attempts.slice(0, 5).map(function (attempt) {
         var test = store.getTestById(attempt.testId);
         var isSubmitted = attempt.status === "submitted";
-        var stateLabel = isSubmitted
-          ? (isPracticeAttempt(attempt)
-            ? "Practice · Score " + attempt.result.score
-            : "Score: " + attempt.result.score + " (" + attempt.result.percentile + "%ile)")
-          : "In progress";
+        var stateLabel = !isSubmitted
+          ? "In progress"
+          : !attempt.result
+            ? (attempt.resultsPending && attempt.resultsAt ? "Submitted · results " + formatOpensAt(new Date(attempt.resultsAt)) : "Submitted")
+            : (isPracticeAttempt(attempt)
+              ? "Practice · Score " + attempt.result.score
+              : "Score: " + attempt.result.score + " (" + attempt.result.percentile + "%ile)");
 
         return (
           '<div class="timeline-item">' +
