@@ -2060,26 +2060,44 @@
   }
 
   // ---- "What's new" pop-up --------------------------------------------------------------------
-  // The newest published note a student hasn't seen opens once, shortly after the portal opens.
-  // Never over an exam, the login screen, Studio, another dialog or the mentor.
+  // The newest published note (last 14 days, the server decides) pops up after every sign-in,
+  // and when the portal is opened in a new tab; not again on reloads or page changes in the same
+  // tab. Never over an exam, the instructions page, another dialog or the mentor.
   var whatsNewCheckedFor = "";
   var whatsNewCleanup = null;
+  var WN_SESSION_KEY = "aceiiit_wn_shown";
+
+  function whatsNewShownThisSession(noteId) {
+    try { return (sessionStorage.getItem(WN_SESSION_KEY) || "") === String(noteId); } catch (_e) { return false; }
+  }
+
+  function rememberWhatsNewShown(noteId) {
+    try { sessionStorage.setItem(WN_SESSION_KEY, String(noteId)); } catch (_e) { }
+  }
+
+  /** Signing out (or reaching the sign-in screen) means the next sign-in shows it again. */
+  function resetWhatsNewSession() {
+    whatsNewCheckedFor = "";
+    try { sessionStorage.removeItem(WN_SESSION_KEY); } catch (_e) { }
+  }
 
   function scheduleWhatsNew(view, user) {
-    if (!user || !store.getWhatsNew) return;
+    if (!user || view === "login") { resetWhatsNewSession(); return; }
+    if (!store.getWhatsNew) return;
     if (whatsNewCheckedFor === user.id) return;
-    if (isExamLikeRoute(view) || view === "instructions" || view === "admin" || view === "login") return;
+    if (isExamLikeRoute(view) || view === "instructions") return;
     whatsNewCheckedFor = user.id;
     window.setTimeout(function () {
       Promise.resolve(store.getWhatsNew(false)).then(function (note) {
-        if (!note) return;
+        if (!note || whatsNewShownThisSession(note.id)) return;
         var current = routeParts()[0] || "";
-        var busy = document.querySelector("[data-admin-modal='true'], [data-whats-new], .sync-overlay") ||
+        var busy = document.querySelector("[data-admin-modal='true'], [data-whats-new], [data-quick-search], .sync-overlay, .question-editor-modal") ||
           (document.getElementById("mentor-panel") && !document.getElementById("mentor-panel").hidden);
-        if (busy || isExamLikeRoute(current) || current === "instructions" || current === "admin" || document.hidden) {
+        if (busy || isExamLikeRoute(current) || current === "instructions" || document.hidden) {
           whatsNewCheckedFor = ""; // try again on the next page
           return;
         }
+        rememberWhatsNewShown(note.id);
         showWhatsNew(note, { preview: false });
       }).catch(function () { /* optional; never blocks the page */ });
     }, 700);
@@ -2442,7 +2460,7 @@
             '<button type="button" class="button button-danger button-compact" data-wn-delete="' + escapeAttribute(n.id) + '" aria-label="Delete ' + escapeAttribute(n.title) + '">Delete</button>' +
             '</div></li>';
         }).join("") + '</ul>'
-      : '<p class="helper-text">No notes yet. Write the first one below: it pops up once for every student after you publish it.</p>';
+      : '<p class="helper-text">No notes yet. Write the first one below: after you publish it, it pops up at every sign-in for 14 days.</p>';
 
     root.innerHTML =
       '<section class="admin-card" aria-labelledby="wn-admin-title">' +
@@ -2450,7 +2468,7 @@
       '<p class="section-label" id="wn-admin-title" style="margin:0;">11. What\'s New</p>' +
       '<button type="button" class="button button-secondary button-compact" data-wn-new>+ New note</button>' +
       '</div>' +
-      '<p class="helper-text">Published notes pop up once for each student (on their next visit), then stay under “What\'s new” in the footer.</p>' +
+      '<p class="helper-text">Published notes pop up each time someone signs in, for 14 days after publishing, and stay under “What\'s new” in the footer.</p>' +
       notesHtml +
       '<form class="wn-form" data-wn-form novalidate>' +
       '<h3 class="wn-form-title">' + (editingNote ? "Edit “" + escapeHtml(editingNote.title) + "”" : "New note") + '</h3>' +
@@ -2573,7 +2591,7 @@
         try {
           var to = button.getAttribute("data-wn-to") === "1";
           await store.setReleaseNotePublished(button.getAttribute("data-wn-publish"), to);
-          wnAdmin.message = to ? "Published. Students see it on their next visit." : "Unpublished.";
+          wnAdmin.message = to ? "Published. It pops up at every sign-in for 14 days." : "Unpublished.";
           wnAdmin.error = "";
           mountAdminWhatsNew();
         } catch (error) {
@@ -2613,7 +2631,7 @@
         if (publish) saved = await store.setReleaseNotePublished(saved.id, true);
         wnAdmin.editingId = saved.id;
         wnAdmin.error = "";
-        wnAdmin.message = publish ? "Published. Students see it on their next visit." : "Saved.";
+        wnAdmin.message = publish ? "Published. It pops up at every sign-in for 14 days." : "Saved.";
         mountAdminWhatsNew();
       } catch (error) {
         wnAdmin.message = "";
@@ -9243,7 +9261,7 @@
 
     function buildQuestionReviewShell() {
       return (
-        '<section class="report-card analysis-stage" id="question-review-section" style="padding: 24px; flex: 1 1 100%; min-width: 0;"' + stageStyle(5) + '>' +
+        '<section class="report-card analysis-stage rs-review-section" id="question-review-section"' + stageStyle(5) + '>' +
         '<div class="analysis-review-head">' +
         '<div>' +
         '<p class="section-label">Question review</p>' +
@@ -9396,10 +9414,10 @@
           '<p class="section-label">Question ' + escapeHtml(String(offset + index + 1)) + ' · ' + escapeHtml(String(review.section || "")) + '</p>' +
           '<h4>' + escapeHtml(String(review.topic || "General Topic")) + '</h4>' +
           '</div>' +
-          '<div class="analysis-review-badges" style="display:flex; align-items:center; gap:8px;">' +
+          '<div class="analysis-review-badges">' +
           statusLabel +
           '<span class="analysis-pill" aria-label="Time spent: ' + formatTime(Number(review.timeSpent || 0)) + '">⏱ ' + escapeHtml(formatTime(Number(review.timeSpent || 0))) + '</span>' +
-          '<button class="' + bookmarkBtnClass + '" data-qid="' + escapeAttribute(reviewQuestionId) + '" data-qpayload="' + encodeURIComponent(JSON.stringify(bookmarkDataPayload)) + '" aria-label="Bookmark this question" style="padding:4px 10px; font-size:0.9rem; color:var(--brand-accent); border-color:rgba(200,150,62,0.3);">' + bookmarkBtnContent + '</button>' +
+          '<button class="' + bookmarkBtnClass + ' review-save" data-qid="' + escapeAttribute(reviewQuestionId) + '" data-qpayload="' + encodeURIComponent(JSON.stringify(bookmarkDataPayload)) + '" aria-label="Bookmark this question">' + bookmarkBtnContent + '</button>' +
           '</div>' +
           '</div>' +
           passageHtml +

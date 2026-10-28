@@ -4,8 +4,8 @@ const ReleaseNote = require("../models/ReleaseNote");
 const User = require("../models/User");
 const { hasAnyActiveEntitlement } = require("../services/entitlementService");
 
-// "What's new": students get the newest published note they haven't seen (once per account);
-// admins write, publish and unpublish notes in Studio.
+// "What's new": the newest published note pops up at every sign-in for two weeks (then stays
+// behind the footer link); admins write, publish and unpublish notes in Studio.
 
 const HTTPS_URL = /^https:\/\/[^\s<>"'`]+$/i;
 const PORTAL_ROUTE = /^#\/?[a-z0-9/_-]*$/i;
@@ -64,19 +64,24 @@ function sendError(res, err, next) {
   return next(err);
 }
 
-/** GET /api/whats-new: the newest unseen note for this student (?latest=1: newest, seen or not). */
+// A published note pops up at every sign-in for this long; after that it lives only behind the
+// footer's "What's new" link.
+const POPUP_DAYS = 14;
+
+/**
+ * GET /api/whats-new: the newest published note for this user's audience from the last
+ * POPUP_DAYS days (shown at every sign-in), or with ?latest=1 the newest one of any age.
+ */
 async function getForMe(req, res, next) {
   try {
-    const user = await User.findById(req.auth.userId).select("email role createdAt whatsNewSeenAt").lean();
+    const user = await User.findById(req.auth.userId).select("email role").lean();
     if (!user) return res.status(401).json({ error: "Unauthorized" });
     const isAdmin = user.role === "admin";
     // Paid targeting uses the real entitlement on the server, never a client flag.
     const audiences = isAdmin ? ["all", "free", "paid"] : ["all", (await hasAnyActiveEntitlement(user.email)) ? "paid" : "free"];
     const filter = { status: "published", publishedAt: { $ne: null }, audience: { $in: audiences } };
     if (String(req.query.latest || "") !== "1") {
-      // Only news from after the account existed and after the last note was closed.
-      const since = [user.createdAt, user.whatsNewSeenAt].filter(Boolean).map((d) => new Date(d).getTime());
-      if (since.length) filter.publishedAt = { $gt: new Date(Math.max(...since)) };
+      filter.publishedAt = { $gte: new Date(Date.now() - POPUP_DAYS * 24 * 60 * 60 * 1000) };
     }
     const note = await ReleaseNote.findOne(filter).sort({ publishedAt: -1 }).lean();
     return res.json({ note: note ? publicNote(note) : null });

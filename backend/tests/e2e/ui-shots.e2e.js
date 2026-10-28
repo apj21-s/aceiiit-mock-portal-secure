@@ -160,9 +160,10 @@ async function shoot(page, file) {
       const supr = paper.questions.filter((q) => q.section === "SUPR");
       const reap = paper.questions.filter((q) => q.section === "REAP");
       const pick = (list, n) => Object.fromEntries(list.slice(0, n).map((q, i) => [q.id, i % 3]));
-      await fetch(`/api/attempt/session/${s.session.id}/answers`, { method: "PUT", headers: eh, body: JSON.stringify({ seq: 1, answers: pick(supr, 22) }) });
+      const times = (list, n) => Object.fromEntries(list.slice(0, n).map((q, i) => [q.id, 20 + ((i * 37) % 160)]));
+      await fetch(`/api/attempt/session/${s.session.id}/answers`, { method: "PUT", headers: eh, body: JSON.stringify({ seq: 1, answers: pick(supr, 22), timeSpent: times(supr, 22) }) });
       await fetch(`/api/attempt/session/${s.session.id}/advance`, { method: "POST", headers: eh, body: "{}" });
-      await fetch(`/api/attempt/session/${s.session.id}/answers`, { method: "PUT", headers: eh, body: JSON.stringify({ seq: 2, answers: pick(reap, 31) }) });
+      await fetch(`/api/attempt/session/${s.session.id}/answers`, { method: "PUT", headers: eh, body: JSON.stringify({ seq: 2, answers: pick(reap, 31), timeSpent: times(reap, 31) }) });
       const sub = await (await fetch("/api/attempt", { method: "POST", headers: { ...eh, "Idempotency-Key": "ui-shots-0001" }, body: JSON.stringify({ sessionId: s.session.id }) })).json();
       return sub.attempt.id;
     }, String(test._id));
@@ -203,6 +204,85 @@ async function shoot(page, file) {
       await settle(page, 300);
       await page.evaluate(() => { const d = document.querySelector(".bookmark-solution"); if (d) d.open = true; });
       await shoot(page, path.join(OUT, "sweep-resources-bookmarks-open-1366x657.png"));
+    }
+
+    if (sweeping("report")) {
+      // The whole report at phone and tablet widths: more attempts (history chart, Reports list),
+      // an answered AI coach, every review card loaded, and the report dialog.
+      const retake = (key) => page.evaluate(async (testId, idem) => {
+        const csrf = decodeURIComponent(document.cookie.match(/aceiiit_csrf=([^;]+)/)[1]);
+        const h = { "Content-Type": "application/json", "X-CSRF-Token": csrf };
+        const s = await (await fetch("/api/attempt/start", { method: "POST", headers: h, body: JSON.stringify({ testId }) })).json();
+        const eh = { ...h, "X-Exam-Token": s.examToken };
+        const paper = await (await fetch(`/api/attempt/session/${s.session.id}/paper`, { headers: eh })).json();
+        const some = paper.questions.slice(0, 30 + idem.length);
+        await fetch(`/api/attempt/session/${s.session.id}/answers`, { method: "PUT", headers: eh, body: JSON.stringify({ seq: 1, answers: Object.fromEntries(some.map((q, i) => [q.id, (i + idem.length) % 4])), timeSpent: Object.fromEntries(some.map((q, i) => [q.id, 15 + ((i * 29) % 140)])) }) });
+        const sub = await (await fetch("/api/attempt", { method: "POST", headers: { ...eh, "Idempotency-Key": idem }, body: JSON.stringify({ sessionId: s.session.id }) })).json();
+        return sub.attempt.id;
+      }, String(test._id), key);
+      let latestId = attemptId;
+      for (const key of ["ui-shots-r2", "ui-shots-r33", "ui-shots-r444", "ui-shots-r5555"]) latestId = await retake(key);
+      page.interceptHook = async (request) => {
+        if (!/\/interpretation$/.test(new URL(request.url()).pathname)) return false;
+        await request.respond({ status: 200, contentType: "application/json", body: JSON.stringify({ interpretation: {
+          status: "ready", source: "ai", pending: false,
+          result: {
+            headline: "Steady SUPR start; REAP is the gap",
+            summary: "You answered SUPR questions with care. REAP was rushed, so the next mock should open it with a plan.",
+            strengths: ["Calm, accurate SUPR answers.", "Good pace in the first hour."],
+            priorityAreas: [{ topic: "logic", reason: "Most REAP marks were lost here.", action: "Do a short timed REAP set every day." }, { topic: "calculus", reason: "Two slow wrong answers.", action: "Revise derivatives of products." }],
+            behaviorPatterns: ["You stopped before REAP."],
+            nextTestStrategy: ["Start REAP with 40 minutes left.", "Mark and move on when stuck."],
+          },
+        } }) });
+        return true;
+      };
+      const sizes = process.env.SWEEP_SIZES ? SWEEP_VIEWPORTS : [[320, 640], [360, 780], [390, 800], [430, 900], [600, 900], [768, 1024]];
+      for (const [w, h] of sizes) {
+        await page.setViewport({ width: w, height: h });
+        await visit(page, `results/${latestId}`);
+        await settle(page, 1500);
+        await page.evaluate(() => { const b = document.getElementById("load-question-review"); if (b) b.click(); });
+        await page.waitForSelector(".analysis-review-card", { timeout: 15000 }).catch(() => null);
+        for (let i = 0; i < 6; i += 1) {
+          const more = await page.evaluate(() => { const b = document.getElementById("load-more-review"); if (b && !b.hidden && !b.disabled) { b.click(); return true; } return false; });
+          if (!more) break;
+          await sleep(700);
+        }
+        await settle(page, 600);
+        // Anything wider than the screen (the cause of sideways scrolling), outermost first.
+        const wide = await page.evaluate(() => {
+          const vw = document.documentElement.clientWidth;
+          const out = [];
+          document.querySelectorAll("body *").forEach((el) => {
+            const r = el.getBoundingClientRect();
+            if (r.width && r.right > vw + 1 && !(el.parentElement && el.parentElement.getBoundingClientRect().right > vw + 1)) {
+              out.push(`${el.tagName.toLowerCase()}.${String(el.className || "").split(" ").slice(0, 2).join(".")} right=${Math.round(r.right)} w=${Math.round(r.width)}`);
+            }
+          });
+          return { vw, scroll: document.documentElement.scrollWidth, out: out.slice(0, 12) };
+        });
+        if (wide.scroll > wide.vw || wide.out.length) console.log(`overflow at ${w}px: scrollWidth ${wide.scroll} > ${wide.vw}`, wide.out);
+        await shoot(page, path.join(OUT, `report-results-${w}x${h}.png`));
+        await page.evaluate(() => { const b = document.querySelector(".js-report-question"); if (b) b.click(); });
+        await sleep(400);
+        await page.screenshot({ path: path.join(OUT, `report-dialog-${w}x${h}.png`) });
+        await page.keyboard.press("Escape");
+        await visit(page, "progress/reports");
+        await settle(page, 600);
+        await shoot(page, path.join(OUT, `report-list-${w}x${h}.png`));
+      }
+      // Dark theme at a phone width.
+      await page.setViewport({ width: 390, height: 800 });
+      await page.evaluate(() => { const t = document.querySelector("[data-theme-toggle='true']"); if (t) t.click(); });
+      await visit(page, `results/${latestId}`);
+      await settle(page, 1500);
+      await page.evaluate(() => { const b = document.getElementById("load-question-review"); if (b) b.click(); });
+      await page.waitForSelector(".analysis-review-card", { timeout: 15000 }).catch(() => null);
+      await settle(page, 600);
+      await shoot(page, path.join(OUT, "report-results-dark-390x800.png"));
+      await page.evaluate(() => { const t = document.querySelector("[data-theme-toggle='true']"); if (t) t.click(); });
+      page.interceptHook = null;
     }
 
     if (sweeping("dark")) {

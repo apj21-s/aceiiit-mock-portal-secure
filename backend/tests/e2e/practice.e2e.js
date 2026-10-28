@@ -291,6 +291,20 @@ const SHOTS = path.join(SHOTS_DIR, "practice");
     await page.keyboard.press("Escape");
     await sleep(300);
     check(/Reported/.test(await page.$eval(".js-report-question", (b) => b.textContent)), "the reported question's button says Reported");
+    // The report on phones: nothing wider than the screen; review-card badges under the title.
+    for (const width of [390, 320]) {
+      await page.setViewport({ width, height: 800 });
+      await sleep(400);
+      const fit = await page.evaluate(() => {
+        const card = document.querySelector(".analysis-review-card");
+        const title = card.querySelector(".analysis-review-meta h4").getBoundingClientRect();
+        const badges = card.querySelector(".analysis-review-badges").getBoundingClientRect();
+        const save = card.querySelector(".review-save").getBoundingClientRect();
+        return { scroll: document.documentElement.scrollWidth, vw: window.innerWidth, under: badges.top >= title.bottom - 1, save: Math.round(save.height) };
+      });
+      check(fit.scroll <= fit.vw && fit.under && fit.save >= 44, `at ${width}px the report fits the screen, badges sit under the title, Save is ${fit.save}px tall`);
+    }
+    await page.setViewport({ width: 1366, height: 900 });
     await page.evaluate(() => document.querySelector(".js-ask-mentor-question").click());
     await page.waitForSelector("#mentor-panel:not([hidden])", { timeout: 8000 }).catch(() => null);
     await sleep(500);

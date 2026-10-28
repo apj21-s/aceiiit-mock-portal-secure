@@ -1,6 +1,6 @@
-// "What's new": admins write and publish notes in Studio; each student sees the newest note
-// once (per account, not per device), only if it's for their audience (paid from the real
-// entitlement) and only if it was published after their account existed.
+// "What's new": admins write and publish notes in Studio; the newest published note for a
+// student's audience (paid from the real entitlement) pops up at every sign-in for 14 days,
+// then stays behind the footer link (?latest=1).
 const { createApp } = require("../../app");
 const Season = require("../../models/Season");
 const ReleaseNote = require("../../models/ReleaseNote");
@@ -44,7 +44,7 @@ async function publish(admin, body) {
   return id;
 }
 
-test("a published note shows once per account; drafts never show", async () => {
+test("a published note shows at every sign-in, even after it was closed; drafts never show", async () => {
   const { admin, free } = await setup();
   const draft = await admin.post("/api/admin/whats-new", note({ title: "Draft only" }));
   expect(draft.body.note.status).toBe("draft");
@@ -54,7 +54,7 @@ test("a published note shows once per account; drafts never show", async () => {
   expect(shown.body.note).toMatchObject({ id, title: "Practice papers are here", cta: { label: "Try it", href: "#exams/practice" }, items: [{ icon: "🧪", title: "Custom practice" }, { title: "Topic analysis", body: "" }] });
   expect(shown.body.note.audience).toBeUndefined(); // admin-only fields stay in Studio
   expect((await free.post("/api/whats-new/seen")).status).toBe(200);
-  expect((await free.get("/api/whats-new")).body.note).toBeNull();
+  expect((await free.get("/api/whats-new")).body.note.id).toBe(id);
   // The "What's new" link can still reopen the latest one.
   expect((await free.get("/api/whats-new?latest=1")).body.note.id).toBe(id);
 });
@@ -69,17 +69,22 @@ test("audience: paid notes reach only students with an active entitlement", asyn
   expect((await paid.get("/api/whats-new")).body.note.title).toBe("For enrolled students");
 });
 
-test("new accounts don't get old news; a newer note shows after an older one was seen", async () => {
-  const { admin, free } = await setup();
-  await publish(admin, note({ title: "Old news" }));
+test("new accounts and admins get it too; the newest note wins; after 14 days only the footer link has it", async () => {
+  const { admin } = await setup();
+  const oldId = await publish(admin, note({ title: "Old news" }));
   await createUser({ email: "late@test.local", name: "Late" });
   const late = await loginClient(app, "late@test.local");
-  expect((await late.get("/api/whats-new")).body.note).toBeNull();
-  await free.post("/api/whats-new/seen");
+  expect((await late.get("/api/whats-new")).body.note.title).toBe("Old news");
+  expect((await admin.get("/api/whats-new")).body.note.title).toBe("Old news");
   await new Promise((r) => setTimeout(r, 15));
   await publish(admin, note({ title: "Newer news" }));
-  expect((await free.get("/api/whats-new")).body.note.title).toBe("Newer news");
   expect((await late.get("/api/whats-new")).body.note.title).toBe("Newer news");
+  // Two weeks on, the newest note no longer pops up, but the footer link still opens it.
+  await ReleaseNote.updateMany({}, { $set: { publishedAt: new Date(Date.now() - 15 * 24 * 60 * 60 * 1000) } });
+  expect((await late.get("/api/whats-new")).body.note).toBeNull();
+  expect((await late.get("/api/whats-new?latest=1")).body.note.title).toMatch(/news/);
+  await ReleaseNote.updateOne({ _id: oldId }, { $set: { publishedAt: new Date(Date.now() - 13 * 24 * 60 * 60 * 1000) } });
+  expect((await late.get("/api/whats-new")).body.note.title).toBe("Old news");
 });
 
 test("validation: https images, safe button links, 1–6 items, both label and link", async () => {

@@ -267,10 +267,11 @@ The usage line drops by one, and Studio → ACEIIIT Mentor shows the reply under
 
 Studio → **11 What's New** writes short release notes (title, summary, up to 6 items, an
 optional https image and a button to a portal page or an https link) and shows a live preview.
-**Save & publish** makes a note pop up once for each student on their next visit (paid-only or
-free-only notes use the server's entitlement check). Students can reopen the latest note from
-"What's new" in the footer. Notes are stored in the new `releasenotes` collection, and when a
-student closes one, `users.whatsNewSeenAt` is set. Run `2026-10-sync-indexes.js` (dry run, then
+**Save & publish** makes the note pop up after every sign-in (and in each new tab) for 14 days,
+for students and admins alike; paid-only or free-only notes use the server's entitlement check.
+After 14 days it stays behind "What's new" in the footer. Each item can have a "Try it" link to a
+portal page or an https address. Notes are stored in the `releasenotes` collection
+(`users.whatsNewSeenAt` is still recorded when one is closed, but no longer hides it). Run `2026-10-sync-indexes.js` (dry run, then
 `--apply`) after deploying, for the `{status, publishedAt}` index.
 
 ## Scaling

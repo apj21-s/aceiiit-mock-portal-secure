@@ -18894,3 +18894,142 @@ body[data-theme="dark"] .wn-seg { background: rgba(255, 255, 255, 0.12); }
   .rs-time .rs-stat > span { font-size: 0.6rem; letter-spacing: 0.03em; overflow-wrap: anywhere; }
   .rs-time .rs-stat strong { font-size: 0.98rem; }
 }
+
+/* ===================== Report page: fits every screen ===================== */
+/* The column never grows to fit wide content (it used to, pushing every section off-screen on
+   phones); wide maths scrolls inside its own box instead. */
+.rs-page { grid-template-columns: minmax(0, 1fr); }
+.rs-page > * { min-width: 0; }
+
+.rs-review-section { padding: 24px; min-width: 0; }
+
+.analysis-review-badges { align-items: center; gap: 8px; }
+
+.review-save {
+  min-height: 40px;
+  padding: 4px 12px;
+  font-size: 0.86rem;
+  color: var(--gold-strong);
+  border-color: color-mix(in srgb, var(--gold) 40%, transparent);
+}
+
+.analysis-review-card,
+.analysis-review-card .rich-text,
+.analysis-option-list li { min-width: 0; overflow-wrap: anywhere; }
+
+.analysis-review-card .katex-display,
+.rs-coach .katex-display,
+.analysis-explanation-card .katex-display {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 4px;
+}
+
+.analysis-review-card img { max-width: 100%; height: auto; }
+
+/* The lift on hover is for mouse users; on touch screens it stuck after a tap. */
+@media (hover: none), (pointer: coarse), (prefers-reduced-motion: reduce) {
+  .analysis-review-card:hover,
+  .analysis-topic-row:hover,
+  .analysis-time-card:hover,
+  .analysis-mini-card:hover,
+  .analysis-spotlight:hover { transform: none; }
+}
+
+@media (max-width: 640px) {
+  .rs-review-section { padding: 16px 12px; }
+  .analysis-review-head { flex-direction: column; align-items: stretch; gap: 12px; }
+  .analysis-review-head .button { width: 100%; }
+  .analysis-review-card { padding: 14px; gap: 12px; }
+
+  /* Header: the question and topic on top, the badges on one wrapping row beneath. */
+  .analysis-review-meta { flex-direction: column; align-items: stretch; gap: 8px; }
+  .analysis-review-meta .section-label { letter-spacing: 0.08em; }
+  .analysis-review-badges { gap: 6px; }
+  .review-save { min-height: 44px; margin-left: auto; }
+
+  .response-summary-banner {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px 12px;
+    padding: 10px 12px;
+  }
+
+  .rs-coach-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (max-width: 360px) {
+  .analysis-review-actions { flex-direction: column; align-items: stretch; }
+  .analysis-review-actions .button { width: 100%; min-height: 44px; }
+  .analysis-review-actions .analysis-report-link { align-self: flex-start; }
+}
+
+/* Progress → Reports: cards up to tablet width (two per row from 600px), the table above. */
+@media (max-width: 860px) {
+  .reports-table.has-cell-labels thead { display: none; }
+  .reports-table.has-cell-labels,
+  .reports-table.has-cell-labels tbody { display: block; }
+
+  .reports-table.has-cell-labels tr {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-areas:
+      "num date date"
+      "test test test"
+      "score acc pct"
+      "act act act";
+    gap: 8px 12px;
+    margin-bottom: 12px;
+    padding: 14px;
+    border: 1px solid color-mix(in srgb, var(--ink) 8%, transparent);
+    border-radius: 14px;
+    background: var(--surface);
+  }
+
+  .reports-table.has-cell-labels td { display: block; min-width: 0; padding: 0; border: 0; }
+  .reports-table.has-cell-labels td:nth-child(1) { grid-area: num; font-size: 0.8rem; color: var(--ink-soft); }
+  .reports-table.has-cell-labels td:nth-child(1)::before { content: "#"; }
+  .reports-table.has-cell-labels td:nth-child(2) { grid-area: test; font-family: var(--font-display); font-size: 1.05rem; font-weight: 800; color: var(--ink); }
+  .reports-table.has-cell-labels td:nth-child(3) { grid-area: date; justify-self: end; font-size: 0.8rem; color: var(--ink-soft); }
+  .reports-table.has-cell-labels td:nth-child(4) { grid-area: score; }
+  .reports-table.has-cell-labels td:nth-child(5) { grid-area: acc; }
+  .reports-table.has-cell-labels td:nth-child(6) { grid-area: pct; }
+  .reports-table.has-cell-labels td:nth-child(7) { grid-area: act; }
+  .reports-table.has-cell-labels td:nth-child(n + 4):nth-child(-n + 6) { font-weight: 800; font-variant-numeric: tabular-nums; }
+
+  .reports-table.has-cell-labels td:nth-child(n + 4):nth-child(-n + 6)::before {
+    content: attr(data-label);
+    display: block;
+    margin-bottom: 2px;
+    font-family: var(--font-display);
+    font-size: 0.68rem;
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    color: var(--ink-soft);
+  }
+
+  .reports-table.has-cell-labels td:nth-child(2)::before,
+  .reports-table.has-cell-labels td:nth-child(3)::before,
+  .reports-table.has-cell-labels td:nth-child(7)::before { content: none !important; }
+  .reports-table.has-cell-labels .button { width: 100%; min-height: var(--tap); }
+}
+
+@media (min-width: 600px) and (max-width: 860px) {
+  .reports-table.has-cell-labels tbody {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+  }
+
+  .reports-table.has-cell-labels tr { margin-bottom: 0; }
+}
+
+/* Wider screens keep the table, with the action on one line. */
+@media (min-width: 861px) {
+  .reports-table td:last-child .button { white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  .response-summary-banner { grid-template-columns: minmax(0, 1fr); }
+}
