@@ -19075,12 +19075,21 @@ body[data-theme="dark"] .wn-seg { background: rgba(255, 255, 255, 0.12); }
 .karvon-credit__mark polygon {
   transform-box: fill-box;
   transform-origin: center;
-  transition: transform 0.9s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.6s ease;
-  transition-delay: calc(var(--i) * 45ms);
 }
 
-.karvon-credit.is-armed .karvon-credit__mark polygon { opacity: 0; transform: var(--o) rotate(calc((var(--i) - 5) * 10deg)) scale(0.6); }
-.karvon-credit.is-armed.is-in .karvon-credit__mark polygon { opacity: 1; transform: none; }
+/* a continuous loop: the facets assemble, hold, scatter and assemble again
+   (it only runs while the credit is on screen, see .is-in) */
+.karvon-credit.is-armed .karvon-credit__mark polygon {
+  animation: karvon-credit-facet 5.2s cubic-bezier(0.16, 1, 0.3, 1) infinite both paused;
+  animation-delay: calc(var(--i) * 50ms);
+}
+.karvon-credit.is-armed.is-in .karvon-credit__mark polygon { animation-play-state: running; }
+
+@keyframes karvon-credit-facet {
+  0% { opacity: 0; transform: var(--o) rotate(calc((var(--i) - 5) * 10deg)) scale(0.6); }
+  20%, 76% { opacity: 1; transform: none; }
+  94%, 100% { opacity: 0; transform: var(--o) rotate(calc((var(--i) - 5) * 10deg)) scale(0.6); }
+}
 
 .karvon-credit__word {
   font-family: "Archivo", "Manrope", sans-serif;
@@ -19101,5 +19110,5 @@ body[data-theme="dark"] .karvon-credit__word { color: #f3ecdf; }
 body[data-theme="dark"] .karvon-credit__mark [data-tone='charcoal'] { fill: #f3ecdf; }
 
 @media (prefers-reduced-motion: reduce) {
-  .karvon-credit__mark polygon { transition: none; }
+  .karvon-credit__mark polygon { animation: none !important; opacity: 1 !important; transform: none !important; }
 }
