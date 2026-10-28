@@ -4483,6 +4483,37 @@
     return "not-visited";
   }
 
+  // "Powered by KARVON.STUDIO": shown on sign-in and the dashboard only, never during a test.
+  // The KARVON mark's facets snap together once it is on screen, and again on hover.
+  var KARVON_CREDIT_HTML = '<a class="karvon-credit" href="https://apj21-s.github.io/karvon.studio/" target="_blank" rel="noopener noreferrer" aria-label="Powered by KARVON.STUDIO (opens in a new tab)"><span class="karvon-credit__label">Powered by</span><svg class="karvon-credit__mark" viewBox="0 0 1000 1086.8" aria-hidden="true" focusable="false"><polygon data-piece="chimney" data-tone="charcoal" points="158.9,211.5 374.1,0 374.1,474.3 210.3,645.5 210.3,342.3 158.9,388.8" fill="#262B2F" style="--o:translate(0px,-80px);--i:0"/><polygon data-piece="slateTop" data-tone="slate" points="374.1,272.6 574.6,272.6 374.1,474.3" fill="#687A86" style="--o:translate(60px,-90px);--i:1"/><polygon data-piece="wallSlate" data-tone="slate" points="0,552.6 162.6,381.4 162.6,748.2" fill="#687A86" style="--o:translate(-90px,-40px);--i:2"/><polygon data-piece="wallFace" data-tone="charcoal" points="0,552.6 162.6,748.2 162.6,1086.8 0,1086.8" fill="#262B2F" style="--o:translate(-100px,30px);--i:3"/><polygon data-piece="stem" data-tone="charcoal" points="210.3,750.6 374.1,585.6 374.1,1086.8 210.3,1086.8" fill="#262B2F" style="--o:translate(0px,80px);--i:4"/><polygon data-piece="arm" data-tone="charcoal" points="374.1,585.6 682.2,271.4 902.2,271.4 534.2,641.8 374.1,715.2" fill="#262B2F" style="--o:translate(80px,-60px);--i:5"/><polygon data-piece="leg" data-tone="charcoal" points="374.1,715.2 534.2,641.8 991.4,1086.8 766.5,1086.8" fill="#262B2F" style="--o:translate(80px,70px);--i:6"/><polygon data-piece="slateBot" data-tone="slate" points="374.1,814.2 515.9,959.7 374.1,1086.8" fill="#687A86" style="--o:translate(-20px,110px);--i:7"/><polygon data-piece="charBot" data-tone="charcoal" points="374.1,1086.8 515.9,959.7 644.3,1086.8" fill="#262B2F" style="--o:translate(40px,120px);--i:8"/><polygon data-piece="cubeTop" data-tone="slate" points="716.4,470.7 1000,695.6 716.4,768.9" fill="#687A86" style="--o:translate(150px,-70px);--i:9"/><polygon data-piece="cubeMid" data-tone="slateDark" points="716.4,768.9 1000,695.6 831.3,874.1" fill="#45515A" style="--o:translate(160px,0px);--i:10"/><polygon data-piece="cubeRight" data-tone="charcoal" points="831.3,874.1 1000,695.6 1000,1040.3" fill="#262B2F" style="--o:translate(180px,40px);--i:11"/></svg><span class="karvon-credit__word">KARVON<span class="karvon-credit__dot">.</span>STUDIO</span></a>';
+
+  function karvonCreditHtml() {
+    window.setTimeout(playKarvonCredits, 60);
+    return KARVON_CREDIT_HTML;
+  }
+
+  function playKarvonCredits() {
+    var reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    document.querySelectorAll(".karvon-credit:not(.is-armed)").forEach(function (credit) {
+      if (reduce || !("IntersectionObserver" in window)) return;
+      credit.classList.add("is-armed");
+      var io = new IntersectionObserver(function (entries) {
+        entries.forEach(function (entry) {
+          if (!entry.isIntersecting) return;
+          credit.classList.add("is-in");
+          io.disconnect();
+        });
+      }, { threshold: 0.6 });
+      io.observe(credit);
+      credit.addEventListener("mouseenter", function () {
+        credit.classList.remove("is-in");
+        window.requestAnimationFrame(function () {
+          window.requestAnimationFrame(function () { credit.classList.add("is-in"); });
+        });
+      });
+    });
+  }
+
   function buildShell(content, options) {
     options = options || {};
     var shellClass = "page-shell";
@@ -4497,7 +4528,9 @@
         ' · <a href="/terms.html" target="_blank" rel="noopener">Terms</a>' +
         ' · <a href="mailto:support@aceiiit.com">Support</a>' +
         (shellUser ? ' · <button type="button" class="app-footer-link js-whats-new">What\'s new</button>' : '') +
-        '</span></div>');
+        '</span>' +
+        (options.poweredBy ? '<div class="app-footer-credit">' + karvonCreditHtml() + '</div>' : '') +
+        '</div>');
     // The one floating help button: it opens ACEIIIT Mentor (WhatsApp support is linked inside).
     var currentUser = shellUser;
     var mentorOpen = Boolean(mentorState && mentorState.open);
@@ -4975,6 +5008,7 @@
 
       '<div class="auth-footer-v2 u-mt-md">' +
       '<p id="auth-toggle-prompt"></p>' +
+      '<div class="auth-credit">' + karvonCreditHtml() + '</div>' +
       '</div>' +
       '</div>' +
       '</div>' +
@@ -7142,7 +7176,7 @@
       '</section>' +
       '</div>' +
       plannerModalHtml,
-      { fluid: true }
+      { fluid: true, poweredBy: true }
     );
 
     // Mascot advisor: hover (mouse), keyboard focus or a tap shows a tip addressed to the

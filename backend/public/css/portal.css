@@ -19033,3 +19033,73 @@ body[data-theme="dark"] .wn-seg { background: rgba(255, 255, 255, 0.12); }
 @media (max-width: 400px) {
   .response-summary-banner { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* ==========================================================================
+   Powered by KARVON.STUDIO — sign-in and dashboard only (see karvonCreditHtml in app.js).
+   The KARVON mark's twelve facets snap together once it is on screen, and again on hover.
+   ========================================================================== */
+.app-footer-credit,
+.auth-credit {
+  display: flex;
+  justify-content: center;
+  margin-top: 10px;
+}
+
+.auth-credit { margin-top: 18px; }
+
+.karvon-credit {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  max-width: 100%;
+  white-space: nowrap;
+  color: #6b7280;
+  text-decoration: none;
+  font-family: "Manrope", system-ui, sans-serif;
+  font-size: 0.74rem;
+  letter-spacing: 0.02em;
+  transition: color 0.3s ease;
+}
+
+.karvon-credit:hover,
+.karvon-credit:focus-visible { color: #14110f; }
+
+.karvon-credit__mark {
+  display: block;
+  flex: none;
+  width: 16px;
+  height: auto;
+  overflow: visible;
+}
+
+.karvon-credit__mark polygon {
+  transform-box: fill-box;
+  transform-origin: center;
+  transition: transform 0.9s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.6s ease;
+  transition-delay: calc(var(--i) * 45ms);
+}
+
+.karvon-credit.is-armed .karvon-credit__mark polygon { opacity: 0; transform: var(--o) rotate(calc((var(--i) - 5) * 10deg)) scale(0.6); }
+.karvon-credit.is-armed.is-in .karvon-credit__mark polygon { opacity: 1; transform: none; }
+
+.karvon-credit__word {
+  font-family: "Archivo", "Manrope", sans-serif;
+  font-weight: 800;
+  font-size: 0.74rem;
+  letter-spacing: 0.16em;
+  color: #14110f;
+  transition: letter-spacing 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.karvon-credit__dot { color: #c5a028; }
+.karvon-credit:hover .karvon-credit__word { letter-spacing: 0.2em; }
+
+body[data-theme="dark"] .karvon-credit { color: #9ca3af; }
+body[data-theme="dark"] .karvon-credit:hover,
+body[data-theme="dark"] .karvon-credit:focus-visible { color: #f3f4f6; }
+body[data-theme="dark"] .karvon-credit__word { color: #f3ecdf; }
+body[data-theme="dark"] .karvon-credit__mark [data-tone='charcoal'] { fill: #f3ecdf; }
+
+@media (prefers-reduced-motion: reduce) {
+  .karvon-credit__mark polygon { transition: none; }
+}
