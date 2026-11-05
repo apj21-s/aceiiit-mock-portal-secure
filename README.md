@@ -74,3 +74,18 @@ are not accepted.
 
 Exam-session calls also need `X-Exam-Token` (issued at start). See
 [`ARCHITECTURE.md`](ARCHITECTURE.md#exam-lifecycle).
+
+
+---
+
+## Intellectual Property
+
+ACEIIIT Mock Test Portal is developed and powered by **Karvon Studio**.
+
+© 2026 Karvon Studio. All Rights Reserved.
+
+This repository contains proprietary software.
+Unauthorized reproduction, distribution, modification,
+or commercial use is prohibited.
+
+For licensing and permissions, contact Karvon Studio.
