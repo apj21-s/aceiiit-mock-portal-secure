@@ -6,7 +6,7 @@ are, and what is still open. The decisions and per-milestone evidence are in
 
 ## Reporting a vulnerability
 
-Email support@aceiiit.com, and don't open a public issue. Include the steps to reproduce
+Email support@aceiiit.in, and don't open a public issue. Include the steps to reproduce
 and the affected endpoint.
 
 ## Controls
